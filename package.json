@@ -1,0 +1,31 @@
+{
+  "name": "memory-cli",
+  "version": "0.1.0",
+  "description": "Shared, Claude-style file-based memory for any coding agent",
+  "type": "module",
+  "bin": {
+    "memory": "./src/cli/index.ts",
+    "mem": "./src/cli/index.ts",
+    "memory-mcp": "./src/mcp/server.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "lint": "oxlint src tests",
+    "format": "oxfmt src tests",
+    "format:check": "oxfmt --check src tests",
+    "test": "bun test",
+    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
+    "ultracite": "^7.9.4"
+  }
+}

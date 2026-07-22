@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Personal, per-user Claude Code settings (hooks, etc.) — never committed
+.claude/settings.local.json
+
+# The tool's own memory store (dogfooding) — gitignored by default, like user repos
+.memory/
