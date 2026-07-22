@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { MEMORY_PROTOCOL } from "../core/protocol.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -12,37 +11,16 @@ import type {
 
 const ID = "claude-code";
 const TITLE = "Claude Code";
-const RULE_REL = ".claude/rules/memory.md";
-// Personal, auto-gitignored settings — the hook assumes the CLI is on PATH, so it
-// must not be committed onto teammates who may not have it installed.
+// Claude Code's native auto-memory can be relocated with this setting. Pointing it
+// at the shared store makes Claude read AND write there natively — no rule or hook
+// needed. The value must be an absolute path, so it belongs in the personal,
+// auto-gitignored settings file rather than the committed one.
 const SETTINGS_REL = ".claude/settings.local.json";
-const HOOK_COMMAND = "memory session-start";
+const DIR_KEY = "autoMemoryDirectory";
 
-interface HookLeaf {
-  type: string;
-  command: string;
-}
-interface HookEntry {
-  matcher?: string;
-  hooks?: HookLeaf[];
-  type?: string;
-  command?: string;
-}
 interface Settings {
-  hooks?: Record<string, HookEntry[]>;
+  autoMemoryDirectory?: string;
   [key: string]: unknown;
-}
-
-/** Match our hook whether it is written flat or wrapped in a `hooks` array. */
-function entryHasCommand(entry: HookEntry, command: string): boolean {
-  if (entry.command?.includes(command)) {
-    return true;
-  }
-  return (entry.hooks ?? []).some((leaf) => leaf.command?.includes(command));
-}
-
-function buildEntry(command: string): HookEntry {
-  return { hooks: [{ type: "command", command }] };
 }
 
 async function readSettings(path: string): Promise<Settings> {
@@ -62,102 +40,53 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
 }
 
-function ruleContent(): string {
-  return `${MEMORY_PROTOCOL}`;
-}
-
-async function sessionStartInstalled(settingsPath: string): Promise<boolean> {
-  if (!existsSync(settingsPath)) {
-    return false;
-  }
-  const settings = await readSettings(settingsPath);
-  return (settings.hooks?.SessionStart ?? []).some((e) =>
-    entryHasCommand(e, HOOK_COMMAND)
-  );
-}
-
 export const claudeCodeAdapter: Adapter = {
   id: ID,
   title: TITLE,
 
   async link(ctx: AdapterContext): Promise<LinkResult> {
-    const actions: string[] = [];
-
-    const rulePath = join(ctx.projectRoot, RULE_REL);
-    await mkdir(dirname(rulePath), { recursive: true });
-    await writeFile(rulePath, ruleContent(), "utf-8");
-    actions.push(`wrote ${RULE_REL} (memory protocol)`);
-
     const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
     const settings = await readSettings(settingsPath);
-    settings.hooks ??= {};
-    const list = (settings.hooks.SessionStart ??= []);
-    if (list.some((e) => entryHasCommand(e, HOOK_COMMAND))) {
-      actions.push(`SessionStart hook already present in ${SETTINGS_REL}`);
-    } else {
-      list.push(buildEntry(HOOK_COMMAND));
-      actions.push(
-        `added SessionStart hook to ${SETTINGS_REL} (loads MEMORY.md each session)`
-      );
-    }
+    settings[DIR_KEY] = ctx.storeDir; // Claude requires an absolute path
     await writeJson(settingsPath, settings);
-    actions.push(
-      "note: the hook runs `memory session-start`, so the CLI must be on PATH"
-    );
-
-    return { agent: ID, title: TITLE, actions };
-  },
-
-  async unlink(ctx: AdapterContext): Promise<LinkResult> {
-    const actions: string[] = [];
-
-    const rulePath = join(ctx.projectRoot, RULE_REL);
-    if (existsSync(rulePath)) {
-      await rm(rulePath);
-      actions.push(`removed ${RULE_REL}`);
-    }
-
-    const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
-    if (existsSync(settingsPath)) {
-      const settings = await readSettings(settingsPath);
-      const list = settings.hooks?.SessionStart;
-      if (list) {
-        const kept = list.filter((e) => !entryHasCommand(e, HOOK_COMMAND));
-        if (kept.length !== list.length && settings.hooks) {
-          if (kept.length > 0) {
-            settings.hooks.SessionStart = kept;
-          } else {
-            delete settings.hooks.SessionStart;
-          }
-          await writeJson(settingsPath, settings);
-          actions.push(`removed SessionStart hook from ${SETTINGS_REL}`);
-        }
-      }
-    }
-
-    if (actions.length === 0) {
-      actions.push("nothing to remove");
-    }
-    return { agent: ID, title: TITLE, actions };
-  },
-
-  async status(ctx: AdapterContext): Promise<AgentStatus> {
-    const rulePresent = existsSync(join(ctx.projectRoot, RULE_REL));
-    const hookPresent = await sessionStartInstalled(
-      join(ctx.projectRoot, SETTINGS_REL)
-    );
     return {
       agent: ID,
       title: TITLE,
-      linked: rulePresent && hookPresent,
-      details: [
-        rulePresent
-          ? `protocol rule present (${RULE_REL})`
-          : "protocol rule missing",
-        hookPresent
-          ? "SessionStart hook installed"
-          : "SessionStart hook missing",
+      actions: [
+        `set ${DIR_KEY} → ${ctx.storeDir} in ${SETTINGS_REL}`,
+        "note: auto-memory is on by default; if disabled, re-enable it via /memory",
       ],
     };
+  },
+
+  async unlink(ctx: AdapterContext): Promise<LinkResult> {
+    const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
+    const settings = await readSettings(settingsPath);
+    if (settings[DIR_KEY] === undefined) {
+      return { agent: ID, title: TITLE, actions: ["nothing to remove"] };
+    }
+    delete settings.autoMemoryDirectory;
+    await writeJson(settingsPath, settings);
+    return {
+      agent: ID,
+      title: TITLE,
+      actions: [`removed ${DIR_KEY} from ${SETTINGS_REL}`],
+    };
+  },
+
+  async status(ctx: AdapterContext): Promise<AgentStatus> {
+    const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
+    const settings = await readSettings(settingsPath);
+    const current = settings[DIR_KEY];
+    const linked = current === ctx.storeDir;
+    let detail: string;
+    if (linked) {
+      detail = `${DIR_KEY} points at the store`;
+    } else if (current === undefined) {
+      detail = `${DIR_KEY} not set`;
+    } else {
+      detail = `${DIR_KEY} set elsewhere (${current})`;
+    }
+    return { agent: ID, title: TITLE, linked, details: [detail] };
   },
 };

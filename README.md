@@ -14,10 +14,13 @@ by any agent is visible to all of them.
 - **The index is derived.** Agents only ever write their own fact files;
   `memory reindex` regenerates `MEMORY.md`. No shared file is hand-edited, so
   concurrent agents never conflict over it.
-- **Each agent is wired to the store in its own native way** (`memory link`):
-  - **Claude Code** — a `.claude/rules/memory.md` rule (always loaded) plus a
-    `SessionStart` hook that injects the index into every session.
-  - **Codex CLI** — a memory block merged into the repo-root `AGENTS.md`.
+- **Each agent is wired to the store in its own native way** (`memory enable`):
+  - **Claude Code** (specific) — sets `autoMemoryDirectory` in
+    `.claude/settings.local.json` so Claude's *own* memory reads and writes the
+    shared store, no rule or hook needed.
+  - **AGENTS.md** (`agents`) — a memory-protocol block in the repo-root
+    `AGENTS.md`, the instruction file read by Codex, Cursor, Gemini CLI, Aider, and
+    others. Its text lives in `templates/memory-protocol.md` and is easy to edit.
 - **Two surfaces, one core:** a CLI for humans/scripts and setup, and an MCP
   server for agents that prefer tool calls.
 
@@ -25,24 +28,24 @@ by any agent is visible to all of them.
 
 ```bash
 bun install
-bun link          # puts `memory` (and `memory-mcp`) on your PATH
+bun link          # puts `memory` on your PATH
 ```
 
-The Claude Code `SessionStart` hook runs `memory session-start`, so `memory` must
-be on your PATH.
+Run `memory` from inside your project. The MCP registration below also expects
+`memory` on your PATH.
 
 ## Quickstart
 
 ```bash
 memory init                 # create .memory/ and gitignore it
-memory link --all           # wire up Claude Code + Codex CLI
+memory enable --all         # wire up Claude Code + the AGENTS.md agents
 memory add --type feedback --name uses-bun \
   --description "This project uses bun, not node" \
   --body "Use bun for scripts and tests."
-memory status               # show the store and which agents are linked
+memory status               # show the store and which agents are enabled
 ```
 
-Now any linked agent sees the memory. When an agent writes a fact file directly,
+Now any enabled agent sees the memory. When an agent writes a fact file directly,
 run `memory reindex` to refresh the index (or let the next `add`/MCP write do it).
 
 ## Commands
@@ -50,16 +53,21 @@ run `memory reindex` to refresh the index (or let the next `add`/MCP write do it
 | Command | Purpose |
 |---|---|
 | `memory init` | Create `.memory/` in the project and gitignore it |
-| `memory add --type <t> --name <n> --description <d> [--body <text>]` | Save a fact (body may be piped on stdin) |
+| `memory add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a fact; refuses an existing slug unless `--force` |
 | `memory list` | Print the memory index (`MEMORY.md`) |
+| `memory read <id>` | Print one fact by its id (slug) |
+| `memory edit <id>` | Open a fact in `$EDITOR`, reindex on save |
+| `memory delete <id>` | Remove a fact by its id (slug) |
 | `memory search <query>` | Find facts containing text |
 | `memory reindex` | Rebuild `MEMORY.md` from fact frontmatter |
-| `memory link <agent…> \| --all` | Wire an agent to the shared store |
-| `memory unlink <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
-| `memory status` | Show the store and per-agent link status |
-| `memory session-start` | Emit the Claude Code `SessionStart` hook payload |
+| `memory doctor` | Check the store: parse errors, dangling `[[links]]`, stale index |
+| `memory enable <agent…> \| --all` | Wire an agent to the shared store |
+| `memory disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
+| `memory status` | Show the store and per-agent status |
+| `memory path` | Print the store directory |
+| `memory mcp` | Run the MCP server over stdio |
 
-Agents: `claude-code`, `codex-cli`. Fact types: `user`, `feedback`, `project`, `reference`.
+Agents: `claude-code`, `agents`. Fact types: `user`, `feedback`, `project`, `reference`.
 
 ## Fact format
 
@@ -84,16 +92,16 @@ related facts with `[[other-slug]]`.
 
 ## MCP server
 
-For agents that call tools instead of reading files, `memory-mcp` exposes
-`memory_index`, `memory_search`, `memory_read`, `memory_write`, and
-`memory_remove` over stdio.
+For agents that call tools instead of reading files, `memory mcp` runs a stdio
+server exposing `memory_index`, `memory_search`, `memory_read`, `memory_write`,
+and `memory_remove`.
 
 Claude Code (`.mcp.json`):
 
 ```json
 {
   "mcpServers": {
-    "memory": { "type": "stdio", "command": "memory-mcp" }
+    "memory": { "type": "stdio", "command": "memory", "args": ["mcp"] }
   }
 }
 ```
@@ -101,7 +109,7 @@ Claude Code (`.mcp.json`):
 Codex CLI:
 
 ```bash
-codex mcp add memory -- memory-mcp
+codex mcp add memory -- memory mcp
 ```
 
 ## Development
@@ -116,6 +124,6 @@ driving `oxlint` + `oxfmt`.
 
 ## Not yet included
 
-Adapters beyond Claude Code and Codex CLI (Cursor, Gemini CLI, Aider, …), a global
-cross-project store, and semantic recall. The `Adapter` interface
-(`src/adapters/adapter.ts`) is the extension point for new agents.
+Agent-specific adapters for cases where `AGENTS.md` isn't enough (e.g. Cursor's
+own rules format), a global cross-project store, and semantic recall. The `Adapter`
+interface (`src/adapters/adapter.ts`) is the extension point for new agents.

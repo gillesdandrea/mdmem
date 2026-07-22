@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { MEMORY_PROTOCOL } from "../core/protocol.ts";
+import { getMemoryProtocol } from "../core/protocol.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -15,21 +15,25 @@ import {
   upsertMarkedBlock,
 } from "./util.ts";
 
-const ID = "codex-cli";
-const TITLE = "Codex CLI";
-// Codex merges AGENTS.md from repo root down to the cwd; the repo-root file is
-// loaded for every session, so the protocol lives there.
+const ID = "agents";
+const TITLE = "AGENTS.md";
+// AGENTS.md is the cross-agent instruction file read by Codex, Cursor, Gemini CLI,
+// Aider, and others — one block here reaches every agent that lacks native memory.
 const AGENTS_REL = "AGENTS.md";
 
-export const codexCliAdapter: Adapter = {
+export const agentsAdapter: Adapter = {
   id: ID,
   title: TITLE,
 
   async link(ctx: AdapterContext): Promise<LinkResult> {
     const path = join(ctx.projectRoot, AGENTS_REL);
     const current = existsSync(path) ? await readFile(path, "utf-8") : "";
-    await writeFile(path, upsertMarkedBlock(current, MEMORY_PROTOCOL), "utf-8");
     const verb = hasMarkedBlock(current) ? "updated" : "installed";
+    await writeFile(
+      path,
+      upsertMarkedBlock(current, getMemoryProtocol()),
+      "utf-8"
+    );
     return {
       agent: ID,
       title: TITLE,
@@ -67,11 +71,7 @@ export const codexCliAdapter: Adapter = {
       agent: ID,
       title: TITLE,
       linked,
-      details: [
-        linked
-          ? `memory protocol present in ${AGENTS_REL}`
-          : "memory protocol not installed",
-      ],
+      details: [linked ? "protocol block present" : "not installed"],
     };
   },
 };

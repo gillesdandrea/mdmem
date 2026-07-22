@@ -9,7 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { reindex } from "../src/core/index.ts";
 import { MemoryStore } from "../src/core/store.ts";
 
-const SERVER = join(import.meta.dir, "..", "src", "mcp", "server.ts");
+const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
 
 describe("mcp server", () => {
   test("write then index round-trips over stdio", async () => {
@@ -19,7 +19,7 @@ describe("mcp server", () => {
 
     const transport = new StdioClientTransport({
       command: "bun",
-      args: [SERVER],
+      args: [CLI, "mcp"],
       cwd: dir,
     });
     const client = new Client({ name: "test", version: "1.0.0" });

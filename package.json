@@ -5,8 +5,7 @@
   "type": "module",
   "bin": {
     "memory": "./src/cli/index.ts",
-    "mem": "./src/cli/index.ts",
-    "memory-mcp": "./src/mcp/server.ts"
+    "mem": "./src/cli/index.ts"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",

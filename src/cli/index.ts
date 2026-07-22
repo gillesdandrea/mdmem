@@ -13,8 +13,8 @@ import {
   parseFact,
   serializeFact,
 } from "../core/fact.ts";
-import type { MemoryType } from "../core/fact.ts";
-import { reindex } from "../core/index.ts";
+import type { Fact, MemoryType } from "../core/fact.ts";
+import { reindex, renderIndex } from "../core/index.ts";
 import {
   findProjectRoot,
   findStoreRoot,
@@ -94,7 +94,7 @@ async function cmdInit(): Promise<void> {
   if (ignored) {
     print(`Added ${STORE_DIR}/ to .gitignore`);
   }
-  print("Next: `memory link --all` to wire up your agents.");
+  print("Next: `memory enable --all` to wire up your agents.");
 }
 
 async function cmdAdd(args: string[]): Promise<void> {
@@ -105,6 +105,7 @@ async function cmdAdd(args: string[]): Promise<void> {
       name: { type: "string" },
       description: { type: "string" },
       body: { type: "string" },
+      force: { type: "boolean" },
     },
     allowPositionals: false,
   });
@@ -120,9 +121,9 @@ async function cmdAdd(args: string[]): Promise<void> {
 
   const { store } = resolveStore();
   const file = factFileName(name);
-  if (store.exists(file)) {
+  if (store.exists(file) && !values.force) {
     die(
-      `a fact named "${name}" already exists — edit ${file} or choose another name`
+      `a fact named "${name}" already exists — pass --force to overwrite, or \`memory delete ${name}\``
     );
   }
   const content = serializeFact({
@@ -148,6 +149,70 @@ async function cmdList(): Promise<void> {
     await reindex(store);
   }
   print(await store.view(INDEX_FILE));
+}
+
+async function cmdRead(args: string[]): Promise<void> {
+  const [id] = args;
+  if (!id) {
+    die("usage: memory read <id>");
+  }
+  const { store } = resolveStore();
+  const file = id.endsWith(".md") ? id : factFileName(id);
+  if (!store.exists(file)) {
+    die(`no fact "${id}" (looked for ${file})`);
+  }
+  print(await store.view(file));
+}
+
+async function cmdEdit(args: string[]): Promise<void> {
+  const [id] = args;
+  if (!id) {
+    die("usage: memory edit <id>");
+  }
+  const { store, storeDir } = resolveStore();
+  const file = id.endsWith(".md") ? id : factFileName(id);
+  if (!store.exists(file)) {
+    die(`no fact "${id}" (looked for ${file})`);
+  }
+  const fullPath = join(storeDir, file);
+  const editor = process.env.VISUAL ?? process.env.EDITOR;
+  if (!editor) {
+    print(fullPath); // no $EDITOR — print the path so it can be opened by hand
+    return;
+  }
+  const [cmd, ...editorArgs] = editor.split(" ");
+  const proc = Bun.spawnSync([cmd ?? editor, ...editorArgs, fullPath], {
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  if (proc.exitCode !== 0) {
+    die(`editor exited with code ${proc.exitCode}`);
+  }
+  try {
+    parseFact(await store.view(file));
+  } catch (error) {
+    die(
+      `edited fact is invalid, not reindexed — ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  await reindex(store);
+  print(`Saved ${file}`);
+}
+
+async function cmdDelete(args: string[]): Promise<void> {
+  const [id] = args;
+  if (!id) {
+    die("usage: memory delete <id>");
+  }
+  const { store } = resolveStore();
+  const file = id.endsWith(".md") ? id : factFileName(id);
+  if (!store.exists(file)) {
+    die(`no fact "${id}" (looked for ${file})`);
+  }
+  await store.remove(file);
+  await reindex(store);
+  print(`Deleted ${file}`);
 }
 
 async function cmdSearch(args: string[]): Promise<void> {
@@ -184,7 +249,10 @@ function resolveTargets(
   return positionals;
 }
 
-async function cmdLink(args: string[], mode: "link" | "unlink"): Promise<void> {
+async function cmdLink(
+  args: string[],
+  mode: "enable" | "disable"
+): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
     options: { all: { type: "boolean" } },
@@ -198,7 +266,7 @@ async function cmdLink(args: string[], mode: "link" | "unlink"): Promise<void> {
       die(`unknown agent "${id}". Known: ${adapterIds().join(", ")}`);
     }
     const result =
-      mode === "link" ? await adapter.link(ctx) : await adapter.unlink(ctx);
+      mode === "enable" ? await adapter.link(ctx) : await adapter.unlink(ctx);
     print(`${result.title}:`);
     for (const action of result.actions) {
       print(`  - ${action}`);
@@ -221,25 +289,69 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
-async function cmdSessionStart(): Promise<void> {
-  // Emitted by the Claude Code SessionStart hook: injects the memory index as
-  // additionalContext so a fresh session starts already aware of what is known.
-  const storeDir = findStoreRoot(process.cwd());
-  let index = "_No memory store found._";
-  if (storeDir) {
-    const store = new MemoryStore(storeDir);
-    if (store.exists(INDEX_FILE)) {
-      index = await store.view(INDEX_FILE);
+function wikilinkSlugs(body: string): string[] {
+  const slugs: string[] = [];
+  for (const match of body.matchAll(/\[\[(?<slug>[a-z0-9-]+)\]\]/gu)) {
+    const slug = match.groups?.slug;
+    if (slug) {
+      slugs.push(slug);
     }
   }
-  const preamble =
-    "Shared project memory (.memory/). Index follows; open a fact file for detail.\n\n";
-  const additionalContext = `${preamble}${index}`.slice(0, 24_000);
-  print(
-    JSON.stringify({
-      hookSpecificOutput: { hookEventName: "SessionStart", additionalContext },
-    })
+  return slugs;
+}
+
+async function cmdDoctor(): Promise<void> {
+  const { store } = resolveStore();
+  const files = await store.listFacts();
+  const problems: string[] = [];
+  const known = new Set<string>();
+  const parsed: { file: string; fact: Fact }[] = [];
+
+  for (const file of files) {
+    try {
+      const fact = parseFact(await store.view(file));
+      known.add(fact.frontmatter.name);
+      parsed.push({ file, fact });
+      if (factFileName(fact.frontmatter.name) !== file) {
+        problems.push(`${file}: name "${fact.frontmatter.name}" ≠ filename`);
+      }
+    } catch (error) {
+      problems.push(
+        `${file}: unparseable — ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  for (const { file, fact } of parsed) {
+    for (const slug of wikilinkSlugs(fact.body)) {
+      if (!known.has(slug)) {
+        problems.push(`${file}: dangling [[${slug}]]`);
+      }
+    }
+  }
+
+  const fresh = renderIndex(
+    parsed.map(({ file, fact }) => ({ file, frontmatter: fact.frontmatter }))
   );
+  const current = store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
+  if (current.trim() !== fresh.trim()) {
+    problems.push("MEMORY.md is stale — run `memory reindex`");
+  }
+
+  if (problems.length === 0) {
+    print(`✓ ${files.length} fact(s), no problems`);
+    return;
+  }
+  print(`Found ${problems.length} problem(s):`);
+  for (const problem of problems) {
+    print(`  - ${problem}`);
+  }
+  process.exit(1);
+}
+
+function cmdPath(): void {
+  const { storeDir } = resolveStore();
+  print(storeDir);
 }
 
 function usage(): void {
@@ -248,70 +360,66 @@ function usage(): void {
 Usage: memory <command> [options]
 
   init                      Create .memory/ in this project and gitignore it
-  add --type <t> --name <n> --description <d> [--body <text>]
-                            Save a fact (body may be piped on stdin)
+  add --type <t> --name <n> --description <d> [--body <text>] [--force]
+                            Save a fact (stdin body ok; --force overwrites a slug)
   list                      Print the memory index (MEMORY.md)
+  read <id>                 Print one fact by its id (slug)
+  edit <id>                 Open a fact in $EDITOR, reindex on save
+  delete <id>               Remove a fact by its id (slug)
   search <query>            Find facts containing text
   reindex                   Rebuild MEMORY.md from fact frontmatter
-  link <agent…> | --all     Wire an agent to the shared store
-  unlink <agent…> | --all   Remove an agent's wiring
-  status                    Show the store and which agents are linked
-  session-start             Emit the Claude SessionStart hook payload
+  doctor                    Check the store (parse errors, dangling links, stale index)
+  enable <agent…> | --all   Wire an agent to the shared store
+  disable <agent…> | --all  Remove an agent's wiring
+  status                    Show the store and which agents are enabled
+  path                      Print the store directory
+  mcp                       Run the MCP server over stdio (for agent tool-calls)
 
 Agents: ${adapterIds().join(", ")}
 Fact types: ${MEMORY_TYPES.join(", ")}`);
 }
 
+const runMcp = async (): Promise<void> => {
+  // Dynamic import so normal CLI commands never pay the MCP SDK load cost.
+  const { startMcpServer } = await import("../mcp/server.ts");
+  await startMcpServer();
+};
+
+const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
+  init: () => cmdInit(),
+  add: (args) => cmdAdd(args),
+  list: () => cmdList(),
+  read: (args) => cmdRead(args),
+  edit: (args) => cmdEdit(args),
+  delete: (args) => cmdDelete(args),
+  rm: (args) => cmdDelete(args),
+  search: (args) => cmdSearch(args),
+  reindex: () => cmdReindex(),
+  doctor: () => cmdDoctor(),
+  enable: (args) => cmdLink(args, "enable"),
+  disable: (args) => cmdLink(args, "disable"),
+  status: () => cmdStatus(),
+  path: () => cmdPath(),
+  mcp: runMcp,
+  "--mcp": runMcp,
+};
+
 async function main(): Promise<void> {
   const [command, ...args] = process.argv.slice(2);
-  switch (command) {
-    case "init": {
-      await cmdInit();
-      break;
-    }
-    case "add": {
-      await cmdAdd(args);
-      break;
-    }
-    case "list": {
-      await cmdList();
-      break;
-    }
-    case "search": {
-      await cmdSearch(args);
-      break;
-    }
-    case "reindex": {
-      await cmdReindex();
-      break;
-    }
-    case "link": {
-      await cmdLink(args, "link");
-      break;
-    }
-    case "unlink": {
-      await cmdLink(args, "unlink");
-      break;
-    }
-    case "status": {
-      await cmdStatus();
-      break;
-    }
-    case "session-start": {
-      await cmdSessionStart();
-      break;
-    }
-    case undefined:
-    case "help":
-    case "--help":
-    case "-h": {
-      usage();
-      break;
-    }
-    default: {
-      die(`unknown command "${command}". Run \`memory help\`.`);
-    }
+  if (
+    command === undefined ||
+    command === "help" ||
+    command === "--help" ||
+    command === "-h"
+  ) {
+    usage();
+    return;
   }
+  const handler = COMMANDS[command];
+  if (!handler) {
+    die(`unknown command "${command}". Run \`memory help\`.`);
+  }
+  await handler(args);
 }
 
 await main();
