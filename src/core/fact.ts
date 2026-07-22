@@ -55,3 +55,8 @@ export function serializeFact(fact: Fact): string {
 export function factFileName(name: string): string {
   return `${name}.md`;
 }
+
+/** Resolve a user-supplied id — a bare slug or a `<slug>.md` file name — to a file name. */
+export function factFileFor(id: string): string {
+  return id.endsWith(".md") ? id : factFileName(id);
+}

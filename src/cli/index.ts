@@ -8,13 +8,19 @@ import { parseArgs } from "node:util";
 import type { AdapterContext } from "../adapters/index.ts";
 import { adapterIds, getAdapter, listAdapters } from "../adapters/index.ts";
 import {
+  factFileFor,
   factFileName,
   MEMORY_TYPES,
   parseFact,
-  serializeFact,
 } from "../core/fact.ts";
 import type { Fact, MemoryType } from "../core/fact.ts";
 import { reindex, renderIndex } from "../core/index.ts";
+import {
+  readIndex,
+  removeFact,
+  saveFact,
+  searchFacts,
+} from "../core/operations.ts";
 import {
   findProjectRoot,
   findStoreRoot,
@@ -120,20 +126,17 @@ async function cmdAdd(args: string[]): Promise<void> {
   }
 
   const { store } = resolveStore();
-  const file = factFileName(name);
-  if (store.exists(file) && !values.force) {
+  if (store.exists(factFileName(name)) && !values.force) {
     die(
       `a fact named "${name}" already exists — pass --force to overwrite, or \`memory delete ${name}\``
     );
   }
-  const content = serializeFact({
-    frontmatter: { name, description, metadata: { type: values.type } },
+  const file = await saveFact(store, {
+    name,
+    description,
+    type: values.type,
     body: body.trim(),
   });
-  // Parse-validate before writing so a malformed fact never lands in the store.
-  parseFact(content);
-  await store.create(file, content);
-  await reindex(store);
   print(`Saved ${file}`);
 }
 
@@ -145,10 +148,7 @@ async function cmdReindex(): Promise<void> {
 
 async function cmdList(): Promise<void> {
   const { store } = resolveStore();
-  if (!store.exists(INDEX_FILE)) {
-    await reindex(store);
-  }
-  print(await store.view(INDEX_FILE));
+  print(await readIndex(store));
 }
 
 async function cmdRead(args: string[]): Promise<void> {
@@ -157,7 +157,7 @@ async function cmdRead(args: string[]): Promise<void> {
     die("usage: memory read <id>");
   }
   const { store } = resolveStore();
-  const file = id.endsWith(".md") ? id : factFileName(id);
+  const file = factFileFor(id);
   if (!store.exists(file)) {
     die(`no fact "${id}" (looked for ${file})`);
   }
@@ -170,7 +170,7 @@ async function cmdEdit(args: string[]): Promise<void> {
     die("usage: memory edit <id>");
   }
   const { store, storeDir } = resolveStore();
-  const file = id.endsWith(".md") ? id : factFileName(id);
+  const file = factFileFor(id);
   if (!store.exists(file)) {
     die(`no fact "${id}" (looked for ${file})`);
   }
@@ -206,12 +206,10 @@ async function cmdDelete(args: string[]): Promise<void> {
     die("usage: memory delete <id>");
   }
   const { store } = resolveStore();
-  const file = id.endsWith(".md") ? id : factFileName(id);
-  if (!store.exists(file)) {
-    die(`no fact "${id}" (looked for ${file})`);
+  const file = await removeFact(store, id);
+  if (!file) {
+    die(`no fact "${id}" (looked for ${factFileFor(id)})`);
   }
-  await store.remove(file);
-  await reindex(store);
   print(`Deleted ${file}`);
 }
 
@@ -221,18 +219,13 @@ async function cmdSearch(args: string[]): Promise<void> {
     die("usage: memory search <query>");
   }
   const { store } = resolveStore();
-  const needle = query.toLowerCase();
-  let hits = 0;
-  for (const file of await store.listFacts()) {
-    const raw = await store.view(file);
-    if (raw.toLowerCase().includes(needle)) {
-      const { frontmatter } = parseFact(raw);
-      print(`${file} — ${frontmatter.description}`);
-      hits += 1;
-    }
-  }
-  if (hits === 0) {
+  const hits = await searchFacts(store, query);
+  if (hits.length === 0) {
     print(`No facts matching "${query}".`);
+    return;
+  }
+  for (const hit of hits) {
+    print(`${hit.file} — ${hit.description}`);
   }
 }
 
@@ -361,14 +354,14 @@ Usage: memory <command> [options]
 
   init                      Create .memory/ in this project and gitignore it
   add --type <t> --name <n> --description <d> [--body <text>] [--force]
-                            Save a fact (stdin body ok; --force overwrites a slug)
+                            Save a fact (body may be piped via stdin; --force overwrites a slug)
   list                      Print the memory index (MEMORY.md)
-  read <id>                 Print one fact by its id (slug)
-  edit <id>                 Open a fact in $EDITOR, reindex on save
-  delete <id>               Remove a fact by its id (slug)
+  read <id>                 Print one fact by its id (slug or <slug>.md)
+  edit <id>                 Open a fact in $VISUAL/$EDITOR, reindex on save
+  delete | rm <id>          Remove a fact by its id (slug or <slug>.md)
   search <query>            Find facts containing text
   reindex                   Rebuild MEMORY.md from fact frontmatter
-  doctor                    Check the store (parse errors, dangling links, stale index)
+  doctor                    Check the store (parse errors, name≠filename, dangling links, stale index)
   enable <agent…> | --all   Wire an agent to the shared store
   disable <agent…> | --all  Remove an agent's wiring
   status                    Show the store and which agents are enabled
@@ -401,7 +394,6 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   status: () => cmdStatus(),
   path: () => cmdPath(),
   mcp: runMcp,
-  "--mcp": runMcp,
 };
 
 async function main(): Promise<void> {

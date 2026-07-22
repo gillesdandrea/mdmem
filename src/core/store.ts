@@ -4,7 +4,6 @@ import {
   mkdir,
   readdir,
   readFile,
-  rename as fsRename,
   rm,
   stat,
   writeFile,
@@ -12,10 +11,13 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 
 /**
- * MemoryStore is the six-op filesystem behind a `.memory/` directory. It holds
- * no policy — no notion of what a fact should contain, when to save, or what to
- * exclude. It only reads and writes files, with an optional version guard so
- * concurrent writers can detect a lost update.
+ * MemoryStore is the filesystem behind a `.memory/` directory, reproducing the
+ * Anthropic text-editor/memory tool surface (create, view, str_replace, insert,
+ * remove) as the store's public API. It holds no policy — no notion of what a
+ * fact should contain, when to save, or what to exclude; it only reads and writes
+ * files. Its optional version guard lets a writer detect a lost update on a
+ * fact-file read-modify-write (the MCP write path uses it); the derived index
+ * stays off the concurrent-write path entirely (see ./index.ts).
  */
 
 export const STORE_DIR = ".memory";
@@ -127,12 +129,6 @@ export class MemoryStore {
   async remove(path: string, ifVersion?: string): Promise<void> {
     await this.assertVersion(path, ifVersion);
     await rm(this.full(path));
-  }
-
-  async rename(from: string, to: string): Promise<void> {
-    const target = this.full(to);
-    await mkdir(dirname(target), { recursive: true });
-    await fsRename(this.full(from), target);
   }
 
   /** Top-level fact files: every `*.md` except the generated index. */

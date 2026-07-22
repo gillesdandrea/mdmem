@@ -3,19 +3,19 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+import { factFileFor, MEMORY_TYPES } from "../core/fact.ts";
 import {
-  factFileName,
-  MEMORY_TYPES,
-  parseFact,
-  serializeFact,
-} from "../core/fact.ts";
-import { reindex } from "../core/index.ts";
-import { findStoreRoot, INDEX_FILE, MemoryStore } from "../core/store.ts";
+  readIndex,
+  removeFact,
+  saveFact,
+  searchFacts,
+} from "../core/operations.ts";
+import { findStoreRoot, MemoryStore, versionOf } from "../core/store.ts";
 
 /**
  * MCP surface over the shared `.memory/` store, for agents that would rather call
- * tools than read files. It exposes ergonomic fact-level operations (the CLI keeps
- * the raw six-op filesystem); writes reindex automatically so the index stays fresh.
+ * tools than read files. It exposes ergonomic fact-level operations (shared with the
+ * CLI via ../core/operations); writes reindex automatically so the index stays fresh.
  */
 
 function text(body: string): CallToolResult {
@@ -61,13 +61,7 @@ export async function startMcpServer(): Promise<void> {
         "Return the project's memory index (MEMORY.md): one line per stored fact. Read this first to recall what is already known.",
       inputSchema: {},
     },
-    () =>
-      withStore(async (store) => {
-        if (!store.exists(INDEX_FILE)) {
-          await reindex(store);
-        }
-        return text(await store.view(INDEX_FILE));
-      })
+    () => withStore(async (store) => text(await readIndex(store)))
   );
 
   server.registerTool(
@@ -75,21 +69,16 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Search memory",
       description:
-        "Find facts whose name, description, or body contains the query text.",
+        "Find facts whose text (name, description, or body) contains the query anywhere.",
       inputSchema: { query: z.string().describe("Text to search for") },
     },
     ({ query }) =>
       withStore(async (store) => {
-        const needle = query.toLowerCase();
-        const lines: string[] = [];
-        for (const file of await store.listFacts()) {
-          const raw = await store.view(file);
-          if (raw.toLowerCase().includes(needle)) {
-            lines.push(`${file} — ${parseFact(raw).frontmatter.description}`);
-          }
-        }
+        const hits = await searchFacts(store, query);
         return text(
-          lines.length > 0 ? lines.join("\n") : `No facts matching "${query}".`
+          hits.length > 0
+            ? hits.map((h) => `${h.file} — ${h.description}`).join("\n")
+            : `No facts matching "${query}".`
         );
       })
   );
@@ -98,12 +87,25 @@ export async function startMcpServer(): Promise<void> {
     "memory_read",
     {
       title: "Read a fact",
-      description: "Return the full content of one fact file.",
+      description:
+        "Return one fact's full content, plus its current version. Pass that version back to memory_write's `ifVersion` to make a safe read-modify-write that won't clobber a concurrent change.",
       inputSchema: {
-        path: z.string().describe("Fact file name, e.g. prefers-bun.md"),
+        path: z
+          .string()
+          .describe(
+            "Fact slug or file name, e.g. prefers-bun or prefers-bun.md"
+          ),
       },
+      outputSchema: { version: z.string() },
     },
-    ({ path }) => withStore(async (store) => text(await store.view(path)))
+    ({ path }) =>
+      withStore(async (store) => {
+        const content = await store.view(factFileFor(path));
+        return {
+          content: [{ type: "text", text: content }],
+          structuredContent: { version: versionOf(content) },
+        };
+      })
   );
 
   server.registerTool(
@@ -111,7 +113,7 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Write a fact",
       description:
-        "Create or overwrite a fact and refresh the index. Use kebab-case names. For feedback/project facts, include **Why:** and **How to apply:** lines in the body.",
+        "Create or overwrite a fact and refresh the index. Use kebab-case names. For feedback/project facts, include **Why:** and **How to apply:** lines in the body. Pass `ifVersion` (from memory_read) to reject the write if the fact changed since you read it.",
       inputSchema: {
         name: z.string().describe("kebab-case slug; also the filename"),
         description: z.string().describe("one-line summary shown in the index"),
@@ -119,18 +121,22 @@ export async function startMcpServer(): Promise<void> {
           .enum(MEMORY_TYPES)
           .describe("user | feedback | project | reference"),
         body: z.string().describe("the fact"),
+        ifVersion: z
+          .string()
+          .optional()
+          .describe(
+            "version from a prior memory_read; the write is rejected if the fact changed since"
+          ),
       },
     },
-    ({ name, description, type, body }) =>
+    ({ name, description, type, body, ifVersion }) =>
       withStore(async (store) => {
-        const content = serializeFact({
-          frontmatter: { name, description, metadata: { type } },
-          body,
-        });
-        parseFact(content); // validate before writing
-        await store.create(factFileName(name), content);
-        await reindex(store);
-        return text(`Saved ${factFileName(name)}`);
+        const file = await saveFact(
+          store,
+          { name, description, type, body },
+          { ifVersion }
+        );
+        return text(`Saved ${file}`);
       })
   );
 
@@ -145,13 +151,8 @@ export async function startMcpServer(): Promise<void> {
     },
     ({ name }) =>
       withStore(async (store) => {
-        const file = factFileName(name);
-        if (!store.exists(file)) {
-          return text(`No fact named "${name}".`);
-        }
-        await store.remove(file);
-        await reindex(store);
-        return text(`Removed ${file}`);
+        const file = await removeFact(store, name);
+        return text(file ? `Removed ${file}` : `No fact named "${name}".`);
       })
   );
 

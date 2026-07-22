@@ -31,7 +31,7 @@ by any agent is visible to all of them.
 
 ```bash
 bun install
-bun link          # puts `memory` on your PATH
+bun link          # puts `memory` (and the `mem` alias) on your PATH
 ```
 
 Run `memory` from inside your project. The MCP registration below also expects
@@ -56,14 +56,14 @@ run `memory reindex` to refresh the index (or let the next `add`/MCP write do it
 | Command | Purpose |
 |---|---|
 | `memory init` | Create `.memory/` in the project and gitignore it |
-| `memory add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a fact; refuses an existing slug unless `--force` |
+| `memory add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a fact; refuses an existing slug unless `--force`. Body may also be piped via stdin. |
 | `memory list` | Print the memory index (`MEMORY.md`) |
-| `memory read <id>` | Print one fact by its id (slug) |
-| `memory edit <id>` | Open a fact in `$EDITOR`, reindex on save |
-| `memory delete <id>` | Remove a fact by its id (slug) |
+| `memory read <id>` | Print one fact by its id (slug or `<slug>.md`) |
+| `memory edit <id>` | Open a fact in `$VISUAL`/`$EDITOR`, reindex on save |
+| `memory delete` (alias `rm`) `<id>` | Remove a fact by its id (slug or `<slug>.md`) |
 | `memory search <query>` | Find facts containing text |
 | `memory reindex` | Rebuild `MEMORY.md` from fact frontmatter |
-| `memory doctor` | Check the store: parse errors, dangling `[[links]]`, stale index |
+| `memory doctor` | Check the store: parse errors, name≠filename, dangling `[[links]]`, stale index |
 | `memory enable <agent…> \| --all` | Wire an agent to the shared store |
 | `memory disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
 | `memory status` | Show the store and per-agent status |
@@ -71,6 +71,9 @@ run `memory reindex` to refresh the index (or let the next `add`/MCP write do it
 | `memory mcp` | Run the MCP server over stdio |
 
 Agents: `claude-code`, `agents`, `bob`, `cursor`. Fact types: `user`, `feedback`, `project`, `reference`.
+
+With no `$VISUAL`/`$EDITOR` set, `memory edit` prints the fact's path instead of
+opening it — edit it by hand, then run `memory reindex`.
 
 ## Fact format
 
@@ -97,7 +100,9 @@ related facts with `[[other-slug]]`.
 
 For agents that call tools instead of reading files, `memory mcp` runs a stdio
 server exposing `memory_index`, `memory_search`, `memory_read`, `memory_write`,
-and `memory_remove`.
+and `memory_remove`. `memory_read` also returns each fact's current version; pass
+it back as `memory_write`'s `ifVersion` for a safe read-modify-write that rejects a
+clobbered concurrent change.
 
 Claude Code (`.mcp.json`):
 

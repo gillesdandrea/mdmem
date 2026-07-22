@@ -32,7 +32,12 @@ async function readSettings(path: string): Promise<Settings> {
     return {};
   }
   const parsed: unknown = JSON.parse(raw);
-  return (parsed ?? {}) as Settings;
+  // A settings file that isn't a JSON object (e.g. `42` or `null`) is treated as
+  // empty rather than trusted — we only ever read/write string-keyed settings.
+  if (typeof parsed !== "object" || parsed === null) {
+    return {};
+  }
+  return parsed as Settings;
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
