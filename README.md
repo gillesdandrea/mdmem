@@ -135,3 +135,7 @@ driving `oxlint` + `oxfmt`.
 Agent-specific adapters for cases where `AGENTS.md` isn't enough (e.g. Cursor's
 own rules format), a global cross-project store, and semantic recall. The `Adapter`
 interface (`src/adapters/adapter.ts`) is the extension point for new agents.
+
+## License
+
+[MIT](LICENSE) © Gilles d'Andrea

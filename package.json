@@ -3,6 +3,29 @@
   "version": "0.1.0",
   "description": "Shared, Claude-style file-based memory for any coding agent",
   "type": "module",
+  "license": "MIT",
+  "author": {
+    "name": "Gilles d'Andrea",
+    "url": "https://x.com/gillesdandrea"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gillesdandrea/memory-cli.git"
+  },
+  "homepage": "https://github.com/gillesdandrea/memory-cli#readme",
+  "bugs": {
+    "url": "https://github.com/gillesdandrea/memory-cli/issues"
+  },
+  "keywords": [
+    "memory",
+    "cli",
+    "mcp",
+    "coding-agent",
+    "claude-code",
+    "agents-md",
+    "cursor",
+    "bun"
+  ],
   "bin": {
     "memory": "./src/cli/index.ts",
     "mem": "./src/cli/index.ts"
