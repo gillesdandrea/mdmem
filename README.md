@@ -21,6 +21,7 @@ by any agent is visible to all of them.
   - **AGENTS.md** (`agents`) — a memory-protocol block in the repo-root
     `AGENTS.md`, the instruction file read by Codex, Cursor, Gemini CLI, Aider, and
     others. Its text lives in `templates/memory-protocol.md` and is easy to edit.
+  - **IBM Bob** (`bob`) — writes that same protocol to `.bob/rules/memory.md`.
 - **Two surfaces, one core:** a CLI for humans/scripts and setup, and an MCP
   server for agents that prefer tool calls.
 
@@ -67,7 +68,7 @@ run `memory reindex` to refresh the index (or let the next `add`/MCP write do it
 | `memory path` | Print the store directory |
 | `memory mcp` | Run the MCP server over stdio |
 
-Agents: `claude-code`, `agents`. Fact types: `user`, `feedback`, `project`, `reference`.
+Agents: `claude-code`, `agents`, `bob`. Fact types: `user`, `feedback`, `project`, `reference`.
 
 ## Fact format
 

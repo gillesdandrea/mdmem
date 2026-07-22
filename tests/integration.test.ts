@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { agentsAdapter } from "../src/adapters/agents.ts";
+import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import type { AdapterContext } from "../src/adapters/index.ts";
 import { serializeFact } from "../src/core/fact.ts";
@@ -146,6 +147,24 @@ describe("tracer bullet: shared memory across agents", () => {
       expect(
         (after as { autoMemoryDirectory?: string }).autoMemoryDirectory
       ).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("bob adapter installs and removes .bob/rules/memory.md", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      await bobAdapter.link(ctx);
+      const rule = await readFile(join(root, ".bob/rules/memory.md"), "utf-8");
+      expect(rule).toContain("Memory protocol");
+      const linkedStatus = await bobAdapter.status(ctx);
+      expect(linkedStatus.linked).toBe(true);
+
+      await bobAdapter.unlink(ctx);
+      expect(existsSync(join(root, ".bob/rules/memory.md"))).toBe(false);
+      const unlinkedStatus = await bobAdapter.status(ctx);
+      expect(unlinkedStatus.linked).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

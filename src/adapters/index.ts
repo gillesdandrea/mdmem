@@ -1,8 +1,13 @@
 import type { Adapter } from "./adapter.ts";
 import { agentsAdapter } from "./agents.ts";
+import { bobAdapter } from "./bob.ts";
 import { claudeCodeAdapter } from "./claude-code.ts";
 
-const REGISTRY: readonly Adapter[] = [claudeCodeAdapter, agentsAdapter];
+const REGISTRY: readonly Adapter[] = [
+  claudeCodeAdapter,
+  agentsAdapter,
+  bobAdapter,
+];
 
 export function listAdapters(): readonly Adapter[] {
   return REGISTRY;
