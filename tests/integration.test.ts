@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { agentsAdapter } from "../src/adapters/agents.ts";
 import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
+import { cursorAdapter } from "../src/adapters/cursor.ts";
 import type { AdapterContext } from "../src/adapters/index.ts";
 import { serializeFact } from "../src/core/fact.ts";
 import { reindex } from "../src/core/index.ts";
@@ -165,6 +166,26 @@ describe("tracer bullet: shared memory across agents", () => {
       expect(existsSync(join(root, ".bob/rules/memory.md"))).toBe(false);
       const unlinkedStatus = await bobAdapter.status(ctx);
       expect(unlinkedStatus.linked).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("cursor adapter installs .cursor/rules/memory.mdc with always-apply frontmatter", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      await cursorAdapter.link(ctx);
+      const rule = await readFile(
+        join(root, ".cursor/rules/memory.mdc"),
+        "utf-8"
+      );
+      expect(rule).toContain("alwaysApply: true");
+      expect(rule).toContain("Memory protocol");
+      const linkedStatus = await cursorAdapter.status(ctx);
+      expect(linkedStatus.linked).toBe(true);
+
+      await cursorAdapter.unlink(ctx);
+      expect(existsSync(join(root, ".cursor/rules/memory.mdc"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
