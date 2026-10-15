@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "mdmem",
+  "project_id": "127a3dc2-526f-4a5e-a995-4d6d0978a1be"
+}
