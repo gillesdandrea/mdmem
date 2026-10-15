@@ -1,5 +1,5 @@
 import type { Frontmatter, MemoryType } from "./fact.ts";
-import { MEMORY_TYPES, parseFact } from "./fact.ts";
+import { MEMORY_TYPES, parseFactFile } from "./fact.ts";
 import { INDEX_FILE } from "./store.ts";
 import type { MemoryStore } from "./store.ts";
 
@@ -61,7 +61,7 @@ export async function reindex(store: MemoryStore): Promise<string> {
   );
   const entries: IndexEntry[] = raws.map(({ file, raw }) => ({
     file,
-    frontmatter: parseFact(raw).frontmatter,
+    frontmatter: parseFactFile(file, raw).frontmatter,
   }));
   const content = renderIndex(entries);
   await store.create(INDEX_FILE, content);

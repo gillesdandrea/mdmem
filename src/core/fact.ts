@@ -42,9 +42,32 @@ export function parseFact(raw: string): Fact {
     throw new Error("Fact file is missing YAML frontmatter delimited by `---`");
   }
   const data: unknown = parseYaml(match.groups?.yaml ?? "");
-  const frontmatter = frontmatterSchema.parse(data);
+  const result = frontmatterSchema.safeParse(data);
+  if (!result.success) {
+    // One line per problem, not zod's JSON dump: this text reaches users.
+    throw new Error(
+      result.error.issues
+        .map(
+          (issue) =>
+            `${issue.path.join(".") || "frontmatter"}: ${issue.message}`
+        )
+        .join("; ")
+    );
+  }
   const body = raw.slice(match[0].length).trim();
-  return { frontmatter, body };
+  return { frontmatter: result.data, body };
+}
+
+/** `parseFact` for a stored file: a failure names the file, so the reader knows which fact to fix. */
+export function parseFactFile(file: string, raw: string): Fact {
+  try {
+    return parseFact(raw);
+  } catch (error) {
+    throw new Error(
+      `${file}: unparseable — ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error }
+    );
+  }
 }
 
 export function serializeFact(fact: Fact): string {

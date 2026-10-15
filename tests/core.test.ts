@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { parseFact, serializeFact } from "../src/core/fact.ts";
 import type { Fact } from "../src/core/fact.ts";
 import { reindex, renderIndex } from "../src/core/index.ts";
+import { saveFact } from "../src/core/operations.ts";
 import {
   findProjectRoot,
   findStoreRoot,
@@ -26,6 +27,21 @@ describe("fact", () => {
   test("round-trips through serialize/parse", () => {
     const parsed = parseFact(serializeFact(sampleFact));
     expect(parsed).toEqual(sampleFact);
+  });
+
+  test("saveFact writes frontmatter in semantic order — name, description, then type", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "memcli-"));
+    const store = new MemoryStore(dir);
+    await saveFact(store, {
+      name: "prefers-bun",
+      description: "Uses bun",
+      type: "feedback",
+      body: "Use bun.",
+    });
+    expect(await store.view("prefers-bun.md")).toStartWith(
+      "---\nname: prefers-bun\ndescription: Uses bun\nmetadata:\n  type: feedback\n---\n"
+    );
+    await rm(dir, { recursive: true, force: true });
   });
 
   test("rejects a file with no frontmatter", () => {
@@ -118,6 +134,17 @@ describe("index", () => {
 
   test("empty store renders a placeholder, not an empty file", () => {
     expect(renderIndex([])).toContain("_No memories yet._");
+  });
+
+  test("reindex names a broken fact and its problem in one line", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "memcli-"));
+    const store = new MemoryStore(dir);
+    const bad = serializeFact(sampleFact).replace("prefers-bun", "Prefers Bun");
+    await store.create("prefers-bun.md", bad);
+    await expect(reindex(store)).rejects.toThrow(
+      /^prefers-bun\.md: unparseable — name: name must be kebab-case/u
+    );
+    await rm(dir, { recursive: true, force: true });
   });
 
   test("reindex writes MEMORY.md derived from fact frontmatter", async () => {

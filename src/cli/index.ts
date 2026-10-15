@@ -12,6 +12,7 @@ import {
   factFileName,
   MEMORY_TYPES,
   parseFact,
+  parseFactFile,
 } from "../core/fact.ts";
 import type { Fact, MemoryType } from "../core/fact.ts";
 import { reindex, renderIndex } from "../core/index.ts";
@@ -308,16 +309,14 @@ async function cmdDoctor(): Promise<void> {
   for (const file of files) {
     try {
       // oxlint-disable-next-line no-await-in-loop -- the read sits inside the per-file try so a failed read is reported as a problem, not thrown
-      const fact = parseFact(await store.view(file));
+      const fact = parseFactFile(file, await store.view(file));
       known.add(fact.frontmatter.name);
       parsed.push({ file, fact });
       if (factFileName(fact.frontmatter.name) !== file) {
         problems.push(`${file}: name "${fact.frontmatter.name}" ≠ filename`);
       }
     } catch (error) {
-      problems.push(
-        `${file}: unparseable — ${error instanceof Error ? error.message : String(error)}`
-      );
+      problems.push(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -417,7 +416,12 @@ async function main(): Promise<void> {
   if (!handler) {
     die(`unknown command "${command}". Run \`mdmem help\`.`);
   }
-  await handler(args);
+  try {
+    await handler(args);
+  } catch (error) {
+    // Expected failures (a broken fact, a version conflict) end as one line, not a stack trace.
+    die(error instanceof Error ? error.message : String(error));
+  }
 }
 
 await main();

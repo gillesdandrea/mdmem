@@ -291,6 +291,14 @@ describe("cli", () => {
       const del = run("delete", "uses-bun");
       expect(del.code).toBe(0);
       expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(false);
+
+      // a broken fact ends the command with one line, not a stack trace
+      await writeFile(join(root, ".memory/broken.md"), "no frontmatter\n");
+      const search = run("search", "frontmatter");
+      expect(search.code).toBe(1);
+      expect(search.err).toBe(
+        "mdmem: broken.md: unparseable — Fact file is missing YAML frontmatter delimited by `---`\n"
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }

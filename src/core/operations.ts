@@ -1,5 +1,11 @@
 import type { MemoryType } from "./fact.ts";
-import { factFileFor, factFileName, parseFact, serializeFact } from "./fact.ts";
+import {
+  factFileFor,
+  factFileName,
+  parseFact,
+  parseFactFile,
+  serializeFact,
+} from "./fact.ts";
 import { reindex } from "./index.ts";
 import { INDEX_FILE } from "./store.ts";
 import type { MemoryStore } from "./store.ts";
@@ -61,7 +67,10 @@ export async function searchFacts(
   const hits: SearchHit[] = [];
   for (const { file, raw } of raws) {
     if (raw.toLowerCase().includes(needle)) {
-      hits.push({ file, description: parseFact(raw).frontmatter.description });
+      hits.push({
+        file,
+        description: parseFactFile(file, raw).frontmatter.description,
+      });
     }
   }
   return hits;

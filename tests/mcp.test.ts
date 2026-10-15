@@ -31,6 +31,15 @@ describe("mcp server", () => {
       const names = tools.tools.map((t) => t.name);
       expect(names).toContain("memory_write");
       expect(names).toContain("memory_index");
+      // Agents read the schema in this order; toEqual on objects would not catch a reorder.
+      const writeTool = tools.tools.find((t) => t.name === "memory_write");
+      expect(Object.keys(writeTool?.inputSchema.properties ?? {})).toEqual([
+        "name",
+        "description",
+        "type",
+        "body",
+        "ifVersion",
+      ]);
 
       const write = await client.callTool({
         name: "memory_write",
