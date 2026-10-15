@@ -74,3 +74,7 @@ _Avoid_: retrieval, lookup
 **Save**:
 Writing a new memory, or updating an existing one in place of a duplicate.
 _Avoid_: record, remember
+
+**Consolidation**:
+A reflective pass over a memory store's memories that merges, corrects and prunes them. Claude Code calls one such pass a *dream*.
+_Avoid_: cleanup, compaction
