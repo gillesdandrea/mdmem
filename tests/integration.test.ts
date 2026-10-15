@@ -299,6 +299,29 @@ describe("cli", () => {
       expect(search.err).toBe(
         "mdmem: broken.md: unparseable — Fact file is missing YAML frontmatter delimited by `---`\n"
       );
+
+      // a broken fact elsewhere doesn't make a write that landed read as failed
+      const staleWarning =
+        "mdmem: warning: MEMORY.md is stale: broken.md: unparseable — Fact file is missing YAML frontmatter delimited by `---` (run `mdmem doctor`)\n";
+      const keep = run(
+        "add",
+        "--type",
+        "user",
+        "--name",
+        "keep",
+        "--description",
+        "k",
+        "--body",
+        "k"
+      );
+      expect(keep.code).toBe(0);
+      expect(keep.out).toBe("Saved keep.md\n");
+      expect(keep.err).toBe(staleWarning);
+      const dropKeep = run("delete", "keep");
+      expect(dropKeep.code).toBe(0);
+      expect(dropKeep.out).toBe("Deleted keep.md\n");
+      expect(dropKeep.err).toBe(staleWarning);
+      expect(existsSync(join(root, ".memory/keep.md"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

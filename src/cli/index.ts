@@ -21,7 +21,9 @@ import {
   removeFact,
   saveFact,
   searchFacts,
+  staleIndexWarning,
 } from "../core/operations.ts";
+import type { WriteResult } from "../core/operations.ts";
 import {
   findProjectRoot,
   findStoreRoot,
@@ -32,6 +34,14 @@ import {
 
 function print(msg = ""): void {
   process.stdout.write(`${msg}\n`);
+}
+
+/** The write landed, so say so; a stale index is a warning, not a failure. */
+function reportWrite(verb: string, { file, indexError }: WriteResult): void {
+  print(`${verb} ${file}`);
+  if (indexError !== undefined) {
+    process.stderr.write(`mdmem: warning: ${staleIndexWarning(indexError)}\n`);
+  }
 }
 
 function die(msg: string): never {
@@ -132,13 +142,13 @@ async function cmdAdd(args: string[]): Promise<void> {
       `a fact named "${name}" already exists — pass --force to overwrite, or \`mdmem delete ${name}\``
     );
   }
-  const file = await saveFact(store, {
+  const result = await saveFact(store, {
     name,
     description,
     type: values.type,
     body: body.trim(),
   });
-  print(`Saved ${file}`);
+  reportWrite("Saved", result);
 }
 
 async function cmdReindex(): Promise<void> {
@@ -208,11 +218,11 @@ async function cmdDelete(args: string[]): Promise<void> {
     die("usage: mdmem delete <id>");
   }
   const { store } = resolveStore();
-  const file = await removeFact(store, id);
-  if (!file) {
+  const result = await removeFact(store, id);
+  if (!result) {
     die(`no fact "${id}" (looked for ${factFileFor(id)})`);
   }
-  print(`Deleted ${file}`);
+  reportWrite("Deleted", result);
 }
 
 async function cmdSearch(args: string[]): Promise<void> {

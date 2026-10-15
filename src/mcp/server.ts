@@ -9,7 +9,9 @@ import {
   removeFact,
   saveFact,
   searchFacts,
+  staleIndexWarning,
 } from "../core/operations.ts";
+import type { WriteResult } from "../core/operations.ts";
 import { findStoreRoot, MemoryStore, versionOf } from "../core/store.ts";
 
 /**
@@ -30,6 +32,18 @@ function resolveStore(): MemoryStore {
     );
   }
   return new MemoryStore(dir);
+}
+
+/** The write landed, so it is not an error; a stale index rides along as a warning. */
+function writeText(
+  verb: string,
+  { file, indexError }: WriteResult
+): CallToolResult {
+  return text(
+    indexError === undefined
+      ? `${verb} ${file}`
+      : `${verb} ${file}\nWarning: ${staleIndexWarning(indexError)}`
+  );
 }
 
 async function withStore(
@@ -133,12 +147,12 @@ export async function startMcpServer(): Promise<void> {
     },
     ({ name, description, type, body, ifVersion }) =>
       withStore(async (store) => {
-        const file = await saveFact(
+        const result = await saveFact(
           store,
           { name, description, type, body },
           { ifVersion }
         );
-        return text(`Saved ${file}`);
+        return writeText("Saved", result);
       })
   );
 
@@ -153,8 +167,10 @@ export async function startMcpServer(): Promise<void> {
     },
     ({ name }) =>
       withStore(async (store) => {
-        const file = await removeFact(store, name);
-        return text(file ? `Removed ${file}` : `No fact named "${name}".`);
+        const result = await removeFact(store, name);
+        return result
+          ? writeText("Removed", result)
+          : text(`No fact named "${name}".`);
       })
   );
 
