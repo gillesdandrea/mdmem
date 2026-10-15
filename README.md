@@ -99,10 +99,24 @@ related memories with `[[name]]`.
 ## MCP server
 
 For agents that call tools instead of reading files, `mdmem mcp` runs a stdio
-server exposing `memory_index`, `memory_search`, `memory_read`, `memory_write`,
-and `memory_remove`. `memory_read` also returns each memory's current version; pass
-it back as `memory_write`'s `ifVersion` for a safe read-modify-write that rejects a
-clobbered concurrent change.
+server with the same memory-store tools as Claude Code, plus two of its own:
+
+| Tool | Purpose |
+|---|---|
+| `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
+| `memory_read` | Read one document by `path` (`prefers-bun.md`, or the index `MEMORY.md`), with its version token. |
+| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name. `MEMORY.md` and paths inside a directory are refused. |
+| `memory_delete` | Delete a memory document at `path`. `MEMORY.md` is refused. |
+| `memory_search` | List the memories containing a query, by path with their description. |
+
+`store` is optional everywhere: leave it out to use the project's store. An
+unknown store id is an error that names the valid one. `memory_write` and
+`memory_delete` require `if_version`, the version token from your last
+`memory_read` or `memory_write` of that path. For a file that doesn't exist yet,
+`memory_write` takes the literal `new`. When the document has changed since that
+version, or `new` names a file that already exists, the call is rejected and
+returns the current content and version, so the agent can merge and retry. Both
+tools regenerate `MEMORY.md` afterwards.
 
 Claude Code (`.mcp.json`):
 

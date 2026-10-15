@@ -3,35 +3,95 @@ import type { CallToolResult } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
-import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import {
-  readIndex,
-  removeMemory,
-  saveMemory,
+  assertStoreId,
+  deleteDocument,
+  describeStore,
+  listDocuments,
+  readDocument,
   searchMemories,
   staleIndexWarning,
+  writeDocument,
 } from "../core/operations.ts";
-import type { WriteResult } from "../core/operations.ts";
-import { findStoreRoot, MemoryStore, versionOf } from "../core/store.ts";
+import type {
+  VersionedDocument,
+  VersionedWriteResult,
+  WriteResult,
+} from "../core/operations.ts";
+import {
+  findStoreRoot,
+  MemoryStore,
+  versionOf,
+  VersionConflictError,
+} from "../core/store.ts";
 
 /**
  * MCP surface over the shared `.memory/` store, for agents that would rather call
- * tools than read files. It exposes ergonomic memory-level operations (shared with the
- * CLI via ../core/operations); writes reindex automatically so the index stays fresh.
+ * tools than read files. It mirrors Claude Code's memory-store tools (memory_list,
+ * memory_read, memory_write: whole documents addressed by path, guarded by a required
+ * if_version) plus memory_search and memory_delete (docs/adr/0001). The operations
+ * live in ../core/operations; writes reindex automatically so the index stays fresh.
  */
 
 function text(body: string): CallToolResult {
   return { content: [{ type: "text", text: body }] };
 }
 
-function resolveStore(): MemoryStore {
+/** The project's store, checked against the caller's store id (omitted means the project's store). */
+function resolveStore(id?: string): MemoryStore {
   const dir = findStoreRoot(process.cwd());
   if (!dir) {
     throw new Error(
       "No .memory/ store found — run `mdmem init` in the project first."
     );
   }
-  return new MemoryStore(dir);
+  const store = new MemoryStore(dir);
+  assertStoreId(store, id);
+  return store;
+}
+
+const storeParam = z
+  .string()
+  .optional()
+  .describe(
+    "the store's id (call memory_list with no arguments to see it); omitted means the project's store"
+  );
+
+function storesListing(store: MemoryStore): string {
+  const { id, description, writable, index } = describeStore(store);
+  return `${id} — ${description} — ${writable ? "writable" : "read-only"} — index: ${index}`;
+}
+
+async function documentsListing(
+  store: MemoryStore,
+  options: { pathPrefix?: string; cursor?: string }
+): Promise<string> {
+  const { documents, nextCursor } = await listDocuments(store, options);
+  if (documents.length === 0) {
+    return "No memory documents.";
+  }
+  const lines = documents.map(
+    ({ path, size, updated }) =>
+      `${path} — ${size} bytes — updated ${updated.toISOString()}`
+  );
+  if (nextCursor !== undefined) {
+    lines.push(`next cursor: ${nextCursor}`);
+  }
+  return lines.join("\n");
+}
+
+/** A document's content, then its version on a line of its own, so the text carries both. */
+function documentResult({
+  content,
+  version,
+}: VersionedDocument): CallToolResult {
+  return {
+    content: [
+      { type: "text", text: content },
+      { type: "text", text: `version: ${version}` },
+    ],
+    structuredContent: { version },
+  };
 }
 
 /** The write landed, so it is not an error; a stale index rides along as a warning. */
@@ -46,12 +106,69 @@ function writeText(
   );
 }
 
+const ifVersionParam = z
+  .string()
+  .describe(
+    "the version token from your most recent memory_read or memory_write of this path, or the literal word new for a file that does not exist yet"
+  );
+
+/** Saved: the path, the new version, and a stale index as a warning (the write itself landed). */
+function savedResult({
+  file,
+  indexError,
+  version,
+}: VersionedWriteResult): CallToolResult {
+  const lines = [`Saved ${file}`, `version: ${version}`];
+  if (indexError !== undefined) {
+    lines.push(`Warning: ${staleIndexWarning(indexError)}`);
+  }
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    structuredContent: { version },
+  };
+}
+
+/** A version conflict hands back the document as it is now, so the agent can merge and retry. */
+function conflictResult({
+  message,
+  current,
+}: VersionConflictError): CallToolResult {
+  if (current === undefined) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `${message}. Pass if_version new to create it.`,
+        },
+      ],
+      isError: true,
+    };
+  }
+  const version = versionOf(current);
+  return {
+    content: [
+      {
+        type: "text",
+        text: `${message}. Its current content and version follow: merge your change into it, then retry with that version.`,
+      },
+      { type: "text", text: current },
+      { type: "text", text: `version: ${version}` },
+    ],
+    structuredContent: { version },
+    isError: true,
+  };
+}
+
 async function withStore(
+  id: string | undefined,
   fn: (store: MemoryStore) => Promise<CallToolResult>
 ): Promise<CallToolResult> {
   try {
-    return await fn(resolveStore());
+    return await fn(resolveStore(id));
   } catch (error) {
+    if (error instanceof VersionConflictError) {
+      return conflictResult(error);
+    }
     return {
       content: [
         {
@@ -68,14 +185,34 @@ export async function startMcpServer(): Promise<void> {
   const server = new McpServer({ name: "mdmem", version: "0.1.0" });
 
   server.registerTool(
-    "memory_index",
+    "memory_list",
     {
-      title: "Read memory index",
+      title: "List memory stores or documents",
       description:
-        "Return the project's memory index (MEMORY.md): one pointer per stored memory. Read this first to recall what is already known.",
-      inputSchema: z.object({}),
+        "List the memory documents in a memory store, sorted by path — each line gives a document's path, size, and last-updated date, but no content (use memory_read for that). Pass store (the store's id) to choose the store, path_prefix to list only the paths that start with it, and the cursor from a previous call to continue a long listing. Call with no arguments at all to list the memory stores available — their ids, a one-line description, whether each is writable or read-only, and the path of each store's index document.",
+      inputSchema: z.object({
+        store: storeParam,
+        path_prefix: z
+          .string()
+          .optional()
+          .describe("list only the documents whose path starts with this"),
+        cursor: z
+          .string()
+          .optional()
+          .describe("the next cursor from a previous memory_list call"),
+      }),
     },
-    () => withStore(async (store) => text(await readIndex(store)))
+    ({ store: id, path_prefix: pathPrefix, cursor }) => {
+      const noArguments =
+        id === undefined && pathPrefix === undefined && cursor === undefined;
+      return withStore(id, async (store) =>
+        text(
+          noArguments
+            ? storesListing(store)
+            : await documentsListing(store, { pathPrefix, cursor })
+        )
+      );
+    }
   );
 
   server.registerTool(
@@ -83,13 +220,14 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Search memory",
       description:
-        "Find memories whose text (name, description, or body) contains the query anywhere.",
+        "Find the memories in a memory store whose text (name, description or body) contains the query, ignoring case. Each line gives a matching memory document's path and its description; use memory_read for the content.",
       inputSchema: z.object({
-        query: z.string().describe("Text to search for"),
+        store: storeParam,
+        query: z.string().describe("text to search for"),
       }),
     },
-    ({ query }) =>
-      withStore(async (store) => {
+    ({ store: id, query }) =>
+      withStore(id, async (store) => {
         const hits = await searchMemories(store, query);
         return text(
           hits.length > 0
@@ -102,78 +240,71 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_read",
     {
-      title: "Read a memory",
+      title: "Read a memory document",
       description:
-        "Return one memory's full content, plus its current version. Pass that version back to memory_write's `ifVersion` to make a safe read-modify-write that won't clobber a concurrent change.",
+        "Read one memory document by its path in the store — a memory such as prefers-bun.md, or the index, MEMORY.md — and return its content and its version token. Pass that version as if_version to memory_write or memory_delete; the change is then refused if the document changed since you read it.",
       inputSchema: z.object({
+        store: storeParam,
         path: z
           .string()
           .describe(
-            "Memory name or file name, e.g. prefers-bun or prefers-bun.md"
+            "the document's path in the store, e.g. prefers-bun.md or MEMORY.md"
           ),
       }),
       outputSchema: z.object({ version: z.string() }),
     },
-    ({ path }) =>
-      withStore(async (store) => {
-        const content = await store.view(memoryFileFor(path));
-        return {
-          content: [{ type: "text", text: content }],
-          structuredContent: { version: versionOf(content) },
-        };
-      })
+    ({ store: id, path }) =>
+      withStore(id, async (store) =>
+        documentResult(await readDocument(store, path))
+      )
   );
 
   server.registerTool(
     "memory_write",
     {
-      title: "Write a memory",
+      title: "Write a memory document",
       description:
-        "Create or overwrite a memory and refresh the index. Use kebab-case names. For feedback/project memories, include **Why:** and **How to apply:** lines in the body. Pass `ifVersion` (from memory_read) to reject the write if the memory changed since you read it.",
+        "Create or update a memory document with full content, in the memory store named by store (call memory_list with no arguments to see it; omitted means the project's store). Overwrites if the path already exists: content replaces the ENTIRE document — this is not an append or a patch. Include every existing line you intend to keep; any line you omit is deleted. The content is a memory — YAML frontmatter with name, description and metadata.type (user, feedback, project or reference), then the body — and its name must equal the path without .md. MEMORY.md is generated from the memories, so it cannot be written. Use this to save durable knowledge about the project and how to work in it — not transient task state. Always pass if_version: the version token from your most recent memory_read or memory_write of this path, or the literal word new (without quotes) for a file that does not yet exist. The listing shows paths but not version tokens, so for any file already there you must memory_read it first. Writes with if_version=new to an existing path are rejected so you can't overwrite content you haven't seen. Both the rejection and a version conflict return the current content and version so you can merge and retry. The result includes the new version token for follow-up writes. Never write secrets or credentials into a memory — the store is shared with every agent on the project.",
       inputSchema: z.object({
-        name: z.string().describe("kebab-case name; the file is <name>.md"),
-        description: z
+        store: storeParam,
+        path: z
           .string()
-          .describe("one line shown in the index, used to judge relevance"),
-        type: z
-          .enum(MEMORY_TYPES)
-          .describe("user | feedback | project | reference"),
-        body: z.string().describe("the fact this memory holds"),
-        ifVersion: z
+          .describe("the memory's path in the store: <name>.md, no directory"),
+        content: z
           .string()
-          .optional()
-          .describe(
-            "version from a prior memory_read; the write is rejected if the memory changed since"
-          ),
+          .describe("the whole document: frontmatter, then the body"),
+        if_version: ifVersionParam,
       }),
+      outputSchema: z.object({ version: z.string() }),
     },
-    ({ name, description, type, body, ifVersion }) =>
-      withStore(async (store) => {
-        const result = await saveMemory(
-          store,
-          { name, description, type, body },
-          { ifVersion }
-        );
-        return writeText("Saved", result);
-      })
+    ({ store: id, path, content, if_version: ifVersion }) =>
+      withStore(id, async (store) =>
+        savedResult(await writeDocument(store, path, content, ifVersion))
+      )
   );
 
   server.registerTool(
-    "memory_remove",
+    "memory_delete",
     {
-      title: "Remove a memory",
-      description: "Delete a memory by name and refresh the index.",
+      title: "Delete a memory document",
+      description:
+        "Delete a memory document from the memory store named by store (omitted means the project's store), then regenerate the index. Always pass if_version: the version token from your most recent memory_read or memory_write of this path. If the document changed since, the delete is rejected with its current content and version, so you can decide again. MEMORY.md is generated, so it cannot be deleted.",
       inputSchema: z.object({
-        name: z.string().describe("kebab-case name of the memory to remove"),
+        store: storeParam,
+        path: z
+          .string()
+          .describe("the memory's path in the store, e.g. prefers-bun.md"),
+        if_version: z
+          .string()
+          .describe(
+            "the version token from your most recent memory_read or memory_write of this path"
+          ),
       }),
     },
-    ({ name }) =>
-      withStore(async (store) => {
-        const result = await removeMemory(store, name);
-        return result
-          ? writeText("Removed", result)
-          : text(`No memory named "${name}".`);
-      })
+    ({ store: id, path, if_version: ifVersion }) =>
+      withStore(id, async (store) =>
+        writeText("Deleted", await deleteDocument(store, path, ifVersion))
+      )
   );
 
   const transport = new StdioServerTransport();
