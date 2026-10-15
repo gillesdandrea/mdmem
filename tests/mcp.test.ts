@@ -96,7 +96,7 @@ describe("mcp server", () => {
       const { version } = read.structuredContent as { version: string };
       expect(version).toBeTruthy();
 
-      // A concurrent writer changes the fact out from under us.
+      // A concurrent writer changes the memory out from under us.
       await write("two");
 
       // The stale version must be refused, so the concurrent write isn't clobbered.

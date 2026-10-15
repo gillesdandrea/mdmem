@@ -15,9 +15,9 @@ import { dirname, join, resolve, sep } from "node:path";
  * MemoryStore is the filesystem behind a `.memory/` directory, reproducing the
  * Anthropic text-editor/memory tool surface (create, view, str_replace, insert,
  * remove) as the store's public API. It holds no policy — no notion of what a
- * fact should contain, when to save, or what to exclude; it only reads and writes
+ * memory should contain, when to save, or what to exclude; it only reads and writes
  * files. Its optional version guard lets a writer detect a lost update on a
- * fact-file read-modify-write (the MCP write path uses it); the derived index
+ * memory-file read-modify-write (the MCP write path uses it); the derived index
  * stays off the concurrent-write path entirely (see ./index.ts).
  */
 
@@ -132,8 +132,8 @@ export class MemoryStore {
     await rm(this.full(path));
   }
 
-  /** Top-level fact files: every `*.md` except the generated index. */
-  async listFacts(): Promise<string[]> {
+  /** Top-level memory files: every `*.md` except the generated index. */
+  async listMemoryFiles(): Promise<string[]> {
     if (!existsSync(this.root)) {
       return [];
     }

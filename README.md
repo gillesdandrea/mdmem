@@ -4,14 +4,14 @@ Shared, Claude-style file-based memory for any coding agent.
 
 Claude Code has a built-in memory (a `memory/` directory of one-fact-per-file
 Markdown with a loaded index). `mdmem` reproduces that and makes **one**
-per-project store the shared brain for every coding agent you use — a fact written
-by any agent is visible to all of them.
+per-project memory store shared by every coding agent you use — a memory saved by
+any agent is visible to all of them.
 
 ## How it works
 
-- **One store per project:** `./.memory/` — Markdown facts plus a generated
+- **One store per project:** `./.memory/` — Markdown memories plus a generated
   `MEMORY.md` index. Gitignored by default.
-- **The index is derived.** Agents only ever write their own fact files;
+- **The index is derived.** Agents only ever write their own memory files;
   `mdmem reindex` regenerates `MEMORY.md`. No shared file is hand-edited, so
   concurrent agents never conflict over it.
 - **Each agent is wired to the store in its own native way** (`mdmem enable`):
@@ -48,7 +48,7 @@ mdmem add --type feedback --name uses-bun \
 mdmem status                # show the store and which agents are enabled
 ```
 
-Now any enabled agent sees the memory. When an agent writes a fact file directly,
+Now any enabled agent sees the memory. When an agent writes a memory file directly,
 run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it).
 
 ## Commands
@@ -56,13 +56,13 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | Command | Purpose |
 |---|---|
 | `mdmem init` | Create `.memory/` in the project and gitignore it |
-| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a fact; refuses an existing slug unless `--force`. Body may also be piped via stdin. |
+| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory; refuses an existing name unless `--force`. Body may also be piped via stdin. |
 | `mdmem list` | Print the memory index (`MEMORY.md`) |
-| `mdmem read <id>` | Print one fact by its id (slug or `<slug>.md`) |
-| `mdmem edit <id>` | Open a fact in `$VISUAL`/`$EDITOR`, reindex on save |
-| `mdmem delete` (alias `rm`) `<id>` | Remove a fact by its id (slug or `<slug>.md`) |
-| `mdmem search <query>` | Find facts containing text |
-| `mdmem reindex` | Rebuild `MEMORY.md` from fact frontmatter |
+| `mdmem read <name>` | Print one memory by its name (or `<name>.md`) |
+| `mdmem edit <name>` | Open a memory in `$VISUAL`/`$EDITOR`, reindex on save |
+| `mdmem delete` (alias `rm`) `<name>` | Remove a memory by its name (or `<name>.md`) |
+| `mdmem search <query>` | Find memories containing text |
+| `mdmem reindex` | Rebuild `MEMORY.md` from memory frontmatter |
 | `mdmem doctor` | Check the store: parse errors, name≠filename, dangling `[[links]]`, stale index |
 | `mdmem enable <agent…> \| --all` | Wire an agent to the shared store |
 | `mdmem disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
@@ -70,14 +70,14 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem path` | Print the store directory |
 | `mdmem mcp` | Run the MCP server over stdio |
 
-Agents: `claude-code`, `agents`, `bob`, `cursor`. Fact types: `user`, `feedback`, `project`, `reference`.
+Agents: `claude-code`, `agents`, `bob`, `cursor`. Memory types: `user`, `feedback`, `project`, `reference`.
 
-With no `$VISUAL`/`$EDITOR` set, `mdmem edit` prints the fact's path instead of
+With no `$VISUAL`/`$EDITOR` set, `mdmem edit` prints the memory's path instead of
 opening it — edit it by hand, then run `mdmem reindex`.
 
-## Fact format
+## Memory format
 
-One file, one fact — `.memory/<slug>.md`:
+One file, one fact — `.memory/<name>.md`:
 
 ```markdown
 ---
@@ -93,14 +93,14 @@ Use bun for scripts and tests.
 **How to apply:** run everything through bun. [[ts7-strict]]
 ```
 
-`feedback`/`project` facts add `**Why:**` and `**How to apply:**` lines; link
-related facts with `[[other-slug]]`.
+`feedback`/`project` memories add `**Why:**` and `**How to apply:**` lines; link
+related memories with `[[name]]`.
 
 ## MCP server
 
 For agents that call tools instead of reading files, `mdmem mcp` runs a stdio
 server exposing `memory_index`, `memory_search`, `memory_read`, `memory_write`,
-and `memory_remove`. `memory_read` also returns each fact's current version; pass
+and `memory_remove`. `memory_read` also returns each memory's current version; pass
 it back as `memory_write`'s `ifVersion` for a safe read-modify-write that rejects a
 clobbered concurrent change.
 

@@ -7,21 +7,21 @@ import { parseArgs } from "node:util";
 
 import type { AdapterContext } from "../adapters/index.ts";
 import { adapterIds, getAdapter, listAdapters } from "../adapters/index.ts";
-import {
-  factFileFor,
-  factFileName,
-  MEMORY_TYPES,
-  parseFact,
-  parseFactFile,
-} from "../core/fact.ts";
-import type { Fact, MemoryType } from "../core/fact.ts";
 import { reindex, renderIndex } from "../core/index.ts";
+import {
+  memoryFileFor,
+  memoryFileName,
+  MEMORY_TYPES,
+  parseMemory,
+  parseMemoryFile,
+} from "../core/memory.ts";
+import type { Memory, MemoryType } from "../core/memory.ts";
 import {
   readIndex,
   reindexAfterWrite,
-  removeFact,
-  saveFact,
-  searchFacts,
+  removeMemory,
+  saveMemory,
+  searchMemories,
   staleIndexWarning,
 } from "../core/operations.ts";
 import type { WriteResult } from "../core/operations.ts";
@@ -138,12 +138,12 @@ async function cmdAdd(args: string[]): Promise<void> {
   }
 
   const { store } = resolveStore();
-  if (store.exists(factFileName(name)) && !values.force) {
+  if (store.exists(memoryFileName(name)) && !values.force) {
     die(
-      `a fact named "${name}" already exists — pass --force to overwrite, or \`mdmem delete ${name}\``
+      `a memory named "${name}" already exists — pass --force to overwrite, or \`mdmem delete ${name}\``
     );
   }
-  const result = await saveFact(store, {
+  const result = await saveMemory(store, {
     name,
     description,
     type: values.type,
@@ -164,27 +164,27 @@ async function cmdList(): Promise<void> {
 }
 
 async function cmdRead(args: string[]): Promise<void> {
-  const [id] = args;
-  if (!id) {
-    die("usage: mdmem read <id>");
+  const [name] = args;
+  if (!name) {
+    die("usage: mdmem read <name>");
   }
   const { store } = resolveStore();
-  const file = factFileFor(id);
+  const file = memoryFileFor(name);
   if (!store.exists(file)) {
-    die(`no fact "${id}" (looked for ${file})`);
+    die(`no memory "${name}" (looked for ${file})`);
   }
   print(await store.view(file));
 }
 
 async function cmdEdit(args: string[]): Promise<void> {
-  const [id] = args;
-  if (!id) {
-    die("usage: mdmem edit <id>");
+  const [name] = args;
+  if (!name) {
+    die("usage: mdmem edit <name>");
   }
   const { store, storeDir } = resolveStore();
-  const file = factFileFor(id);
+  const file = memoryFileFor(name);
   if (!store.exists(file)) {
-    die(`no fact "${id}" (looked for ${file})`);
+    die(`no memory "${name}" (looked for ${file})`);
   }
   const fullPath = join(storeDir, file);
   const editor = process.env.VISUAL ?? process.env.EDITOR;
@@ -203,24 +203,24 @@ async function cmdEdit(args: string[]): Promise<void> {
     die(`editor exited with code ${proc.exitCode}`);
   }
   try {
-    parseFact(await store.view(file));
+    parseMemory(await store.view(file));
   } catch (error) {
     die(
-      `edited fact is invalid, not reindexed — ${error instanceof Error ? error.message : String(error)}`
+      `edited memory is invalid, not reindexed — ${error instanceof Error ? error.message : String(error)}`
     );
   }
   reportWrite("Saved", await reindexAfterWrite(store, file));
 }
 
 async function cmdDelete(args: string[]): Promise<void> {
-  const [id] = args;
-  if (!id) {
-    die("usage: mdmem delete <id>");
+  const [name] = args;
+  if (!name) {
+    die("usage: mdmem delete <name>");
   }
   const { store } = resolveStore();
-  const result = await removeFact(store, id);
+  const result = await removeMemory(store, name);
   if (!result) {
-    die(`no fact "${id}" (looked for ${factFileFor(id)})`);
+    die(`no memory "${name}" (looked for ${memoryFileFor(name)})`);
   }
   reportWrite("Deleted", result);
 }
@@ -231,9 +231,9 @@ async function cmdSearch(args: string[]): Promise<void> {
     die("usage: mdmem search <query>");
   }
   const { store } = resolveStore();
-  const hits = await searchFacts(store, query);
+  const hits = await searchMemories(store, query);
   if (hits.length === 0) {
-    print(`No facts matching "${query}".`);
+    print(`No memories matching "${query}".`);
     return;
   }
   for (const hit of hits) {
@@ -284,8 +284,8 @@ async function cmdLink(
 async function cmdStatus(): Promise<void> {
   const resolved = resolveStore();
   print(`Store: ${resolved.storeDir}`);
-  const facts = await resolved.store.listFacts();
-  print(`Facts: ${facts.length}`);
+  const memories = await resolved.store.listMemoryFiles();
+  print(`Memories: ${memories.length}`);
   print("Agents:");
   const ctx = context(resolved);
   const statuses = await Promise.all(
@@ -298,48 +298,51 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
-function wikilinkSlugs(body: string): string[] {
-  const slugs: string[] = [];
-  for (const match of body.matchAll(/\[\[(?<slug>[a-z0-9-]+)\]\]/gu)) {
-    const slug = match.groups?.slug;
-    if (slug) {
-      slugs.push(slug);
+function linkNames(body: string): string[] {
+  const names: string[] = [];
+  for (const match of body.matchAll(/\[\[(?<name>[a-z0-9-]+)\]\]/gu)) {
+    const name = match.groups?.name;
+    if (name) {
+      names.push(name);
     }
   }
-  return slugs;
+  return names;
 }
 
 async function cmdDoctor(): Promise<void> {
   const { store } = resolveStore();
-  const files = await store.listFacts();
+  const files = await store.listMemoryFiles();
   const problems: string[] = [];
   const known = new Set<string>();
-  const parsed: { file: string; fact: Fact }[] = [];
+  const parsed: { file: string; memory: Memory }[] = [];
 
   for (const file of files) {
     try {
       // oxlint-disable-next-line no-await-in-loop -- the read sits inside the per-file try so a failed read is reported as a problem, not thrown
-      const fact = parseFactFile(file, await store.view(file));
-      known.add(fact.frontmatter.name);
-      parsed.push({ file, fact });
-      if (factFileName(fact.frontmatter.name) !== file) {
-        problems.push(`${file}: name "${fact.frontmatter.name}" ≠ filename`);
+      const memory = parseMemoryFile(file, await store.view(file));
+      known.add(memory.frontmatter.name);
+      parsed.push({ file, memory });
+      if (memoryFileName(memory.frontmatter.name) !== file) {
+        problems.push(`${file}: name "${memory.frontmatter.name}" ≠ filename`);
       }
     } catch (error) {
       problems.push(error instanceof Error ? error.message : String(error));
     }
   }
 
-  for (const { file, fact } of parsed) {
-    for (const slug of wikilinkSlugs(fact.body)) {
-      if (!known.has(slug)) {
-        problems.push(`${file}: dangling [[${slug}]]`);
+  for (const { file, memory } of parsed) {
+    for (const name of linkNames(memory.body)) {
+      if (!known.has(name)) {
+        problems.push(`${file}: dangling [[${name}]]`);
       }
     }
   }
 
   const fresh = renderIndex(
-    parsed.map(({ file, fact }) => ({ file, frontmatter: fact.frontmatter }))
+    parsed.map(({ file, memory }) => ({
+      file,
+      frontmatter: memory.frontmatter,
+    }))
   );
   const current = store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
   if (current.trim() !== fresh.trim()) {
@@ -347,7 +350,7 @@ async function cmdDoctor(): Promise<void> {
   }
 
   if (problems.length === 0) {
-    print(`✓ ${files.length} fact(s), no problems`);
+    print(`✓ ${files.length} memory file(s), no problems`);
     return;
   }
   print(`Found ${problems.length} problem(s):`);
@@ -369,13 +372,13 @@ Usage: mdmem <command> [options]
 
   init                      Create .memory/ in this project and gitignore it
   add --type <t> --name <n> --description <d> [--body <text>] [--force]
-                            Save a fact (body may be piped via stdin; --force overwrites a slug)
+                            Save a memory (body may be piped via stdin; --force overwrites an existing one)
   list                      Print the memory index (MEMORY.md)
-  read <id>                 Print one fact by its id (slug or <slug>.md)
-  edit <id>                 Open a fact in $VISUAL/$EDITOR, reindex on save
-  delete | rm <id>          Remove a fact by its id (slug or <slug>.md)
-  search <query>            Find facts containing text
-  reindex                   Rebuild MEMORY.md from fact frontmatter
+  read <name>               Print one memory by its name (or <name>.md)
+  edit <name>               Open a memory in $VISUAL/$EDITOR, reindex on save
+  delete | rm <name>        Remove a memory by its name (or <name>.md)
+  search <query>            Find memories containing text
+  reindex                   Rebuild MEMORY.md from memory frontmatter
   doctor                    Check the store (parse errors, name≠filename, dangling links, stale index)
   enable <agent…> | --all   Wire an agent to the shared store
   disable <agent…> | --all  Remove an agent's wiring
@@ -384,7 +387,7 @@ Usage: mdmem <command> [options]
   mcp                       Run the MCP server over stdio (for agent tool-calls)
 
 Agents: ${adapterIds().join(", ")}
-Fact types: ${MEMORY_TYPES.join(", ")}`);
+Memory types: ${MEMORY_TYPES.join(", ")}`);
 }
 
 const runMcp = async (): Promise<void> => {
@@ -429,7 +432,7 @@ async function main(): Promise<void> {
   try {
     await handler(args);
   } catch (error) {
-    // Expected failures (a broken fact, a version conflict) end as one line, not a stack trace.
+    // Expected failures (a broken memory, a version conflict) end as one line, not a stack trace.
     die(error instanceof Error ? error.message : String(error));
   }
 }

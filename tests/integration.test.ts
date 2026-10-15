@@ -9,8 +9,8 @@ import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import { cursorAdapter } from "../src/adapters/cursor.ts";
 import type { AdapterContext } from "../src/adapters/index.ts";
-import { serializeFact } from "../src/core/fact.ts";
 import { reindex } from "../src/core/index.ts";
+import { serializeMemory } from "../src/core/memory.ts";
 import { MemoryStore } from "../src/core/store.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
@@ -39,7 +39,7 @@ async function autoMemoryDir(root: string): Promise<string | undefined> {
 }
 
 describe("tracer bullet: shared memory across agents", () => {
-  test("a fact written once is reachable through both agents' wiring", async () => {
+  test("a memory saved once is reachable through both agents' wiring", async () => {
     const { root, ctx, store } = await tempProject();
     try {
       await claudeCodeAdapter.link(ctx);
@@ -53,10 +53,10 @@ describe("tracer bullet: shared memory across agents", () => {
       expect(agents).toContain("mdmem:start");
       expect(agents).toContain("Memory protocol");
 
-      // One agent records a fact; the shared index reflects it.
+      // One agent saves a memory; the shared index reflects it.
       await store.create(
         "prefers-bun.md",
-        serializeFact({
+        serializeMemory({
           frontmatter: {
             name: "prefers-bun",
             description: "Uses bun",
@@ -238,7 +238,7 @@ describe("cli", () => {
 
       const status = run("status");
       expect(status.code).toBe(0);
-      expect(status.out).toContain("Facts: 1");
+      expect(status.out).toContain("Memories: 1");
 
       const enable = run("enable", "agents");
       expect(enable.code).toBe(0);
@@ -249,7 +249,7 @@ describe("cli", () => {
       // absolute path to the store (spawned cwd may resolve /var → /private/var)
       expect(await autoMemoryDir(root)).toMatch(/[/\\]\.memory$/u);
 
-      // add refuses to clobber an existing slug without --force
+      // add refuses to clobber an existing name without --force
       const dup = run(
         "add",
         "--type",
@@ -292,17 +292,17 @@ describe("cli", () => {
       expect(del.code).toBe(0);
       expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(false);
 
-      // a broken fact ends the command with one line, not a stack trace
+      // a broken memory ends the command with one line, not a stack trace
       await writeFile(join(root, ".memory/broken.md"), "no frontmatter\n");
       const search = run("search", "frontmatter");
       expect(search.code).toBe(1);
       expect(search.err).toBe(
-        "mdmem: broken.md: unparseable — Fact file is missing YAML frontmatter delimited by `---`\n"
+        "mdmem: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`\n"
       );
 
-      // a broken fact elsewhere doesn't make a write that landed read as failed
+      // a broken memory elsewhere doesn't make a write that landed read as failed
       const staleWarning =
-        "mdmem: warning: MEMORY.md is stale: broken.md: unparseable — Fact file is missing YAML frontmatter delimited by `---` (run `mdmem doctor`)\n";
+        "mdmem: warning: MEMORY.md is stale: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (run `mdmem doctor`)\n";
       const keep = run(
         "add",
         "--type",

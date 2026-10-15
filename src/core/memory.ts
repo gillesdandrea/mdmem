@@ -2,7 +2,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 
 /**
- * A fact is the unit of memory: one file, one fact. The format reproduces
+ * A memory is one Markdown file holding one fact. The format reproduces
  * Claude Code's memory files — YAML frontmatter plus a Markdown body.
  */
 
@@ -29,17 +29,19 @@ export const frontmatterSchema = z.object({
 });
 export type Frontmatter = z.infer<typeof frontmatterSchema>;
 
-export interface Fact {
+export interface Memory {
   frontmatter: Frontmatter;
   body: string;
 }
 
 const FRONTMATTER_RE = /^---\r?\n(?<yaml>[\s\S]*?)\r?\n---\r?\n?/u;
 
-export function parseFact(raw: string): Fact {
+export function parseMemory(raw: string): Memory {
   const match = raw.match(FRONTMATTER_RE);
   if (!match) {
-    throw new Error("Fact file is missing YAML frontmatter delimited by `---`");
+    throw new Error(
+      "Memory file is missing YAML frontmatter delimited by `---`"
+    );
   }
   const data: unknown = parseYaml(match.groups?.yaml ?? "");
   const result = frontmatterSchema.safeParse(data);
@@ -58,10 +60,10 @@ export function parseFact(raw: string): Fact {
   return { frontmatter: result.data, body };
 }
 
-/** `parseFact` for a stored file: a failure names the file, so the reader knows which fact to fix. */
-export function parseFactFile(file: string, raw: string): Fact {
+/** `parseMemory` for a stored file: a failure names the file, so the reader knows which memory to fix. */
+export function parseMemoryFile(file: string, raw: string): Memory {
   try {
-    return parseFact(raw);
+    return parseMemory(raw);
   } catch (error) {
     throw new Error(
       `${file}: unparseable — ${error instanceof Error ? error.message : String(error)}`,
@@ -70,16 +72,16 @@ export function parseFactFile(file: string, raw: string): Fact {
   }
 }
 
-export function serializeFact(fact: Fact): string {
-  const yaml = stringifyYaml(fact.frontmatter).trimEnd();
-  return `---\n${yaml}\n---\n\n${fact.body.trim()}\n`;
+export function serializeMemory(memory: Memory): string {
+  const yaml = stringifyYaml(memory.frontmatter).trimEnd();
+  return `---\n${yaml}\n---\n\n${memory.body.trim()}\n`;
 }
 
-export function factFileName(name: string): string {
+export function memoryFileName(name: string): string {
   return `${name}.md`;
 }
 
-/** Resolve a user-supplied id — a bare slug or a `<slug>.md` file name — to a file name. */
-export function factFileFor(id: string): string {
-  return id.endsWith(".md") ? id : factFileName(id);
+/** Resolve a user-supplied name — a bare name or a `<name>.md` file name — to a file name. */
+export function memoryFileFor(name: string): string {
+  return name.endsWith(".md") ? name : memoryFileName(name);
 }

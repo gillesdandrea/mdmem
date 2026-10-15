@@ -1,24 +1,24 @@
-import type { MemoryType } from "./fact.ts";
-import {
-  factFileFor,
-  factFileName,
-  parseFact,
-  parseFactFile,
-  serializeFact,
-} from "./fact.ts";
 import { reindex } from "./index.ts";
+import type { MemoryType } from "./memory.ts";
+import {
+  memoryFileFor,
+  memoryFileName,
+  parseMemory,
+  parseMemoryFile,
+  serializeMemory,
+} from "./memory.ts";
 import { INDEX_FILE } from "./store.ts";
 import type { MemoryStore } from "./store.ts";
 
 /**
- * Fact-level operations shared by both surfaces (CLI and MCP). They compose the
- * store's file ops with fact (de)serialization and reindexing so the two surfaces
+ * Memory-level operations shared by both surfaces (CLI and MCP). They compose the
+ * store's file ops with memory (de)serialization and reindexing so the two surfaces
  * can't drift — the CLI and MCP keep only their own argument parsing and output.
  */
 
 /**
- * The fact file a write touched. `indexError` is set when the write landed but
- * MEMORY.md could not be rebuilt (e.g. another fact is unparseable): the write
+ * The memory file a write touched. `indexError` is set when the write landed but
+ * MEMORY.md could not be rebuilt (e.g. another memory is unparseable): the write
  * still succeeded, so callers report it, then warn that the index is stale.
  */
 export interface WriteResult {
@@ -47,7 +47,7 @@ export async function reindexAfterWrite(
   }
 }
 
-export interface FactInput {
+export interface MemoryInput {
   name: string;
   description: string;
   type: MemoryType;
@@ -55,16 +55,16 @@ export interface FactInput {
 }
 
 /**
- * Serialize + validate a fact, write it, and refresh the index. Returns the file
+ * Serialize + validate a memory, write it, and refresh the index. Returns the file
  * name and any index error. `ifVersion` opts into the store's lost-update guard
  * for read-modify-write.
  */
-export async function saveFact(
+export async function saveMemory(
   store: MemoryStore,
-  input: FactInput,
+  input: MemoryInput,
   opts?: { ifVersion?: string }
 ): Promise<WriteResult> {
-  const content = serializeFact({
+  const content = serializeMemory({
     frontmatter: {
       name: input.name,
       description: input.description,
@@ -72,9 +72,9 @@ export async function saveFact(
     },
     body: input.body,
   });
-  // Parse-validate before writing so a malformed fact never lands in the store.
-  parseFact(content);
-  const file = factFileName(input.name);
+  // Parse-validate before writing so a malformed memory never lands in the store.
+  parseMemory(content);
+  const file = memoryFileName(input.name);
   await store.create(file, content, opts?.ifVersion);
   return reindexAfterWrite(store, file);
 }
@@ -84,14 +84,14 @@ export interface SearchHit {
   description: string;
 }
 
-/** Facts whose raw text contains `query` (case-insensitive), with their descriptions. */
-export async function searchFacts(
+/** Memories whose raw text contains `query` (case-insensitive), with their descriptions. */
+export async function searchMemories(
   store: MemoryStore,
   query: string
 ): Promise<SearchHit[]> {
   const needle = query.toLowerCase();
-  const files = await store.listFacts();
-  // Read the facts concurrently, then match them in file order.
+  const files = await store.listMemoryFiles();
+  // Read the memories concurrently, then match them in file order.
   const raws = await Promise.all(
     files.map(async (file) => ({ file, raw: await store.view(file) }))
   );
@@ -100,7 +100,7 @@ export async function searchFacts(
     if (raw.toLowerCase().includes(needle)) {
       hits.push({
         file,
-        description: parseFactFile(file, raw).frontmatter.description,
+        description: parseMemoryFile(file, raw).frontmatter.description,
       });
     }
   }
@@ -116,14 +116,14 @@ export async function readIndex(store: MemoryStore): Promise<string> {
 }
 
 /**
- * Remove a fact by id (slug or `<slug>.md`) and refresh the index. Returns the
- * removed file name and any index error, or null if no such fact existed.
+ * Remove a memory by name (a name or `<name>.md`) and refresh the index. Returns the
+ * removed file name and any index error, or null if no such memory existed.
  */
-export async function removeFact(
+export async function removeMemory(
   store: MemoryStore,
-  id: string
+  name: string
 ): Promise<WriteResult | null> {
-  const file = factFileFor(id);
+  const file = memoryFileFor(name);
   if (!store.exists(file)) {
     return null;
   }

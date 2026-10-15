@@ -3,12 +3,12 @@ import type { CallToolResult } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
-import { factFileFor, MEMORY_TYPES } from "../core/fact.ts";
+import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import {
   readIndex,
-  removeFact,
-  saveFact,
-  searchFacts,
+  removeMemory,
+  saveMemory,
+  searchMemories,
   staleIndexWarning,
 } from "../core/operations.ts";
 import type { WriteResult } from "../core/operations.ts";
@@ -16,7 +16,7 @@ import { findStoreRoot, MemoryStore, versionOf } from "../core/store.ts";
 
 /**
  * MCP surface over the shared `.memory/` store, for agents that would rather call
- * tools than read files. It exposes ergonomic fact-level operations (shared with the
+ * tools than read files. It exposes ergonomic memory-level operations (shared with the
  * CLI via ../core/operations); writes reindex automatically so the index stays fresh.
  */
 
@@ -72,7 +72,7 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Read memory index",
       description:
-        "Return the project's memory index (MEMORY.md): one line per stored fact. Read this first to recall what is already known.",
+        "Return the project's memory index (MEMORY.md): one pointer per stored memory. Read this first to recall what is already known.",
       inputSchema: z.object({}),
     },
     () => withStore(async (store) => text(await readIndex(store)))
@@ -83,18 +83,18 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Search memory",
       description:
-        "Find facts whose text (name, description, or body) contains the query anywhere.",
+        "Find memories whose text (name, description, or body) contains the query anywhere.",
       inputSchema: z.object({
         query: z.string().describe("Text to search for"),
       }),
     },
     ({ query }) =>
       withStore(async (store) => {
-        const hits = await searchFacts(store, query);
+        const hits = await searchMemories(store, query);
         return text(
           hits.length > 0
             ? hits.map((h) => `${h.file} — ${h.description}`).join("\n")
-            : `No facts matching "${query}".`
+            : `No memories matching "${query}".`
         );
       })
   );
@@ -102,21 +102,21 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_read",
     {
-      title: "Read a fact",
+      title: "Read a memory",
       description:
-        "Return one fact's full content, plus its current version. Pass that version back to memory_write's `ifVersion` to make a safe read-modify-write that won't clobber a concurrent change.",
+        "Return one memory's full content, plus its current version. Pass that version back to memory_write's `ifVersion` to make a safe read-modify-write that won't clobber a concurrent change.",
       inputSchema: z.object({
         path: z
           .string()
           .describe(
-            "Fact slug or file name, e.g. prefers-bun or prefers-bun.md"
+            "Memory name or file name, e.g. prefers-bun or prefers-bun.md"
           ),
       }),
       outputSchema: z.object({ version: z.string() }),
     },
     ({ path }) =>
       withStore(async (store) => {
-        const content = await store.view(factFileFor(path));
+        const content = await store.view(memoryFileFor(path));
         return {
           content: [{ type: "text", text: content }],
           structuredContent: { version: versionOf(content) },
@@ -127,27 +127,29 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_write",
     {
-      title: "Write a fact",
+      title: "Write a memory",
       description:
-        "Create or overwrite a fact and refresh the index. Use kebab-case names. For feedback/project facts, include **Why:** and **How to apply:** lines in the body. Pass `ifVersion` (from memory_read) to reject the write if the fact changed since you read it.",
+        "Create or overwrite a memory and refresh the index. Use kebab-case names. For feedback/project memories, include **Why:** and **How to apply:** lines in the body. Pass `ifVersion` (from memory_read) to reject the write if the memory changed since you read it.",
       inputSchema: z.object({
-        name: z.string().describe("kebab-case slug; also the filename"),
-        description: z.string().describe("one-line summary shown in the index"),
+        name: z.string().describe("kebab-case name; also the filename"),
+        description: z
+          .string()
+          .describe("one line shown in the index, used to judge relevance"),
         type: z
           .enum(MEMORY_TYPES)
           .describe("user | feedback | project | reference"),
-        body: z.string().describe("the fact"),
+        body: z.string().describe("the fact this memory holds"),
         ifVersion: z
           .string()
           .optional()
           .describe(
-            "version from a prior memory_read; the write is rejected if the fact changed since"
+            "version from a prior memory_read; the write is rejected if the memory changed since"
           ),
       }),
     },
     ({ name, description, type, body, ifVersion }) =>
       withStore(async (store) => {
-        const result = await saveFact(
+        const result = await saveMemory(
           store,
           { name, description, type, body },
           { ifVersion }
@@ -159,18 +161,18 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_remove",
     {
-      title: "Remove a fact",
-      description: "Delete a fact by name and refresh the index.",
+      title: "Remove a memory",
+      description: "Delete a memory by name and refresh the index.",
       inputSchema: z.object({
-        name: z.string().describe("kebab-case slug of the fact to remove"),
+        name: z.string().describe("kebab-case name of the memory to remove"),
       }),
     },
     ({ name }) =>
       withStore(async (store) => {
-        const result = await removeFact(store, name);
+        const result = await removeMemory(store, name);
         return result
           ? writeText("Removed", result)
-          : text(`No fact named "${name}".`);
+          : text(`No memory named "${name}".`);
       })
   );
 
