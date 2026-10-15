@@ -20,7 +20,10 @@ any agent is visible to all of them.
     shared store, no rule or hook needed.
   - **AGENTS.md** (`agents`) — a memory-protocol block in the repo-root
     `AGENTS.md`, the instruction file read by Codex, Cursor, Gemini CLI, Aider, and
-    others. Its text lives in `templates/memory-protocol.md` and is easy to edit.
+    others. The protocol adapts Claude Code's own memory instructions to the shared
+    store: the memory types, when to save and what not to, checking a recalled memory
+    before acting on it, and saving through the MCP tools when the agent has them. Its
+    text lives in `templates/memory-protocol.md` and is easy to edit.
   - **IBM Bob** (`bob`) — writes that same protocol to `.bob/rules/memory.md`.
   - **Cursor** (`cursor`) — writes `.cursor/rules/memory.mdc` (Cursor requires the
     `.mdc` extension and `alwaysApply: true` frontmatter to load a rule every session).

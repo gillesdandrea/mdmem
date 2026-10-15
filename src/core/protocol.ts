@@ -11,12 +11,13 @@ import {
  * can be tuned without touching code:
  *
  * - `memory-protocol.md`, the memory protocol installed into agents that lack native
- *   memory (the AGENTS.md adapter installs it); edit it and re-run `mdmem enable`.
+ *   memory (the AGENTS.md, Bob and Cursor adapters install it); edit it and re-run
+ *   `mdmem enable`.
  * - `consolidate.md`, the consolidation prompt served by `mdmem consolidate` and the
  *   MCP prompt `consolidate`.
  *
- * The consolidation prompt holds `{{placeholder}}`s, filled in when it is rendered; the
- * memory protocol is installed as written.
+ * Both hold `{{placeholder}}`s, filled in when they are rendered, so the index limits
+ * they state follow the constants in `index.ts`.
  */
 type TemplateName = "memory-protocol" | "consolidate";
 
@@ -52,16 +53,20 @@ function renderTemplate(
   });
 }
 
+/** The index limits both templates state. */
+function indexLimits(): Record<string, string> {
+  return {
+    pointer_max_chars: String(POINTER_MAX_CHARS),
+    index_max_lines: String(INDEX_MAX_LINES),
+    index_max_kb: String(INDEX_MAX_BYTES / BYTES_PER_KB),
+  };
+}
+
 export function getMemoryProtocol(): string {
-  return loadTemplate("memory-protocol");
+  return renderTemplate("memory-protocol", indexLimits());
 }
 
 /** The consolidation prompt for the memory store at `storeDir`. */
 export function getConsolidatePrompt(storeDir: string): string {
-  return renderTemplate("consolidate", {
-    store: storeDir,
-    pointer_max_chars: String(POINTER_MAX_CHARS),
-    index_max_lines: String(INDEX_MAX_LINES),
-    index_max_kb: String(INDEX_MAX_BYTES / BYTES_PER_KB),
-  });
+  return renderTemplate("consolidate", { store: storeDir, ...indexLimits() });
 }

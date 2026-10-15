@@ -4,7 +4,7 @@ import { rulesFileAdapter } from "./rules-file.ts";
 // frontmatter to apply a rule to every session — so, unlike Bob, the file is the
 // protocol behind a small Cursor preamble.
 const CURSOR_FRONTMATTER = `---
-description: Shared project memory (see .memory/)
+description: Recall and save memories in the project's memory store (.memory/)
 alwaysApply: true
 ---
 
