@@ -18,6 +18,7 @@ import type { Fact, MemoryType } from "../core/fact.ts";
 import { reindex, renderIndex } from "../core/index.ts";
 import {
   readIndex,
+  reindexAfterWrite,
   removeFact,
   saveFact,
   searchFacts,
@@ -208,8 +209,7 @@ async function cmdEdit(args: string[]): Promise<void> {
       `edited fact is invalid, not reindexed — ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  await reindex(store);
-  print(`Saved ${file}`);
+  reportWrite("Saved", await reindexAfterWrite(store, file));
 }
 
 async function cmdDelete(args: string[]): Promise<void> {

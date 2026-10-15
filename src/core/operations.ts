@@ -31,7 +31,8 @@ export function staleIndexWarning(indexError: string): string {
   return `MEMORY.md is stale: ${indexError} (run \`mdmem doctor\`)`;
 }
 
-async function reindexAfterWrite(
+/** Rebuild the index after `file` was written or removed, keeping any failure as a warning. */
+export async function reindexAfterWrite(
   store: MemoryStore,
   file: string
 ): Promise<WriteResult> {

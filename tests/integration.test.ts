@@ -317,6 +317,10 @@ describe("cli", () => {
       expect(keep.code).toBe(0);
       expect(keep.out).toBe("Saved keep.md\n");
       expect(keep.err).toBe(staleWarning);
+      const editKeep = run("edit", "keep");
+      expect(editKeep.code).toBe(0);
+      expect(editKeep.out).toBe("Saved keep.md\n");
+      expect(editKeep.err).toBe(staleWarning);
       const dropKeep = run("delete", "keep");
       expect(dropKeep.code).toBe(0);
       expect(dropKeep.out).toBe("Deleted keep.md\n");
