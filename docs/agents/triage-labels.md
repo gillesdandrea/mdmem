@@ -13,3 +13,14 @@ The skills speak in terms of five canonical triage roles. This file maps those r
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
 Edit the "Label in our tracker" column to match whatever vocabulary you actually use.
+
+## Mode: `afk` or `hitl`
+
+How an agent-run bead runs. Exactly one on every leaf labelled `ready-for-agent`. A `ready-for-human` leaf carries no mode label.
+
+| Label  | Meaning                                                                       |
+| ------ | ----------------------------------------------------------------------------- |
+| `afk`  | The agent works alone; the human reviews the result at the end.               |
+| `hitl` | The human gates each step, or must be present for a live check or a demo.     |
+
+Readiness says whether work can start; mode says who is in the loop while it runs. The bead workflows ([workflows.md](./workflows.md)) plan only `afk` beads.
