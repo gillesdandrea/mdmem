@@ -1,6 +1,6 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import type { CallToolResult } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
 import { factFileFor, MEMORY_TYPES } from "../core/fact.ts";
@@ -59,7 +59,7 @@ export async function startMcpServer(): Promise<void> {
       title: "Read memory index",
       description:
         "Return the project's memory index (MEMORY.md): one line per stored fact. Read this first to recall what is already known.",
-      inputSchema: {},
+      inputSchema: z.object({}),
     },
     () => withStore(async (store) => text(await readIndex(store)))
   );
@@ -70,7 +70,9 @@ export async function startMcpServer(): Promise<void> {
       title: "Search memory",
       description:
         "Find facts whose text (name, description, or body) contains the query anywhere.",
-      inputSchema: { query: z.string().describe("Text to search for") },
+      inputSchema: z.object({
+        query: z.string().describe("Text to search for"),
+      }),
     },
     ({ query }) =>
       withStore(async (store) => {
@@ -89,14 +91,14 @@ export async function startMcpServer(): Promise<void> {
       title: "Read a fact",
       description:
         "Return one fact's full content, plus its current version. Pass that version back to memory_write's `ifVersion` to make a safe read-modify-write that won't clobber a concurrent change.",
-      inputSchema: {
+      inputSchema: z.object({
         path: z
           .string()
           .describe(
             "Fact slug or file name, e.g. prefers-bun or prefers-bun.md"
           ),
-      },
-      outputSchema: { version: z.string() },
+      }),
+      outputSchema: z.object({ version: z.string() }),
     },
     ({ path }) =>
       withStore(async (store) => {
@@ -114,7 +116,7 @@ export async function startMcpServer(): Promise<void> {
       title: "Write a fact",
       description:
         "Create or overwrite a fact and refresh the index. Use kebab-case names. For feedback/project facts, include **Why:** and **How to apply:** lines in the body. Pass `ifVersion` (from memory_read) to reject the write if the fact changed since you read it.",
-      inputSchema: {
+      inputSchema: z.object({
         name: z.string().describe("kebab-case slug; also the filename"),
         description: z.string().describe("one-line summary shown in the index"),
         type: z
@@ -127,7 +129,7 @@ export async function startMcpServer(): Promise<void> {
           .describe(
             "version from a prior memory_read; the write is rejected if the fact changed since"
           ),
-      },
+      }),
     },
     ({ name, description, type, body, ifVersion }) =>
       withStore(async (store) => {
@@ -145,9 +147,9 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Remove a fact",
       description: "Delete a fact by name and refresh the index.",
-      inputSchema: {
+      inputSchema: z.object({
         name: z.string().describe("kebab-case slug of the fact to remove"),
-      },
+      }),
     },
     ({ name }) =>
       withStore(async (store) => {
