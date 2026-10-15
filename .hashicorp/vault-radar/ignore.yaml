@@ -1,0 +1,7 @@
+# Block Secrets ignore rules
+# Paths are relative to the repository root.
+
+# Fake secrets used to test mdmem's own secret detection (src/core/secrets.ts):
+# AWS keys, env-style passwords and tokens built for findSecrets and the check.
+- paths:
+    - "tests/core.test.ts"
