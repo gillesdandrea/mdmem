@@ -55,11 +55,14 @@ export function renderIndex(entries: IndexEntry[]): string {
 
 export async function reindex(store: MemoryStore): Promise<string> {
   const files = await store.listFacts();
-  const entries: IndexEntry[] = [];
-  for (const file of files) {
-    const { frontmatter } = parseFact(await store.view(file));
-    entries.push({ file, frontmatter });
-  }
+  // Read the facts concurrently, then parse them in file order.
+  const raws = await Promise.all(
+    files.map(async (file) => ({ file, raw: await store.view(file) }))
+  );
+  const entries: IndexEntry[] = raws.map(({ file, raw }) => ({
+    file,
+    frontmatter: parseFact(raw).frontmatter,
+  }));
   const content = renderIndex(entries);
   await store.create(INDEX_FILE, content);
   return content;

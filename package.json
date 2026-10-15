@@ -2,7 +2,20 @@
   "name": "mdmem",
   "version": "0.1.0",
   "description": "Shared, Claude-style file-based memory for any coding agent",
-  "type": "module",
+  "keywords": [
+    "agents-md",
+    "bun",
+    "claude-code",
+    "cli",
+    "coding-agent",
+    "cursor",
+    "mcp",
+    "memory"
+  ],
+  "homepage": "https://github.com/gillesdandrea/mdmem#readme",
+  "bugs": {
+    "url": "https://github.com/gillesdandrea/mdmem/issues"
+  },
   "license": "MIT",
   "author": {
     "name": "Gilles d'Andrea",
@@ -12,41 +25,27 @@
     "type": "git",
     "url": "git+https://github.com/gillesdandrea/mdmem.git"
   },
-  "homepage": "https://github.com/gillesdandrea/mdmem#readme",
-  "bugs": {
-    "url": "https://github.com/gillesdandrea/mdmem/issues"
-  },
-  "keywords": [
-    "memory",
-    "cli",
-    "mcp",
-    "coding-agent",
-    "claude-code",
-    "agents-md",
-    "cursor",
-    "bun"
-  ],
   "bin": {
     "mdmem": "./src/cli/index.ts"
   },
+  "type": "module",
   "scripts": {
-    "typecheck": "tsgo --noEmit",
-    "lint": "oxlint src tests",
-    "format": "oxfmt src tests",
-    "format:check": "oxfmt --check src tests",
     "test": "bun test",
-    "check": "bun run format:check && bun run lint && bun run typecheck && bun run test"
+    "type:check": "tsc --noEmit",
+    "all:check": "bun run type:check && ultracite check && bun test",
+    "check": "ultracite check",
+    "fix": "ultracite fix"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/bun": "^1.3.14",
-    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
-    "oxfmt": "^0.60.0",
-    "oxlint": "^1.75.0",
-    "ultracite": "^7.9.4"
+    "@types/bun": "^1.4.3",
+    "oxfmt": "^0.73.0",
+    "oxlint": "^1.88.0",
+    "typescript": "^7.0.2",
+    "ultracite": "8.0.1"
   }
 }

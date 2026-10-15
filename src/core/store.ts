@@ -1,3 +1,4 @@
+/* oxlint-disable max-classes-per-file -- the small error class is co-located with the store that throws it */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import {

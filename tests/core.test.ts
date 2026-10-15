@@ -142,7 +142,8 @@ describe("location", () => {
     await store.create("x.md", "x");
     const nested = join(dir, "a", "b");
     expect(findStoreRoot(nested)).toBe(join(dir, ".memory"));
-    expect(findProjectRoot(dir)).toBe(dir); // mkdtemp dir has no marker -> itself
+    // mkdtemp dir has no marker -> itself
+    expect(findProjectRoot(dir)).toBe(dir);
     await rm(dir, { recursive: true, force: true });
   });
 });

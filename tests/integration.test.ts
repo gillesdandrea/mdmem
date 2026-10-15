@@ -24,7 +24,8 @@ async function tempProject(): Promise<{
   const root = await mkdtemp(join(tmpdir(), "memcli-int-"));
   const storeDir = join(root, ".memory");
   const store = new MemoryStore(storeDir);
-  await reindex(store); // creates .memory + empty index
+  // creates .memory + empty index
+  await reindex(store);
   return { root, ctx: { projectRoot: root, storeDir, home: root }, store };
 }
 
@@ -87,7 +88,8 @@ describe("tracer bullet: shared memory across agents", () => {
 
       expect(await autoMemoryDir(root)).toBe(ctx.storeDir);
       const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
-      expect(agents.split("mdmem:start")).toHaveLength(2); // exactly one marker
+      // exactly one marker
+      expect(agents.split("mdmem:start")).toHaveLength(2);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -102,7 +104,8 @@ describe("tracer bullet: shared memory across agents", () => {
       await agentsAdapter.unlink(ctx);
 
       expect(await autoMemoryDir(root)).toBeUndefined();
-      expect(existsSync(join(root, "AGENTS.md"))).toBe(false); // was only our block
+      // was only our block
+      expect(existsSync(join(root, "AGENTS.md"))).toBe(false);
 
       const claudeStatus = await claudeCodeAdapter.status(ctx);
       const agentsStatus = await agentsAdapter.status(ctx);
@@ -195,12 +198,14 @@ describe("tracer bullet: shared memory across agents", () => {
 describe("cli", () => {
   test("init, add, status, enable run end-to-end", async () => {
     const root = await mkdtemp(join(tmpdir(), "memcli-cli-"));
-    await writeFile(join(root, "package.json"), "{}\n", "utf-8"); // deterministic project root
+    // deterministic project root
+    await writeFile(join(root, "package.json"), "{}\n", "utf-8");
     try {
       const run = (...args: string[]) => {
         const proc = Bun.spawnSync(["bun", CLI, ...args], {
           cwd: root,
-          env: { ...process.env, EDITOR: "true", VISUAL: "true" }, // no-op editor
+          // no-op editor
+          env: { ...process.env, EDITOR: "true", VISUAL: "true" },
         });
         return {
           code: proc.exitCode,

@@ -123,18 +123,20 @@ codex mcp add mdmem -- mdmem mcp
 ## Development
 
 ```bash
-bun run check      # format:check + lint + typecheck + test
+bun run all:check  # type:check + ultracite check + test (what CI runs)
+bun run check      # ultracite check: oxlint + oxfmt
+bun run fix        # ultracite fix
 bun test           # tests only
 ```
 
-Stack: `bun` (runtime, tests), TypeScript 7 (`tsgo`, typecheck), `ultracite`
+Stack: `bun` (runtime, tests), TypeScript 7 (`tsc`, typecheck), `ultracite`
 driving `oxlint` + `oxfmt`.
 
 ## Not yet included
 
-Agent-specific adapters for cases where `AGENTS.md` isn't enough (e.g. Cursor's
-own rules format), a global cross-project store, and semantic recall. The `Adapter`
-interface (`src/adapters/adapter.ts`) is the extension point for new agents.
+A global cross-project store and semantic recall. Agents that need more than
+`AGENTS.md` get their own adapter, as Claude Code, IBM Bob and Cursor do; the
+`Adapter` interface (`src/adapters/adapter.ts`) is the extension point for new ones.
 
 ## License
 

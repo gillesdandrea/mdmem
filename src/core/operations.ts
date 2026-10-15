@@ -53,9 +53,13 @@ export async function searchFacts(
   query: string
 ): Promise<SearchHit[]> {
   const needle = query.toLowerCase();
+  const files = await store.listFacts();
+  // Read the facts concurrently, then match them in file order.
+  const raws = await Promise.all(
+    files.map(async (file) => ({ file, raw: await store.view(file) }))
+  );
   const hits: SearchHit[] = [];
-  for (const file of await store.listFacts()) {
-    const raw = await store.view(file);
+  for (const { file, raw } of raws) {
     if (raw.toLowerCase().includes(needle)) {
       hits.push({ file, description: parseFact(raw).frontmatter.description });
     }

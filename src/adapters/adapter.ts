@@ -30,7 +30,7 @@ export interface AgentStatus {
 export interface Adapter {
   readonly id: string;
   readonly title: string;
-  link(ctx: AdapterContext): Promise<LinkResult>;
-  unlink(ctx: AdapterContext): Promise<LinkResult>;
-  status(ctx: AdapterContext): Promise<AgentStatus>;
+  link: (ctx: AdapterContext) => Promise<LinkResult>;
+  unlink: (ctx: AdapterContext) => Promise<LinkResult>;
+  status: (ctx: AdapterContext) => Promise<AgentStatus>;
 }

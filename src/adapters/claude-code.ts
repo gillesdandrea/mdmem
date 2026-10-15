@@ -52,7 +52,8 @@ export const claudeCodeAdapter: Adapter = {
   async link(ctx: AdapterContext): Promise<LinkResult> {
     const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
     const settings = await readSettings(settingsPath);
-    settings[DIR_KEY] = ctx.storeDir; // Claude requires an absolute path
+    // Claude requires an absolute path
+    settings[DIR_KEY] = ctx.storeDir;
     await writeJson(settingsPath, settings);
     return {
       agent: ID,

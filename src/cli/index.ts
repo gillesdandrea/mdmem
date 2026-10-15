@@ -177,7 +177,8 @@ async function cmdEdit(args: string[]): Promise<void> {
   const fullPath = join(storeDir, file);
   const editor = process.env.VISUAL ?? process.env.EDITOR;
   if (!editor) {
-    print(fullPath); // no $EDITOR — print the path so it can be opened by hand
+    // no $EDITOR — print the path so it can be opened by hand
+    print(fullPath);
     return;
   }
   const [cmd, ...editorArgs] = editor.split(" ");
@@ -258,8 +259,10 @@ async function cmdLink(
     if (!adapter) {
       die(`unknown agent "${id}". Known: ${adapterIds().join(", ")}`);
     }
-    const result =
-      mode === "enable" ? await adapter.link(ctx) : await adapter.unlink(ctx);
+    // oxlint-disable-next-line no-await-in-loop -- writes stay in argument order, and an unknown agent stops the run before later ones are touched
+    const result = await (mode === "enable"
+      ? adapter.link(ctx)
+      : adapter.unlink(ctx));
     print(`${result.title}:`);
     for (const action of result.actions) {
       print(`  - ${action}`);
@@ -274,8 +277,10 @@ async function cmdStatus(): Promise<void> {
   print(`Facts: ${facts.length}`);
   print("Agents:");
   const ctx = context(resolved);
-  for (const adapter of listAdapters()) {
-    const status = await adapter.status(ctx);
+  const statuses = await Promise.all(
+    listAdapters().map((adapter) => adapter.status(ctx))
+  );
+  for (const status of statuses) {
     print(
       `  ${status.linked ? "✓" : "·"} ${status.title} — ${status.details.join("; ")}`
     );
@@ -302,6 +307,7 @@ async function cmdDoctor(): Promise<void> {
 
   for (const file of files) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- the read sits inside the per-file try so a failed read is reported as a problem, not thrown
       const fact = parseFact(await store.view(file));
       known.add(fact.frontmatter.name);
       parsed.push({ file, fact });

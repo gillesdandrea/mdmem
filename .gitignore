@@ -6,6 +6,7 @@ dist/
 # Local agent tooling (skills, rules, per-user settings) — never committed
 .agents/
 .claude/
+skills-lock.json
 
 # The tool's own memory store (dogfooding) — gitignored by default, like user repos
 .memory/

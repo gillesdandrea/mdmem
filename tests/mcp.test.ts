@@ -15,7 +15,8 @@ describe("mcp server", () => {
   test("write then index round-trips over stdio", async () => {
     const dir = await mkdtemp(join(tmpdir(), "memcli-mcp-"));
     const store = new MemoryStore(join(dir, ".memory"));
-    await reindex(store); // empty store so the server's findStoreRoot succeeds
+    // empty store so the server's findStoreRoot succeeds
+    await reindex(store);
 
     const transport = new StdioClientTransport({
       command: "bun",
