@@ -21,7 +21,7 @@ async function tempProject(): Promise<{
   ctx: AdapterContext;
   store: MemoryStore;
 }> {
-  const root = await mkdtemp(join(tmpdir(), "memcli-int-"));
+  const root = await mkdtemp(join(tmpdir(), "mdmem-int-"));
   const storeDir = join(root, ".memory");
   const store = new MemoryStore(storeDir);
   // creates .memory + empty index
@@ -197,7 +197,7 @@ describe("tracer bullet: shared memory across agents", () => {
 
 describe("cli", () => {
   test("init, add, status, enable run end-to-end", async () => {
-    const root = await mkdtemp(join(tmpdir(), "memcli-cli-"));
+    const root = await mkdtemp(join(tmpdir(), "mdmem-cli-"));
     // deterministic project root
     await writeFile(join(root, "package.json"), "{}\n", "utf-8");
     try {
@@ -282,7 +282,7 @@ describe("cli", () => {
 
       const doctor = run("doctor");
       expect(doctor.code).toBe(0);
-      expect(doctor.out).toContain("no problems");
+      expect(doctor.out).toContain("✓ 1 memory, no problems");
 
       const storePath = run("path");
       expect(storePath.code).toBe(0);

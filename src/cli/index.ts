@@ -298,6 +298,10 @@ async function cmdStatus(): Promise<void> {
   }
 }
 
+function countMemories(count: number): string {
+  return count === 1 ? "1 memory" : `${count} memories`;
+}
+
 function linkNames(body: string): string[] {
   const names: string[] = [];
   for (const match of body.matchAll(/\[\[(?<name>[a-z0-9-]+)\]\]/gu)) {
@@ -350,7 +354,7 @@ async function cmdDoctor(): Promise<void> {
   }
 
   if (problems.length === 0) {
-    print(`✓ ${files.length} memory file(s), no problems`);
+    print(`✓ ${countMemories(files.length)}, no problems`);
     return;
   }
   print(`Found ${problems.length} problem(s):`);

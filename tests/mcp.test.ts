@@ -13,7 +13,7 @@ const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
 
 describe("mcp server", () => {
   test("write then index round-trips over stdio", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "memcli-mcp-"));
+    const dir = await mkdtemp(join(tmpdir(), "mdmem-mcp-"));
     const store = new MemoryStore(join(dir, ".memory"));
     // empty store so the server's findStoreRoot succeeds
     await reindex(store);
@@ -64,7 +64,7 @@ describe("mcp server", () => {
   });
 
   test("a stale ifVersion write is rejected — this is why memory_read exposes a version", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "memcli-mcp-"));
+    const dir = await mkdtemp(join(tmpdir(), "mdmem-mcp-"));
     const store = new MemoryStore(join(dir, ".memory"));
     await reindex(store);
 

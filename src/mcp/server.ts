@@ -131,7 +131,7 @@ export async function startMcpServer(): Promise<void> {
       description:
         "Create or overwrite a memory and refresh the index. Use kebab-case names. For feedback/project memories, include **Why:** and **How to apply:** lines in the body. Pass `ifVersion` (from memory_read) to reject the write if the memory changed since you read it.",
       inputSchema: z.object({
-        name: z.string().describe("kebab-case name; also the filename"),
+        name: z.string().describe("kebab-case name; the file is <name>.md"),
         description: z
           .string()
           .describe("one line shown in the index, used to judge relevance"),

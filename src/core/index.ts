@@ -9,7 +9,7 @@ import type { MemoryStore } from "./store.ts";
  * one shared, mutable file off the concurrent-write path.
  */
 
-interface IndexEntry {
+interface Pointer {
   file: string;
   frontmatter: Frontmatter;
 }
@@ -21,7 +21,7 @@ const TYPE_HEADINGS: Record<MemoryType, string> = {
   reference: "Reference",
 };
 
-export function renderIndex(entries: IndexEntry[]): string {
+export function renderIndex(pointers: Pointer[]): string {
   const lines: string[] = [
     "# Memory index",
     "",
@@ -29,22 +29,22 @@ export function renderIndex(entries: IndexEntry[]): string {
     "",
   ];
 
-  if (entries.length === 0) {
+  if (pointers.length === 0) {
     lines.push("_No memories yet._", "");
     return lines.join("\n");
   }
 
   for (const type of MEMORY_TYPES) {
-    const group = entries
-      .filter((e) => e.frontmatter.metadata.type === type)
+    const group = pointers
+      .filter((p) => p.frontmatter.metadata.type === type)
       .toSorted((a, b) => a.frontmatter.name.localeCompare(b.frontmatter.name));
     if (group.length === 0) {
       continue;
     }
     lines.push(`## ${TYPE_HEADINGS[type]}`, "");
-    for (const e of group) {
+    for (const p of group) {
       lines.push(
-        `- [${e.frontmatter.name}](${e.file}) — ${e.frontmatter.description}`
+        `- [${p.frontmatter.name}](${p.file}) — ${p.frontmatter.description}`
       );
     }
     lines.push("");
@@ -59,11 +59,11 @@ export async function reindex(store: MemoryStore): Promise<string> {
   const raws = await Promise.all(
     files.map(async (file) => ({ file, raw: await store.view(file) }))
   );
-  const entries: IndexEntry[] = raws.map(({ file, raw }) => ({
+  const pointers: Pointer[] = raws.map(({ file, raw }) => ({
     file,
     frontmatter: parseMemoryFile(file, raw).frontmatter,
   }));
-  const content = renderIndex(entries);
+  const content = renderIndex(pointers);
   await store.create(INDEX_FILE, content);
   return content;
 }
