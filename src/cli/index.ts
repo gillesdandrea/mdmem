@@ -30,6 +30,7 @@ import {
   searchMemories,
 } from "../core/operations.ts";
 import type { WriteResult } from "../core/operations.ts";
+import { getConsolidatePrompt } from "../core/protocol.ts";
 import { describeSecrets, findSecrets } from "../core/secrets.ts";
 import {
   findProjectRoot,
@@ -398,6 +399,11 @@ async function cmdDoctor(): Promise<void> {
   process.exit(1);
 }
 
+function cmdConsolidate(): void {
+  const { store } = resolveStore();
+  process.stdout.write(getConsolidatePrompt(store.root));
+}
+
 function cmdPath(): void {
   const { storeDir } = resolveStore();
   print(storeDir);
@@ -417,6 +423,7 @@ Usage: mdmem <command> [options]
   delete | rm <name>        Remove a memory by its name (or <name>.md)
   search <query>            Find memories containing text
   reindex                   Rebuild MEMORY.md from memory frontmatter
+  consolidate               Print a prompt that has an agent consolidate the store
   doctor                    Check the store (parse errors, name≠filename, secrets, long pointers,
                             dangling links, stale index, index over its read limits)
   enable <agent…> | --all   Wire an agent to the shared store
@@ -446,6 +453,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   search: (args) => cmdSearch(args),
   reindex: () => cmdReindex(),
   doctor: () => cmdDoctor(),
+  consolidate: () => cmdConsolidate(),
   enable: (args) => cmdLink(args, "enable"),
   disable: (args) => cmdLink(args, "disable"),
   status: () => cmdStatus(),

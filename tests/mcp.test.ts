@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -9,6 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { reindex } from "../src/core/index.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import { STORE_PAGE_SIZE } from "../src/core/operations.ts";
+import { getConsolidatePrompt } from "../src/core/protocol.ts";
 import { MemoryStore } from "../src/core/store.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
@@ -535,6 +536,28 @@ describe("mcp server", () => {
         arguments: { store: storeId, query: "bun" },
       });
       expect(textOf(result)).toBe("uses-bun.md — About uses-bun");
+    });
+  });
+
+  test("the prompt consolidate is listed and returns the consolidation prompt for the store", async () => {
+    await withServer(async ({ client, store }) => {
+      const prompts = await client.listPrompts();
+      const listed = prompts.prompts.find((p) => p.name === "consolidate");
+      expect(listed?.description).toBeTruthy();
+
+      const prompt = await client.getPrompt({ name: "consolidate" });
+      // The server resolves its working directory, so the tmpdir symlink is resolved too.
+      const storeDir = await realpath(store.root);
+      expect(prompt.messages).toEqual([
+        {
+          role: "user",
+          content: { type: "text", text: getConsolidatePrompt(storeDir) },
+        },
+      ]);
+      const [message] = prompt.messages;
+      expect(
+        message?.content.type === "text" && message.content.text
+      ).toContain(`Memory store: \`${storeDir}\``);
     });
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,6 +11,7 @@ import { cursorAdapter } from "../src/adapters/cursor.ts";
 import type { AdapterContext } from "../src/adapters/index.ts";
 import { reindex } from "../src/core/index.ts";
 import { serializeMemory } from "../src/core/memory.ts";
+import { getConsolidatePrompt } from "../src/core/protocol.ts";
 import { MemoryStore } from "../src/core/store.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
@@ -457,6 +458,18 @@ describe("cli", () => {
         /MEMORY\.md is at \d+ bytes, over its 25000-byte read limit/u
       );
       expect(doctor.out).not.toContain("-line read limit");
+    });
+  });
+
+  test("consolidate prints the consolidation prompt with the store's path", async () => {
+    await withCliProject(async (root, store) => {
+      const consolidate = runCli(root, "consolidate");
+      expect(consolidate.code).toBe(0);
+      // The CLI resolves its working directory, so the tmpdir symlink is resolved too.
+      const storeDir = await realpath(store.root);
+      expect(consolidate.out).toBe(getConsolidatePrompt(storeDir));
+      expect(consolidate.out).toContain(`Memory store: \`${storeDir}\``);
+      expect(consolidate.out).toContain("## Phase 5 — Reconcile");
     });
   });
 });

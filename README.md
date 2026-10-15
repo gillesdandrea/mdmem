@@ -63,6 +63,7 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem delete` (alias `rm`) `<name>` | Remove a memory by its name (or `<name>.md`) |
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Rebuild `MEMORY.md` from memory frontmatter |
+| `mdmem consolidate` | Print the consolidation prompt (see below) |
 | `mdmem doctor` | Check the store: parse errors, name≠filename, secrets, pointers over 150 characters, dangling `[[links]]`, stale index, index over Claude Code's read limits |
 | `mdmem enable <agent…> \| --all` | Wire an agent to the shared store |
 | `mdmem disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
@@ -118,6 +119,8 @@ version, or `new` names a file that already exists, the call is rejected and
 returns the current content and version, so the agent can merge and retry. Both
 tools regenerate `MEMORY.md` afterwards.
 
+The server also serves one prompt, `consolidate` (see below).
+
 Claude Code (`.mcp.json`):
 
 ```json
@@ -133,6 +136,22 @@ Codex CLI:
 ```bash
 codex mcp add mdmem -- mdmem mcp
 ```
+
+## Consolidation
+
+Claude Code can run a *dream*: a reflective pass that merges, corrects
+and prunes its memories. mdmem runs no agent itself, so it serves that pass as a
+prompt for any agent, run when you ask for one. `mdmem consolidate` prints it, and
+the MCP server serves it as the prompt `consolidate`:
+
+```bash
+codex "$(mdmem consolidate)"
+```
+
+The agent orients on the store, looks for memories the code has drifted from,
+merges and dates what it learned, deletes stale memories, and reconciles feedback
+and project memories with the project's instruction files, which it flags but
+never edits. Its text lives in `templates/consolidate.md`.
 
 ## Development
 

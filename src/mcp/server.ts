@@ -1,5 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/server";
-import type { CallToolResult } from "@modelcontextprotocol/server";
+import type {
+  CallToolResult,
+  GetPromptResult,
+} from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
@@ -17,6 +20,7 @@ import type {
   VersionedWriteResult,
   WriteResult,
 } from "../core/operations.ts";
+import { getConsolidatePrompt } from "../core/protocol.ts";
 import {
   findStoreRoot,
   MemoryStore,
@@ -30,6 +34,7 @@ import {
  * memory_read, memory_write: whole documents addressed by path, guarded by a required
  * if_version) plus memory_search and memory_delete (docs/adr/0001). The operations
  * live in ../core/operations; writes reindex automatically so the index stays fresh.
+ * It also serves the consolidation prompt, as the MCP prompt consolidate.
  */
 
 function text(body: string): CallToolResult {
@@ -306,6 +311,26 @@ export async function startMcpServer(): Promise<void> {
       withStore(id, async (store) =>
         writeText("Deleted", await deleteDocument(store, path, ifVersion))
       )
+  );
+
+  server.registerPrompt(
+    "consolidate",
+    {
+      title: "Consolidate memory",
+      description:
+        "A consolidation pass over the project's memory store: orient on the existing memories, gather recent signal, merge and correct memories, prune stale ones, and reconcile them with the project's instruction files.",
+    },
+    (): GetPromptResult => ({
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: getConsolidatePrompt(resolveStore().root),
+          },
+        },
+      ],
+    })
   );
 
   const transport = new StdioServerTransport();
