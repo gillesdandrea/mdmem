@@ -1,5 +1,5 @@
 {
-  "name": "memory-cli",
+  "name": "mdmem",
   "version": "0.1.0",
   "description": "Shared, Claude-style file-based memory for any coding agent",
   "type": "module",
@@ -10,11 +10,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gillesdandrea/memory-cli.git"
+    "url": "git+https://github.com/gillesdandrea/mdmem.git"
   },
-  "homepage": "https://github.com/gillesdandrea/memory-cli#readme",
+  "homepage": "https://github.com/gillesdandrea/mdmem#readme",
   "bugs": {
-    "url": "https://github.com/gillesdandrea/memory-cli/issues"
+    "url": "https://github.com/gillesdandrea/mdmem/issues"
   },
   "keywords": [
     "memory",
@@ -27,8 +27,7 @@
     "bun"
   ],
   "bin": {
-    "memory": "./src/cli/index.ts",
-    "mem": "./src/cli/index.ts"
+    "mdmem": "./src/cli/index.ts"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",

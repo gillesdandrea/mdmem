@@ -26,7 +26,7 @@ function resolveStore(): MemoryStore {
   const dir = findStoreRoot(process.cwd());
   if (!dir) {
     throw new Error(
-      "No .memory/ store found — run `memory init` in the project first."
+      "No .memory/ store found — run `mdmem init` in the project first."
     );
   }
   return new MemoryStore(dir);
@@ -51,7 +51,7 @@ async function withStore(
 }
 
 export async function startMcpServer(): Promise<void> {
-  const server = new McpServer({ name: "memory", version: "0.1.0" });
+  const server = new McpServer({ name: "mdmem", version: "0.1.0" });
 
   server.registerTool(
     "memory_index",
@@ -158,5 +158,5 @@ export async function startMcpServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  process.stderr.write("memory MCP server running on stdio\n");
+  process.stderr.write("mdmem MCP server running on stdio\n");
 }

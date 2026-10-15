@@ -34,7 +34,7 @@ function print(msg = ""): void {
 }
 
 function die(msg: string): never {
-  process.stderr.write(`memory: ${msg}\n`);
+  process.stderr.write(`mdmem: ${msg}\n`);
   process.exit(1);
 }
 
@@ -48,7 +48,7 @@ function resolveStore(): Resolved {
   const storeDir = findStoreRoot(process.cwd());
   if (!storeDir) {
     die(
-      `no ${STORE_DIR}/ found in this directory or any parent — run \`memory init\` first`
+      `no ${STORE_DIR}/ found in this directory or any parent — run \`mdmem init\` first`
     );
   }
   return {
@@ -100,7 +100,7 @@ async function cmdInit(): Promise<void> {
   if (ignored) {
     print(`Added ${STORE_DIR}/ to .gitignore`);
   }
-  print("Next: `memory enable --all` to wire up your agents.");
+  print("Next: `mdmem enable --all` to wire up your agents.");
 }
 
 async function cmdAdd(args: string[]): Promise<void> {
@@ -128,7 +128,7 @@ async function cmdAdd(args: string[]): Promise<void> {
   const { store } = resolveStore();
   if (store.exists(factFileName(name)) && !values.force) {
     die(
-      `a fact named "${name}" already exists — pass --force to overwrite, or \`memory delete ${name}\``
+      `a fact named "${name}" already exists — pass --force to overwrite, or \`mdmem delete ${name}\``
     );
   }
   const file = await saveFact(store, {
@@ -154,7 +154,7 @@ async function cmdList(): Promise<void> {
 async function cmdRead(args: string[]): Promise<void> {
   const [id] = args;
   if (!id) {
-    die("usage: memory read <id>");
+    die("usage: mdmem read <id>");
   }
   const { store } = resolveStore();
   const file = factFileFor(id);
@@ -167,7 +167,7 @@ async function cmdRead(args: string[]): Promise<void> {
 async function cmdEdit(args: string[]): Promise<void> {
   const [id] = args;
   if (!id) {
-    die("usage: memory edit <id>");
+    die("usage: mdmem edit <id>");
   }
   const { store, storeDir } = resolveStore();
   const file = factFileFor(id);
@@ -203,7 +203,7 @@ async function cmdEdit(args: string[]): Promise<void> {
 async function cmdDelete(args: string[]): Promise<void> {
   const [id] = args;
   if (!id) {
-    die("usage: memory delete <id>");
+    die("usage: mdmem delete <id>");
   }
   const { store } = resolveStore();
   const file = await removeFact(store, id);
@@ -216,7 +216,7 @@ async function cmdDelete(args: string[]): Promise<void> {
 async function cmdSearch(args: string[]): Promise<void> {
   const [query] = args;
   if (!query) {
-    die("usage: memory search <query>");
+    die("usage: mdmem search <query>");
   }
   const { store } = resolveStore();
   const hits = await searchFacts(store, query);
@@ -328,7 +328,7 @@ async function cmdDoctor(): Promise<void> {
   );
   const current = store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
   if (current.trim() !== fresh.trim()) {
-    problems.push("MEMORY.md is stale — run `memory reindex`");
+    problems.push("MEMORY.md is stale — run `mdmem reindex`");
   }
 
   if (problems.length === 0) {
@@ -348,9 +348,9 @@ function cmdPath(): void {
 }
 
 function usage(): void {
-  print(`memory — shared, Claude-style memory for any coding agent
+  print(`mdmem — shared, Claude-style memory for any coding agent
 
-Usage: memory <command> [options]
+Usage: mdmem <command> [options]
 
   init                      Create .memory/ in this project and gitignore it
   add --type <t> --name <n> --description <d> [--body <text>] [--force]
@@ -409,7 +409,7 @@ async function main(): Promise<void> {
   }
   const handler = COMMANDS[command];
   if (!handler) {
-    die(`unknown command "${command}". Run \`memory help\`.`);
+    die(`unknown command "${command}". Run \`mdmem help\`.`);
   }
   await handler(args);
 }

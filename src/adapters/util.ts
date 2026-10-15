@@ -1,7 +1,7 @@
 /** Shared helpers for adapters that manage a marked block inside an agent's own file. */
 
-export const BLOCK_START = "<!-- memory-cli:start -->";
-export const BLOCK_END = "<!-- memory-cli:end -->";
+export const BLOCK_START = "<!-- mdmem:start -->";
+export const BLOCK_END = "<!-- mdmem:end -->";
 
 /** Insert `block` between markers, replacing an existing marked block if present. */
 export function upsertMarkedBlock(content: string, block: string): string {

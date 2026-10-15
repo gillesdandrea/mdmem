@@ -28,7 +28,7 @@ Each fact is YAML frontmatter followed by a short body:
 
 For `feedback` and `project` facts, follow the body with a `**Why:**` line (the
 reason it matters) and a `**How to apply:**` line. Link related facts with
-`[[other-slug]]`. After you create or change a fact, run `memory reindex` so
+`[[other-slug]]`. After you create or change a fact, run `mdmem reindex` so
 `MEMORY.md` reflects it.
 
 ### Types

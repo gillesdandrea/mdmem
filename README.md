@@ -1,9 +1,9 @@
-# memory-cli
+# mdmem
 
 Shared, Claude-style file-based memory for any coding agent.
 
 Claude Code has a built-in memory (a `memory/` directory of one-fact-per-file
-Markdown with a loaded index). `memory-cli` reproduces that and makes **one**
+Markdown with a loaded index). `mdmem` reproduces that and makes **one**
 per-project store the shared brain for every coding agent you use — a fact written
 by any agent is visible to all of them.
 
@@ -12,9 +12,9 @@ by any agent is visible to all of them.
 - **One store per project:** `./.memory/` — Markdown facts plus a generated
   `MEMORY.md` index. Gitignored by default.
 - **The index is derived.** Agents only ever write their own fact files;
-  `memory reindex` regenerates `MEMORY.md`. No shared file is hand-edited, so
+  `mdmem reindex` regenerates `MEMORY.md`. No shared file is hand-edited, so
   concurrent agents never conflict over it.
-- **Each agent is wired to the store in its own native way** (`memory enable`):
+- **Each agent is wired to the store in its own native way** (`mdmem enable`):
   - **Claude Code** (specific) — sets `autoMemoryDirectory` in
     `.claude/settings.local.json` so Claude's *own* memory reads and writes the
     shared store, no rule or hook needed.
@@ -31,49 +31,49 @@ by any agent is visible to all of them.
 
 ```bash
 bun install
-bun link          # puts `memory` (and the `mem` alias) on your PATH
+bun link          # puts `mdmem` on your PATH
 ```
 
-Run `memory` from inside your project. The MCP registration below also expects
-`memory` on your PATH.
+Run `mdmem` from inside your project. The MCP registration below also expects
+`mdmem` on your PATH.
 
 ## Quickstart
 
 ```bash
-memory init                 # create .memory/ and gitignore it
-memory enable --all         # wire up Claude Code + the AGENTS.md agents
-memory add --type feedback --name uses-bun \
+mdmem init                  # create .memory/ and gitignore it
+mdmem enable --all          # wire up Claude Code + the AGENTS.md agents
+mdmem add --type feedback --name uses-bun \
   --description "This project uses bun, not node" \
   --body "Use bun for scripts and tests."
-memory status               # show the store and which agents are enabled
+mdmem status                # show the store and which agents are enabled
 ```
 
 Now any enabled agent sees the memory. When an agent writes a fact file directly,
-run `memory reindex` to refresh the index (or let the next `add`/MCP write do it).
+run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it).
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `memory init` | Create `.memory/` in the project and gitignore it |
-| `memory add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a fact; refuses an existing slug unless `--force`. Body may also be piped via stdin. |
-| `memory list` | Print the memory index (`MEMORY.md`) |
-| `memory read <id>` | Print one fact by its id (slug or `<slug>.md`) |
-| `memory edit <id>` | Open a fact in `$VISUAL`/`$EDITOR`, reindex on save |
-| `memory delete` (alias `rm`) `<id>` | Remove a fact by its id (slug or `<slug>.md`) |
-| `memory search <query>` | Find facts containing text |
-| `memory reindex` | Rebuild `MEMORY.md` from fact frontmatter |
-| `memory doctor` | Check the store: parse errors, name≠filename, dangling `[[links]]`, stale index |
-| `memory enable <agent…> \| --all` | Wire an agent to the shared store |
-| `memory disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
-| `memory status` | Show the store and per-agent status |
-| `memory path` | Print the store directory |
-| `memory mcp` | Run the MCP server over stdio |
+| `mdmem init` | Create `.memory/` in the project and gitignore it |
+| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a fact; refuses an existing slug unless `--force`. Body may also be piped via stdin. |
+| `mdmem list` | Print the memory index (`MEMORY.md`) |
+| `mdmem read <id>` | Print one fact by its id (slug or `<slug>.md`) |
+| `mdmem edit <id>` | Open a fact in `$VISUAL`/`$EDITOR`, reindex on save |
+| `mdmem delete` (alias `rm`) `<id>` | Remove a fact by its id (slug or `<slug>.md`) |
+| `mdmem search <query>` | Find facts containing text |
+| `mdmem reindex` | Rebuild `MEMORY.md` from fact frontmatter |
+| `mdmem doctor` | Check the store: parse errors, name≠filename, dangling `[[links]]`, stale index |
+| `mdmem enable <agent…> \| --all` | Wire an agent to the shared store |
+| `mdmem disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
+| `mdmem status` | Show the store and per-agent status |
+| `mdmem path` | Print the store directory |
+| `mdmem mcp` | Run the MCP server over stdio |
 
 Agents: `claude-code`, `agents`, `bob`, `cursor`. Fact types: `user`, `feedback`, `project`, `reference`.
 
-With no `$VISUAL`/`$EDITOR` set, `memory edit` prints the fact's path instead of
-opening it — edit it by hand, then run `memory reindex`.
+With no `$VISUAL`/`$EDITOR` set, `mdmem edit` prints the fact's path instead of
+opening it — edit it by hand, then run `mdmem reindex`.
 
 ## Fact format
 
@@ -98,7 +98,7 @@ related facts with `[[other-slug]]`.
 
 ## MCP server
 
-For agents that call tools instead of reading files, `memory mcp` runs a stdio
+For agents that call tools instead of reading files, `mdmem mcp` runs a stdio
 server exposing `memory_index`, `memory_search`, `memory_read`, `memory_write`,
 and `memory_remove`. `memory_read` also returns each fact's current version; pass
 it back as `memory_write`'s `ifVersion` for a safe read-modify-write that rejects a
@@ -109,7 +109,7 @@ Claude Code (`.mcp.json`):
 ```json
 {
   "mcpServers": {
-    "memory": { "type": "stdio", "command": "memory", "args": ["mcp"] }
+    "mdmem": { "type": "stdio", "command": "mdmem", "args": ["mcp"] }
   }
 }
 ```
@@ -117,7 +117,7 @@ Claude Code (`.mcp.json`):
 Codex CLI:
 
 ```bash
-codex mcp add memory -- memory mcp
+codex mcp add mdmem -- mdmem mcp
 ```
 
 ## Development

@@ -49,7 +49,7 @@ describe("tracer bullet: shared memory across agents", () => {
 
       // AGENTS.md: protocol block merged in at the repo root.
       const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
-      expect(agents).toContain("memory-cli:start");
+      expect(agents).toContain("mdmem:start");
       expect(agents).toContain("Memory protocol");
 
       // One agent records a fact; the shared index reflects it.
@@ -87,7 +87,7 @@ describe("tracer bullet: shared memory across agents", () => {
 
       expect(await autoMemoryDir(root)).toBe(ctx.storeDir);
       const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
-      expect(agents.split("memory-cli:start")).toHaveLength(2); // exactly one marker
+      expect(agents.split("mdmem:start")).toHaveLength(2); // exactly one marker
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -125,7 +125,7 @@ describe("tracer bullet: shared memory across agents", () => {
       await agentsAdapter.unlink(ctx);
       const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
       expect(agents).toContain("Existing guidance.");
-      expect(agents).not.toContain("memory-cli:start");
+      expect(agents).not.toContain("mdmem:start");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "memory-cli",
+      "name": "mdmem",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
         "yaml": "^2.9.0",
