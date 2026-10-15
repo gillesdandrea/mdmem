@@ -195,6 +195,56 @@ describe("tracer bullet: shared memory across agents", () => {
   });
 });
 
+/** Run the CLI in `root`, capturing its exit code and output. */
+function runCli(root: string, ...args: string[]) {
+  const proc = Bun.spawnSync(["bun", CLI, ...args], { cwd: root });
+  return {
+    code: proc.exitCode,
+    out: proc.stdout.toString(),
+    err: proc.stderr.toString(),
+  };
+}
+
+/** A project with an initialized store, removed after `fn`. */
+async function withCliProject(
+  fn: (root: string, store: MemoryStore) => Promise<void> | void
+): Promise<void> {
+  const { root, store } = await tempProject();
+  // deterministic project root
+  await writeFile(join(root, "package.json"), "{}\n", "utf-8");
+  try {
+    await fn(root, store);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+const FAKE_AWS_KEY = `AKIA${"A".repeat(16)}`;
+
+/** Write `count` project memories named m-0, m-1, … with `description`, then reindex. */
+async function seedMemories(
+  store: MemoryStore,
+  count: number,
+  description = "d"
+): Promise<void> {
+  await Promise.all(
+    Array.from({ length: count }, (_, i) =>
+      store.create(
+        `m-${i}.md`,
+        serializeMemory({
+          frontmatter: {
+            name: `m-${i}`,
+            description,
+            metadata: { type: "project" },
+          },
+          body: "b",
+        })
+      )
+    )
+  );
+  await reindex(store);
+}
+
 describe("cli", () => {
   test("init, add, status, enable run end-to-end", async () => {
     const root = await mkdtemp(join(tmpdir(), "mdmem-cli-"));
@@ -329,5 +379,84 @@ describe("cli", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test("add refuses a secret, naming its line and kind but never the secret", async () => {
+    await withCliProject((root, store) => {
+      const add = runCli(
+        root,
+        "add",
+        "--type",
+        "reference",
+        "--name",
+        "aws",
+        "--description",
+        "AWS access",
+        "--body",
+        `Key: ${FAKE_AWS_KEY}`
+      );
+      expect(add.code).toBe(1);
+      expect(add.err).toContain("(AWS access key)");
+      expect(add.err).not.toContain(FAKE_AWS_KEY);
+      expect(store.exists("aws.md")).toBe(false);
+    });
+  });
+
+  test("doctor reports a memory that holds a secret, by line and kind", async () => {
+    await withCliProject(async (root, store) => {
+      await store.create(
+        "aws.md",
+        serializeMemory({
+          frontmatter: {
+            name: "aws",
+            description: "AWS access",
+            metadata: { type: "reference" },
+          },
+          body: `Key: ${FAKE_AWS_KEY}`,
+        })
+      );
+      await reindex(store);
+      const doctor = runCli(root, "doctor");
+      expect(doctor.code).toBe(1);
+      expect(doctor.out).toContain(
+        "aws.md: looks like it holds a secret at line 8 (AWS access key)"
+      );
+      expect(doctor.out).not.toContain(FAKE_AWS_KEY);
+    });
+  });
+
+  test("doctor reports a pointer over 150 characters, naming its memory", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1, "x".repeat(140));
+      const doctor = runCli(root, "doctor");
+      expect(doctor.code).toBe(1);
+      expect(doctor.out).toContain(
+        "m-0.md: its pointer is 158 characters, over 150 — shorten its description"
+      );
+    });
+  });
+
+  test("doctor reports an index over its line limit", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 200);
+      const doctor = runCli(root, "doctor");
+      expect(doctor.code).toBe(1);
+      expect(doctor.out).toContain(
+        "MEMORY.md is at 206 lines, over its 200-line read limit"
+      );
+    });
+  });
+
+  test("doctor reports an index over its byte limit", async () => {
+    await withCliProject(async (root, store) => {
+      // 160 pointers of about 160 bytes each: past 25,000 bytes, short of 180 lines.
+      await seedMemories(store, 160, "x".repeat(140));
+      const doctor = runCli(root, "doctor");
+      expect(doctor.code).toBe(1);
+      expect(doctor.out).toMatch(
+        /MEMORY\.md is at \d+ bytes, over its 25000-byte read limit/u
+      );
+      expect(doctor.out).not.toContain("-line read limit");
+    });
   });
 });

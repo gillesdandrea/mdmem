@@ -7,7 +7,13 @@ import { parseArgs } from "node:util";
 
 import type { AdapterContext } from "../adapters/index.ts";
 import { adapterIds, getAdapter, listAdapters } from "../adapters/index.ts";
-import { reindex, renderIndex } from "../core/index.ts";
+import {
+  indexCapacity,
+  pointerLine,
+  POINTER_MAX_CHARS,
+  reindex,
+  renderIndex,
+} from "../core/index.ts";
 import {
   memoryFileFor,
   memoryFileName,
@@ -22,9 +28,9 @@ import {
   removeMemory,
   saveMemory,
   searchMemories,
-  staleIndexWarning,
 } from "../core/operations.ts";
 import type { WriteResult } from "../core/operations.ts";
+import { describeSecrets, findSecrets } from "../core/secrets.ts";
 import {
   findProjectRoot,
   findStoreRoot,
@@ -37,11 +43,15 @@ function print(msg = ""): void {
   process.stdout.write(`${msg}\n`);
 }
 
-/** The write landed, so say so; a stale index is a warning, not a failure. */
-function reportWrite(verb: string, { file, indexError }: WriteResult): void {
+function warn(msg: string): void {
+  process.stderr.write(`mdmem: warning: ${msg}\n`);
+}
+
+/** The write landed, so say so; its warnings (a stale or full index) are not failures. */
+function reportWrite(verb: string, { file, warnings }: WriteResult): void {
   print(`${verb} ${file}`);
-  if (indexError !== undefined) {
-    process.stderr.write(`mdmem: warning: ${staleIndexWarning(indexError)}\n`);
+  for (const warning of warnings) {
+    warn(warning);
   }
 }
 
@@ -154,8 +164,11 @@ async function cmdAdd(args: string[]): Promise<void> {
 
 async function cmdReindex(): Promise<void> {
   const { store } = resolveStore();
-  await reindex(store);
+  const index = await reindex(store);
   print("Rebuilt MEMORY.md");
+  for (const { message } of indexCapacity(index)) {
+    warn(message);
+  }
 }
 
 async function cmdList(): Promise<void> {
@@ -323,7 +336,15 @@ async function cmdDoctor(): Promise<void> {
   for (const file of files) {
     try {
       // oxlint-disable-next-line no-await-in-loop -- the read sits inside the per-file try so a failed read is reported as a problem, not thrown
-      const memory = parseMemoryFile(file, await store.view(file));
+      const raw = await store.view(file);
+      // Checked before parsing, so a secret in an unparseable memory is reported too.
+      const secrets = findSecrets(raw);
+      if (secrets.length > 0) {
+        problems.push(
+          `${file}: looks like it holds a secret at ${describeSecrets(secrets)}`
+        );
+      }
+      const memory = parseMemoryFile(file, raw);
       known.add(memory.frontmatter.name);
       parsed.push({ file, memory });
       if (memoryFileName(memory.frontmatter.name) !== file) {
@@ -335,6 +356,14 @@ async function cmdDoctor(): Promise<void> {
   }
 
   for (const { file, memory } of parsed) {
+    const pointerChars = [
+      ...pointerLine({ file, frontmatter: memory.frontmatter }),
+    ].length;
+    if (pointerChars > POINTER_MAX_CHARS) {
+      problems.push(
+        `${file}: its pointer is ${pointerChars} characters, over ${POINTER_MAX_CHARS} — shorten its description`
+      );
+    }
     for (const name of linkNames(memory.body)) {
       if (!known.has(name)) {
         problems.push(`${file}: dangling [[${name}]]`);
@@ -351,6 +380,11 @@ async function cmdDoctor(): Promise<void> {
   const current = store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
   if (current.trim() !== fresh.trim()) {
     problems.push("MEMORY.md is stale — run `mdmem reindex`");
+  }
+  for (const { over, message } of indexCapacity(fresh)) {
+    if (over) {
+      problems.push(message);
+    }
   }
 
   if (problems.length === 0) {
@@ -383,7 +417,8 @@ Usage: mdmem <command> [options]
   delete | rm <name>        Remove a memory by its name (or <name>.md)
   search <query>            Find memories containing text
   reindex                   Rebuild MEMORY.md from memory frontmatter
-  doctor                    Check the store (parse errors, name≠filename, dangling links, stale index)
+  doctor                    Check the store (parse errors, name≠filename, secrets, long pointers,
+                            dangling links, stale index, index over its read limits)
   enable <agent…> | --all   Wire an agent to the shared store
   disable <agent…> | --all  Remove an agent's wiring
   status                    Show the store and which agents are enabled

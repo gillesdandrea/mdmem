@@ -418,6 +418,22 @@ describe("mcp server", () => {
     });
   });
 
+  test("memory_write refuses a secret, naming its line and kind but never the secret", async () => {
+    await withServer(async ({ client, store }) => {
+      const token = `ghp_${"a".repeat(36)}`;
+      const content = memory(
+        "deploy",
+        `Deploy with the CLI.\n\nToken: ${token}`
+      );
+      const line = content.split("\n").findIndex((l) => l.includes(token)) + 1;
+      const result = await write(client, "deploy.md", content, "new");
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain(`line ${line} (GitHub token)`);
+      expect(textOf(result)).not.toContain(token);
+      expect(store.exists("deploy.md")).toBe(false);
+    });
+  });
+
   test("memory_write regenerates the index, warning when that fails", async () => {
     await withServer(async ({ client, store }) => {
       await write(client, "note.md", memory("note", "x"), "new");

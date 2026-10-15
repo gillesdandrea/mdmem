@@ -10,7 +10,6 @@ import {
   listDocuments,
   readDocument,
   searchMemories,
-  staleIndexWarning,
   writeDocument,
 } from "../core/operations.ts";
 import type {
@@ -94,16 +93,17 @@ function documentResult({
   };
 }
 
-/** The write landed, so it is not an error; a stale index rides along as a warning. */
+/** A write's warnings, one line each, worded once for every write result. */
+function warningLines(warnings: readonly string[]): string[] {
+  return warnings.map((w) => `Warning: ${w}`);
+}
+
+/** The write landed, so it is not an error; its warnings (a stale or full index) ride along. */
 function writeText(
   verb: string,
-  { file, indexError }: WriteResult
+  { file, warnings }: WriteResult
 ): CallToolResult {
-  return text(
-    indexError === undefined
-      ? `${verb} ${file}`
-      : `${verb} ${file}\nWarning: ${staleIndexWarning(indexError)}`
-  );
+  return text([`${verb} ${file}`, ...warningLines(warnings)].join("\n"));
 }
 
 const ifVersionParam = z
@@ -112,16 +112,17 @@ const ifVersionParam = z
     "the version token from your most recent memory_read or memory_write of this path, or the literal word new for a file that does not exist yet"
   );
 
-/** Saved: the path, the new version, and a stale index as a warning (the write itself landed). */
+/** Saved: the path, the new version, and the write's warnings (the write itself landed). */
 function savedResult({
   file,
-  indexError,
+  warnings,
   version,
 }: VersionedWriteResult): CallToolResult {
-  const lines = [`Saved ${file}`, `version: ${version}`];
-  if (indexError !== undefined) {
-    lines.push(`Warning: ${staleIndexWarning(indexError)}`);
-  }
+  const lines = [
+    `Saved ${file}`,
+    `version: ${version}`,
+    ...warningLines(warnings),
+  ];
   return {
     content: [{ type: "text", text: lines.join("\n") }],
     structuredContent: { version },
@@ -264,7 +265,7 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Write a memory document",
       description:
-        "Create or update a memory document with full content, in the memory store named by store (call memory_list with no arguments to see it; omitted means the project's store). Overwrites if the path already exists: content replaces the ENTIRE document — this is not an append or a patch. Include every existing line you intend to keep; any line you omit is deleted. The content is a memory — YAML frontmatter with name, description and metadata.type (user, feedback, project or reference), then the body — and its name must equal the path without .md. MEMORY.md is generated from the memories, so it cannot be written. Use this to save durable knowledge about the project and how to work in it — not transient task state. Always pass if_version: the version token from your most recent memory_read or memory_write of this path, or the literal word new (without quotes) for a file that does not yet exist. The listing shows paths but not version tokens, so for any file already there you must memory_read it first. Writes with if_version=new to an existing path are rejected so you can't overwrite content you haven't seen. Both the rejection and a version conflict return the current content and version so you can merge and retry. The result includes the new version token for follow-up writes. Never write secrets or credentials into a memory — the store is shared with every agent on the project.",
+        "Create or update a memory document with full content, in the memory store named by store (call memory_list with no arguments to see it; omitted means the project's store). Overwrites if the path already exists: content replaces the ENTIRE document — this is not an append or a patch. Include every existing line you intend to keep; any line you omit is deleted. The content is a memory — YAML frontmatter with name, description and metadata.type (user, feedback, project or reference), then the body — and its name must equal the path without .md. MEMORY.md is generated from the memories, so it cannot be written. Use this to save durable knowledge about the project and how to work in it — not transient task state. Always pass if_version: the version token from your most recent memory_read or memory_write of this path, or the literal word new (without quotes) for a file that does not yet exist. The listing shows paths but not version tokens, so for any file already there you must memory_read it first. Writes with if_version=new to an existing path are rejected so you can't overwrite content you haven't seen. Both the rejection and a version conflict return the current content and version so you can merge and retry. The result includes the new version token for follow-up writes. Never write secrets or credentials into a memory — the store is shared with every agent on the project, and content that looks like it holds an API key, token, private key or password is refused.",
       inputSchema: z.object({
         store: storeParam,
         path: z

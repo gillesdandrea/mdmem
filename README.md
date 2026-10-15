@@ -63,7 +63,7 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem delete` (alias `rm`) `<name>` | Remove a memory by its name (or `<name>.md`) |
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Rebuild `MEMORY.md` from memory frontmatter |
-| `mdmem doctor` | Check the store: parse errors, name≠filename, dangling `[[links]]`, stale index |
+| `mdmem doctor` | Check the store: parse errors, name≠filename, secrets, pointers over 150 characters, dangling `[[links]]`, stale index, index over Claude Code's read limits |
 | `mdmem enable <agent…> \| --all` | Wire an agent to the shared store |
 | `mdmem disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
 | `mdmem status` | Show the store and per-agent status |
@@ -105,7 +105,7 @@ server with the same memory-store tools as Claude Code, plus two of its own:
 |---|---|
 | `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
 | `memory_read` | Read one document by `path` (`prefers-bun.md`, or the index `MEMORY.md`), with its version token. |
-| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name. `MEMORY.md` and paths inside a directory are refused. |
+| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` is refused. |
 | `memory_search` | List the memories containing a query, by path with their description. |
 

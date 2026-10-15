@@ -1,6 +1,6 @@
 import { basename, dirname } from "node:path";
 
-import { reindex } from "./index.ts";
+import { indexCapacity, reindex } from "./index.ts";
 import type { MemoryType } from "./memory.ts";
 import {
   memoryFileFor,
@@ -9,6 +9,7 @@ import {
   parseMemoryFile,
   serializeMemory,
 } from "./memory.ts";
+import { assertNoSecrets } from "./secrets.ts";
 import { INDEX_FILE, versionOf } from "./store.ts";
 import type { DocumentInfo, MemoryStore } from "./store.ts";
 
@@ -19,18 +20,15 @@ import type { DocumentInfo, MemoryStore } from "./store.ts";
  */
 
 /**
- * The memory file a write touched. `indexError` is set when the write landed but
- * MEMORY.md could not be rebuilt (e.g. another memory is unparseable): the write
- * still succeeded, so callers report it, then warn that the index is stale.
+ * The memory file a write touched, and the warnings the write leaves: the rebuilt
+ * MEMORY.md near or over Claude Code's read limits, or MEMORY.md stale because it
+ * could not be rebuilt (e.g. another memory is unparseable). The write landed either
+ * way, so callers report it, then each warning. The warnings are worded once here so
+ * the CLI and MCP say the same thing.
  */
 export interface WriteResult {
   file: string;
-  indexError?: string;
-}
-
-/** One line for a stale index, shared so the CLI and MCP say the same thing. */
-export function staleIndexWarning(indexError: string): string {
-  return `MEMORY.md is stale: ${indexError} (run \`mdmem doctor\`)`;
+  warnings: string[];
 }
 
 /** Rebuild the index after `file` was written or removed, keeping any failure as a warning. */
@@ -39,12 +37,16 @@ export async function reindexAfterWrite(
   file: string
 ): Promise<WriteResult> {
   try {
-    await reindex(store);
-    return { file };
-  } catch (error) {
+    const index = await reindex(store);
     return {
       file,
-      indexError: error instanceof Error ? error.message : String(error),
+      warnings: indexCapacity(index).map(({ message }) => message),
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      file,
+      warnings: [`MEMORY.md is stale: ${reason} (run \`mdmem doctor\`)`],
     };
   }
 }
@@ -120,8 +122,9 @@ export interface MemoryInput {
 }
 
 /**
- * Serialize + validate a memory, write it, and refresh the index. Returns the file
- * name and any index error. `ifVersion` opts into the store's lost-update guard
+ * Serialize + validate a memory, write it, and refresh the index. Content that
+ * looks like it holds a secret is refused. Returns the file
+ * name and the write's warnings. `ifVersion` opts into the store's lost-update guard
  * for read-modify-write.
  */
 export async function saveMemory(
@@ -140,6 +143,7 @@ export async function saveMemory(
   // Parse-validate before writing so a malformed memory never lands in the store.
   parseMemory(content);
   const file = memoryFileName(input.name);
+  assertNoSecrets(file, content);
   await store.create(file, content, opts?.ifVersion);
   return reindexAfterWrite(store, file);
 }
@@ -236,7 +240,8 @@ function assertMemoryPath(path: string): void {
 /**
  * Write a whole memory document under the store's version guard: `ifVersion` is the
  * version last read or written at `path`, or `new` for a file that must not exist
- * yet. The content must parse as a memory named after its file. Refreshes the index.
+ * yet. The content must parse as a memory named after its file and hold no secret.
+ * Refreshes the index.
  */
 export async function writeDocument(
   store: MemoryStore,
@@ -252,6 +257,7 @@ export async function writeDocument(
       `Refused "${path}": its name is "${name}", but a memory's name must equal its file name without .md ("${expected}")`
     );
   }
+  assertNoSecrets(path, content);
   await store.create(path, content, ifVersion);
   return {
     ...(await reindexAfterWrite(store, path)),
@@ -282,7 +288,7 @@ export async function deleteDocument(
 
 /**
  * Remove a memory by name (a name or `<name>.md`) and refresh the index. Returns the
- * removed file name and any index error, or null if no such memory existed.
+ * removed file name and the write's warnings, or null if no such memory existed.
  */
 export async function removeMemory(
   store: MemoryStore,
