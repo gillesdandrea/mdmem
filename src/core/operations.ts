@@ -1,6 +1,6 @@
 import { basename, dirname } from "node:path";
 
-import { indexCapacity, reindex } from "./index.ts";
+import { INDEX_FILE, loadMemories, refreshIndex, reindex } from "./check.ts";
 import type { Memory, MemoryType } from "./memory.ts";
 import {
   memoryFileFor,
@@ -12,7 +12,6 @@ import { RefusalError } from "./refusal.ts";
 import { assertNoSecrets } from "./secrets.ts";
 import {
   findStoreRoot,
-  INDEX_FILE,
   MemoryStore,
   NEW_FILE_VERSION,
   STORE_DIR,
@@ -22,11 +21,12 @@ import type { DocumentInfo } from "./store.ts";
 
 /**
  * Memory-level operations shared by both surfaces (CLI and MCP). They compose the
- * store's file ops with memory (de)serialization and reindexing so the two surfaces
- * can't drift — the CLI and MCP keep only their own argument parsing and output.
- * The document operations (writeDocument, deleteDocument) are the one path by which
- * a memory is written or deleted, and every validation lives there; readDocument
- * reads one memory by its path. Search and listing still read the store directly.
+ * store's file ops with memory (de)serialization and the Check module (./check.ts),
+ * which loads the memories and refreshes the index, so the two surfaces can't drift —
+ * the CLI and MCP keep only their own argument parsing and output. The document
+ * operations (writeDocument, deleteDocument) are the one path by which a memory is
+ * written or deleted, and every validation lives there; readDocument reads one memory
+ * by its path, and searchMemories searches the memories the Check module loads.
  */
 
 /** The store of the project enclosing `startDir`, found by walking up to its `.memory/`. */
@@ -53,23 +53,11 @@ export interface WriteResult {
 }
 
 /** Rebuild the index after `file` was written or removed, keeping any failure as a warning. */
-export async function reindexAfterWrite(
+async function reindexAfterWrite(
   store: MemoryStore,
   file: string
 ): Promise<WriteResult> {
-  try {
-    const index = await reindex(store);
-    return {
-      file,
-      warnings: indexCapacity(index).map(({ message }) => message),
-    };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    return {
-      file,
-      warnings: [`MEMORY.md is stale: ${reason} (run \`mdmem doctor\`)`],
-    };
-  }
+  return { file, warnings: await refreshIndex(store) };
 }
 
 /** How many documents one listing page holds; a longer listing continues from a cursor. */
@@ -122,7 +110,7 @@ export async function listDocuments(
   { pathPrefix = "", cursor }: { pathPrefix?: string; cursor?: string } = {}
 ): Promise<DocumentPage> {
   if (!store.exists(INDEX_FILE)) {
-    await reindexAfterWrite(store, INDEX_FILE);
+    await refreshIndex(store);
   }
   const all = await store.listDocuments();
   const matching = all.filter(
@@ -147,27 +135,30 @@ export interface SearchHit {
   description: string;
 }
 
-/** Memories whose raw text contains `query` (case-insensitive), with their descriptions. */
+/** A search's hits, and a warning for each broken memory it could not search. */
+export interface SearchResult {
+  hits: SearchHit[];
+  warnings: string[];
+}
+
+/**
+ * The memories whose raw text contains `query` (case-insensitive), with their
+ * descriptions, in file order. It answers from the memories that parse; each broken
+ * one is a warning, not a failure (ADR 0002).
+ */
 export async function searchMemories(
   store: MemoryStore,
   query: string
-): Promise<SearchHit[]> {
+): Promise<SearchResult> {
   const needle = query.toLowerCase();
-  const files = await store.listMemoryFiles();
-  // Read the memories concurrently, then match them in file order.
-  const raws = await Promise.all(
-    files.map(async (file) => ({ file, raw: await store.view(file) }))
-  );
-  const hits: SearchHit[] = [];
-  for (const { file, raw } of raws) {
-    if (raw.toLowerCase().includes(needle)) {
-      hits.push({
-        file,
-        description: parseMemoryFile(file, raw).frontmatter.description,
-      });
-    }
-  }
-  return hits;
+  const { memories, broken } = await loadMemories(store);
+  const hits = memories
+    .filter(({ raw }) => raw.toLowerCase().includes(needle))
+    .map(({ file, memory }) => ({
+      file,
+      description: memory.frontmatter.description,
+    }));
+  return { hits, warnings: broken.map(({ problem }) => problem) };
 }
 
 /** The index text, generating it first if it doesn't exist yet. */

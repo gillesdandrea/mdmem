@@ -67,7 +67,7 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Rebuild `MEMORY.md` from memory frontmatter |
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
-| `mdmem doctor` | Check the store: parse errors, name≠filename, secrets, pointers over 150 characters, dangling `[[links]]`, stale index, index over Claude Code's read limits |
+| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, secrets, pointers over 150 characters, dangling `[[links]]`, stale index, index over Claude Code's read limits |
 | `mdmem enable <agent…> \| --all` | Wire an agent to the shared store |
 | `mdmem disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
 | `mdmem status` | Show the store and per-agent status |
@@ -82,6 +82,12 @@ refused: the store stays as it was, and the command prints where the copy is
 kept so the edit is not lost. With no `$VISUAL`/`$EDITOR` set, `mdmem edit`
 prints the memory's path instead of opening it — edit it by hand, then run
 `mdmem reindex`.
+
+A memory that does not parse locks no one out. `search` and `status` answer
+from the memories that do and warn about the broken one on stderr, and a save
+still lands with a warning that `MEMORY.md` is stale. Only `reindex` refuses,
+naming every unparseable memory, because an index that silently drops a memory
+is worse than a stale one. `doctor` reports it with the store's other problems.
 
 ## Memory format
 
@@ -107,7 +113,7 @@ related memories with `[[name]]`.
 ## MCP server
 
 For agents that call tools instead of reading files, `mdmem mcp` runs a stdio
-server with the same memory-store tools as Claude Code, plus two of its own:
+server with the same memory-store tools as Claude Code, plus three of its own:
 
 | Tool | Purpose |
 |---|---|
@@ -115,7 +121,8 @@ server with the same memory-store tools as Claude Code, plus two of its own:
 | `memory_read` | Read one document by `path` (`prefers-bun.md`, or the index `MEMORY.md`), with its version token. |
 | `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` is refused. |
-| `memory_search` | List the memories containing a query, by path with their description. |
+| `memory_search` | List the memories containing a query, by path with their description. A memory that does not parse is skipped and named in a warning. |
+| `memory_check` | Check the store as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems. |
 
 `store` is optional everywhere: leave it out to use the project's store. An
 unknown store id is an error that names the valid one. `memory_write` and

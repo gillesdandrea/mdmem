@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
-import { reindex } from "../src/core/index.ts";
+import { reindex } from "../src/core/check.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import { STORE_PAGE_SIZE } from "../src/core/operations.ts";
 import { getConsolidatePrompt } from "../src/core/protocol.ts";
@@ -85,6 +85,7 @@ describe("mcp server", () => {
       expect(names).toContain("memory_write");
       expect(names).toContain("memory_list");
       expect(names).toContain("memory_delete");
+      expect(names).toContain("memory_check");
       expect(names).not.toContain("memory_index");
       expect(names).not.toContain("memory_remove");
       // Agents read the schema in this order; toEqual on objects would not catch a reorder.
@@ -536,6 +537,55 @@ describe("mcp server", () => {
         arguments: { store: storeId, query: "bun" },
       });
       expect(textOf(result)).toBe("uses-bun.md — About uses-bun");
+    });
+  });
+
+  test("memory_search answers from the memories that parse and appends a warning for a broken one", async () => {
+    await withServer(async ({ client, store }) => {
+      await write(client, "uses-bun.md", memory("uses-bun", "Use bun."), "new");
+      await store.create("broken.md", "no frontmatter, but bun");
+
+      const result = await client.callTool({
+        name: "memory_search",
+        arguments: { query: "bun" },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(textOf(result)).toBe(
+        "uses-bun.md — About uses-bun\nWarning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`"
+      );
+    });
+  });
+
+  test("memory_check on a clean store reports no problems with the memory count", async () => {
+    await withServer(async ({ client, storeId }) => {
+      await write(client, "uses-bun.md", memory("uses-bun", "Use bun."), "new");
+
+      const result = await client.callTool({
+        name: "memory_check",
+        arguments: { store: storeId },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(textOf(result)).toBe("✓ 1 memory, no problems");
+    });
+  });
+
+  test("memory_check reports a problem as a finding, not an error", async () => {
+    await withServer(async ({ client }) => {
+      await write(
+        client,
+        "uses-bun.md",
+        memory("uses-bun", "Use bun. See [[gone]]."),
+        "new"
+      );
+
+      const result = await client.callTool({
+        name: "memory_check",
+        arguments: {},
+      });
+      expect(result.isError).toBeFalsy();
+      expect(textOf(result)).toBe(
+        "Found 1 problem(s):\n  - uses-bun.md: dangling [[gone]]"
+      );
     });
   });
 

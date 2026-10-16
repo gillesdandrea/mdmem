@@ -15,19 +15,13 @@ import { parseArgs } from "node:util";
 import type { AdapterContext } from "../adapters/index.ts";
 import { adapterIds, getAdapter, listAdapters } from "../adapters/index.ts";
 import {
-  indexCapacity,
-  pointerLine,
-  POINTER_MAX_CHARS,
+  checkStore,
+  formatCheck,
+  loadMemories,
   reindex,
-  renderIndex,
-} from "../core/index.ts";
-import {
-  memoryFileFor,
-  memoryFileName,
-  MEMORY_TYPES,
-  parseMemoryFile,
-} from "../core/memory.ts";
-import type { Memory, MemoryType } from "../core/memory.ts";
+} from "../core/check.ts";
+import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
+import type { MemoryType } from "../core/memory.ts";
 import {
   assertMemoryPath,
   openStore,
@@ -41,11 +35,9 @@ import {
 import type { WriteResult } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
-import { describeSecrets, findSecrets } from "../core/secrets.ts";
 import {
   findProjectRoot,
   findStoreRoot,
-  INDEX_FILE,
   MemoryStore,
   STORE_DIR,
   VersionConflictError,
@@ -179,10 +171,10 @@ async function cmdAdd(args: string[]): Promise<void> {
 
 async function cmdReindex(): Promise<void> {
   const { store } = resolveStore();
-  const index = await reindex(store);
+  const warnings = await reindex(store);
   print("Rebuilt MEMORY.md");
-  for (const { message } of indexCapacity(index)) {
-    warn(message);
+  for (const warning of warnings) {
+    warn(warning);
   }
 }
 
@@ -297,13 +289,15 @@ async function cmdSearch(args: string[]): Promise<void> {
     die("usage: mdmem search <query>");
   }
   const { store } = resolveStore();
-  const hits = await searchMemories(store, query);
+  const { hits, warnings } = await searchMemories(store, query);
   if (hits.length === 0) {
     print(`No memories matching "${query}".`);
-    return;
   }
   for (const hit of hits) {
     print(`${hit.file} — ${hit.description}`);
+  }
+  for (const warning of warnings) {
+    warn(warning);
   }
 }
 
@@ -350,7 +344,8 @@ async function cmdLink(
 async function cmdStatus(): Promise<void> {
   const resolved = resolveStore();
   print(`Store: ${resolved.storeDir}`);
-  const memories = await resolved.store.listMemoryFiles();
+  // Counts the memories that parse; each broken one is a warning.
+  const { memories, broken } = await loadMemories(resolved.store);
   print(`Memories: ${memories.length}`);
   print("Agents:");
   const ctx = context(resolved);
@@ -362,93 +357,18 @@ async function cmdStatus(): Promise<void> {
       `  ${status.linked ? "✓" : "·"} ${status.title} — ${status.details.join("; ")}`
     );
   }
-}
-
-function countMemories(count: number): string {
-  return count === 1 ? "1 memory" : `${count} memories`;
-}
-
-function linkNames(body: string): string[] {
-  const names: string[] = [];
-  for (const match of body.matchAll(/\[\[(?<name>[a-z0-9-]+)\]\]/gu)) {
-    const name = match.groups?.name;
-    if (name) {
-      names.push(name);
-    }
+  for (const { problem } of broken) {
+    warn(problem);
   }
-  return names;
 }
 
 async function cmdDoctor(): Promise<void> {
   const { store } = resolveStore();
-  const files = await store.listMemoryFiles();
-  const problems: string[] = [];
-  const known = new Set<string>();
-  const parsed: { file: string; memory: Memory }[] = [];
-
-  for (const file of files) {
-    try {
-      // oxlint-disable-next-line no-await-in-loop -- the read sits inside the per-file try so a failed read is reported as a problem, not thrown
-      const raw = await store.view(file);
-      // Checked before parsing, so a secret in an unparseable memory is reported too.
-      const secrets = findSecrets(raw);
-      if (secrets.length > 0) {
-        problems.push(
-          `${file}: looks like it holds a secret at ${describeSecrets(secrets)}`
-        );
-      }
-      const memory = parseMemoryFile(file, raw);
-      known.add(memory.frontmatter.name);
-      parsed.push({ file, memory });
-      if (memoryFileName(memory.frontmatter.name) !== file) {
-        problems.push(`${file}: name "${memory.frontmatter.name}" ≠ filename`);
-      }
-    } catch (error) {
-      problems.push(error instanceof Error ? error.message : String(error));
-    }
+  const check = await checkStore(store);
+  print(formatCheck(check));
+  if (check.problems.length > 0) {
+    process.exit(1);
   }
-
-  for (const { file, memory } of parsed) {
-    const pointerChars = [
-      ...pointerLine({ file, frontmatter: memory.frontmatter }),
-    ].length;
-    if (pointerChars > POINTER_MAX_CHARS) {
-      problems.push(
-        `${file}: its pointer is ${pointerChars} characters, over ${POINTER_MAX_CHARS} — shorten its description`
-      );
-    }
-    for (const name of linkNames(memory.body)) {
-      if (!known.has(name)) {
-        problems.push(`${file}: dangling [[${name}]]`);
-      }
-    }
-  }
-
-  const fresh = renderIndex(
-    parsed.map(({ file, memory }) => ({
-      file,
-      frontmatter: memory.frontmatter,
-    }))
-  );
-  const current = store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
-  if (current.trim() !== fresh.trim()) {
-    problems.push("MEMORY.md is stale — run `mdmem reindex`");
-  }
-  for (const { over, message } of indexCapacity(fresh)) {
-    if (over) {
-      problems.push(message);
-    }
-  }
-
-  if (problems.length === 0) {
-    print(`✓ ${countMemories(files.length)}, no problems`);
-    return;
-  }
-  print(`Found ${problems.length} problem(s):`);
-  for (const problem of problems) {
-    print(`  - ${problem}`);
-  }
-  process.exit(1);
 }
 
 function cmdConsolidate(): void {
@@ -478,7 +398,7 @@ Usage: mdmem <command> [options]
   search <query>            Find memories containing text
   reindex                   Rebuild MEMORY.md from memory frontmatter
   consolidate               Print a prompt that has an agent consolidate the store
-  doctor                    Check the store (parse errors, name≠filename, secrets, long pointers,
+  doctor | check            Check the store (parse errors, name≠filename, secrets, long pointers,
                             dangling links, stale index, index over its read limits)
   enable <agent…> | --all   Wire an agent to the shared store
   disable <agent…> | --all  Remove an agent's wiring
@@ -507,6 +427,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   search: (args) => cmdSearch(args),
   reindex: () => cmdReindex(),
   doctor: () => cmdDoctor(),
+  check: () => cmdDoctor(),
   consolidate: () => cmdConsolidate(),
   enable: (args) => cmdLink(args, "enable"),
   disable: (args) => cmdLink(args, "disable"),

@@ -16,7 +16,7 @@ import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import { cursorAdapter } from "../src/adapters/cursor.ts";
 import type { AdapterContext } from "../src/adapters/index.ts";
-import { reindex } from "../src/core/index.ts";
+import { reindex } from "../src/core/check.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import { getConsolidatePrompt } from "../src/core/protocol.ts";
 import { MemoryStore } from "../src/core/store.ts";
@@ -252,12 +252,8 @@ async function withCliProject(
 
 const FAKE_AWS_KEY = `AKIA${"A".repeat(16)}`;
 
-/** Write `count` project memories named m-0, m-1, … with `description`, then reindex. */
-async function seedMemories(
-  store: MemoryStore,
-  count: number,
-  description = "d"
-): Promise<void> {
+/** Write `count` project memories named m-0, m-1, …, then reindex. */
+async function seedMemories(store: MemoryStore, count: number): Promise<void> {
   await Promise.all(
     Array.from({ length: count }, (_, i) =>
       store.create(
@@ -265,7 +261,7 @@ async function seedMemories(
         serializeMemory({
           frontmatter: {
             name: `m-${i}`,
-            description,
+            description: "d",
             metadata: { type: "project" },
           },
           body: "b",
@@ -371,7 +367,10 @@ describe("cli", () => {
 
       const doctor = run("doctor");
       expect(doctor.code).toBe(0);
-      expect(doctor.out).toContain("✓ 1 memory, no problems");
+      expect(doctor.out).toBe("✓ 1 memory, no problems\n");
+      const check = run("check");
+      expect(check.code).toBe(0);
+      expect(check.out).toBe(doctor.out);
 
       const storePath = run("path");
       expect(storePath.code).toBe(0);
@@ -381,12 +380,13 @@ describe("cli", () => {
       expect(del.code).toBe(0);
       expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(false);
 
-      // a broken memory ends the command with one line, not a stack trace
+      // a search skips a broken memory and warns of it on stderr
       await writeFile(join(root, ".memory/broken.md"), "no frontmatter\n");
       const search = run("search", "frontmatter");
-      expect(search.code).toBe(1);
+      expect(search.code).toBe(0);
+      expect(search.out).toBe('No memories matching "frontmatter".\n');
       expect(search.err).toBe(
-        "mdmem: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`\n"
+        "mdmem: warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`\n"
       );
 
       // a broken memory elsewhere doesn't make a write that landed read as failed
@@ -479,64 +479,6 @@ describe("cli", () => {
       expect(add.err).toContain("(AWS access key)");
       expect(add.err).not.toContain(FAKE_AWS_KEY);
       expect(store.exists("aws.md")).toBe(false);
-    });
-  });
-
-  test("doctor reports a memory that holds a secret, by line and kind", async () => {
-    await withCliProject(async (root, store) => {
-      await store.create(
-        "aws.md",
-        serializeMemory({
-          frontmatter: {
-            name: "aws",
-            description: "AWS access",
-            metadata: { type: "reference" },
-          },
-          body: `Key: ${FAKE_AWS_KEY}`,
-        })
-      );
-      await reindex(store);
-      const doctor = runCli(root, "doctor");
-      expect(doctor.code).toBe(1);
-      expect(doctor.out).toContain(
-        "aws.md: looks like it holds a secret at line 8 (AWS access key)"
-      );
-      expect(doctor.out).not.toContain(FAKE_AWS_KEY);
-    });
-  });
-
-  test("doctor reports a pointer over 150 characters, naming its memory", async () => {
-    await withCliProject(async (root, store) => {
-      await seedMemories(store, 1, "x".repeat(140));
-      const doctor = runCli(root, "doctor");
-      expect(doctor.code).toBe(1);
-      expect(doctor.out).toContain(
-        "m-0.md: its pointer is 158 characters, over 150 — shorten its description"
-      );
-    });
-  });
-
-  test("doctor reports an index over its line limit", async () => {
-    await withCliProject(async (root, store) => {
-      await seedMemories(store, 200);
-      const doctor = runCli(root, "doctor");
-      expect(doctor.code).toBe(1);
-      expect(doctor.out).toContain(
-        "MEMORY.md is at 206 lines, over its 200-line read limit"
-      );
-    });
-  });
-
-  test("doctor reports an index over its byte limit", async () => {
-    await withCliProject(async (root, store) => {
-      // 160 pointers of about 160 bytes each: past 25,000 bytes, short of 180 lines.
-      await seedMemories(store, 160, "x".repeat(140));
-      const doctor = runCli(root, "doctor");
-      expect(doctor.code).toBe(1);
-      expect(doctor.out).toMatch(
-        /MEMORY\.md is at \d+ bytes, over its 25000-byte read limit/u
-      );
-      expect(doctor.out).not.toContain("-line read limit");
     });
   });
 

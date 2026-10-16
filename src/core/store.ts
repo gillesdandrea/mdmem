@@ -23,12 +23,11 @@ import { RefusalError } from "./refusal.ts";
  * (GLOSSARY.md), live above it. It refuses a path that escapes the store, and a
  * write or delete against a version the caller has not seen with
  * VersionConflictError, which carries the current content for a merge (ADR 0002,
- * docs/adr/0002-refuse-or-degrade-never-crash.md). The derived
- * index stays off the concurrent-write path entirely (see ./index.ts).
+ * docs/adr/0002-refuse-or-degrade-never-crash.md). Which file is the index, and
+ * how it is derived from the memories, is the business of ./check.ts.
  */
 
 export const STORE_DIR = ".memory";
-export const INDEX_FILE = "MEMORY.md";
 
 /** The version a writer passes for a file that must not exist yet. */
 export const NEW_FILE_VERSION = "new";
@@ -132,30 +131,21 @@ export class MemoryStore {
     await rm(this.full(path));
   }
 
-  /** Top-level memory files: every `*.md` except the generated index. */
-  async listMemoryFiles(): Promise<string[]> {
+  /** Top-level memory documents' paths: every `*.md`, the index included, sorted. */
+  async listFiles(): Promise<string[]> {
     if (!existsSync(this.root)) {
       return [];
     }
     const entries = await readdir(this.root, { withFileTypes: true });
     return entries
-      .filter(
-        (e) => e.isFile() && e.name.endsWith(".md") && e.name !== INDEX_FILE
-      )
+      .filter((e) => e.isFile() && e.name.endsWith(".md"))
       .map((e) => e.name)
       .toSorted();
   }
 
   /** Top-level memory documents: every `*.md`, the index included, sorted by path. */
   async listDocuments(): Promise<DocumentInfo[]> {
-    if (!existsSync(this.root)) {
-      return [];
-    }
-    const entries = await readdir(this.root, { withFileTypes: true });
-    const paths = entries
-      .filter((e) => e.isFile() && e.name.endsWith(".md"))
-      .map((e) => e.name)
-      .toSorted();
+    const paths = await this.listFiles();
     return Promise.all(
       paths.map(async (path) => {
         const info = await stat(this.full(path));

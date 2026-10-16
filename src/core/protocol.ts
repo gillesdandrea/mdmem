@@ -4,7 +4,7 @@ import {
   INDEX_MAX_BYTES,
   INDEX_MAX_LINES,
   POINTER_MAX_CHARS,
-} from "./index.ts";
+} from "./check.ts";
 
 /**
  * The text mdmem hands to agents lives as editable Markdown under `templates/`, so it
@@ -17,7 +17,7 @@ import {
  *   MCP prompt `consolidate`.
  *
  * Both hold `{{placeholder}}`s, filled in when they are rendered, so the index limits
- * they state follow the constants in `index.ts`.
+ * they state follow the constants in `check.ts`.
  */
 type TemplateName = "memory-protocol" | "consolidate";
 

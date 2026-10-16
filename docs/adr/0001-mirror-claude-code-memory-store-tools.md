@@ -7,4 +7,4 @@ mdmem reproduces Claude Code's memory system: the same vocabulary, the same memo
 - The files stay the source of truth. Direct edits remain legal, `mdmem reindex` repairs the index after them, and `mdmem doctor` reports what they broke.
 - The `claude-code` adapter keeps pointing Claude Code's auto memory at the store with `autoMemoryDirectory`. Claude Code edits that directory directly and writes its own pointers, and mdmem cannot route its built-in memory through tools.
 - The index is generated from the memories' frontmatter, as Claude Code does for its shared stores, not hand-written as in its private auto memory. A pointer's title is the memory's name, because the format has no title field.
-- mdmem adds tools Claude Code lacks: `memory_search`, and `memory_delete` (Claude Code deletes memory files with `rm`).
+- mdmem adds tools Claude Code lacks: `memory_search`, `memory_check` (the check `mdmem doctor` runs), and `memory_delete` (Claude Code deletes memory files with `rm`).

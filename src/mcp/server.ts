@@ -6,6 +6,7 @@ import type {
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
+import { checkStore, formatCheck, POINTER_MAX_CHARS } from "../core/check.ts";
 import {
   assertStoreId,
   deleteDocument,
@@ -30,8 +31,9 @@ import type { MemoryStore } from "../core/store.ts";
  * MCP surface over the shared `.memory/` store, for agents that would rather call
  * tools than read files. It mirrors Claude Code's memory-store tools (memory_list,
  * memory_read, memory_write: whole documents addressed by path, guarded by a required
- * if_version) plus memory_search and memory_delete (docs/adr/0001). The operations
- * live in ../core/operations; writes reindex automatically so the index stays fresh.
+ * if_version) plus memory_search, memory_check and memory_delete (docs/adr/0001). The
+ * operations live in ../core/operations and ../core/check; writes reindex automatically
+ * so the index stays fresh.
  * It also serves the consolidation prompt, as the MCP prompt consolidate.
  */
 
@@ -94,7 +96,7 @@ function documentResult({
   };
 }
 
-/** A write's warnings, one line each, worded once for every write result. */
+/** A result's warnings (a write's, or a search's broken memories), one line each, worded once. */
 function warningLines(warnings: readonly string[]): string[] {
   return warnings.map((w) => `Warning: ${w}`);
 }
@@ -175,7 +177,7 @@ async function withStore(
     if (error instanceof RefusalError) {
       return errorText(error.message);
     }
-    // Anything else, such as a broken memory met while reading the store, is still a result, never a crash.
+    // Anything else, such as a file the store cannot read, is still a result, never a crash.
     return errorText(error instanceof Error ? error.message : String(error));
   }
 }
@@ -219,7 +221,7 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Search memory",
       description:
-        "Find the memories in a memory store whose text (name, description or body) contains the query, ignoring case. Each line gives a matching memory document's path and its description; use memory_read for the content.",
+        "Find the memories in a memory store whose text (name, description or body) contains the query, ignoring case. Each line gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it.",
       inputSchema: z.object({
         store: storeParam,
         query: z.string().describe("text to search for"),
@@ -227,13 +229,25 @@ export async function startMcpServer(): Promise<void> {
     },
     ({ store: id, query }) =>
       withStore(id, async (store) => {
-        const hits = await searchMemories(store, query);
-        return text(
+        const { hits, warnings } = await searchMemories(store, query);
+        const lines =
           hits.length > 0
-            ? hits.map((h) => `${h.file} — ${h.description}`).join("\n")
-            : `No memories matching "${query}".`
-        );
+            ? hits.map((h) => `${h.file} — ${h.description}`)
+            : [`No memories matching "${query}".`];
+        // An unparseable memory is skipped and reported, not a failure (ADR 0002).
+        return text([...lines, ...warningLines(warnings)].join("\n"));
       })
+  );
+
+  server.registerTool(
+    "memory_check",
+    {
+      title: "Check a memory store",
+      description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a dangling [[link]], a stale index, or an index over Claude Code's read limits. Returns the problems one per line, or a line with the memory count saying there are none. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also rewrites a stale index once every memory parses.`,
+      inputSchema: z.object({ store: storeParam }),
+    },
+    ({ store: id }) =>
+      withStore(id, async (store) => text(formatCheck(await checkStore(store))))
   );
 
   server.registerTool(
