@@ -27,7 +27,7 @@ async function tempProject(): Promise<{
   const store = new MemoryStore(storeDir);
   // creates .memory + empty index
   await reindex(store);
-  return { root, ctx: { projectRoot: root, storeDir, home: root }, store };
+  return { root, ctx: { projectRoot: root, storeDir }, store };
 }
 
 async function autoMemoryDir(root: string): Promise<string | undefined> {

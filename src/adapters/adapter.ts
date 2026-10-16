@@ -10,18 +10,14 @@ export interface AdapterContext {
   projectRoot: string;
   /** Absolute path to the `.memory/` store. */
   storeDir: string;
-  /** User home directory (for agents whose config lives outside the repo). */
-  home: string;
 }
 
 export interface LinkResult {
-  agent: string;
   title: string;
   actions: string[];
 }
 
 export interface AgentStatus {
-  agent: string;
   title: string;
   linked: boolean;
   details: string[];

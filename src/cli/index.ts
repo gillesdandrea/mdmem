@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -85,7 +84,6 @@ function context(resolved: Resolved): AdapterContext {
   return {
     projectRoot: resolved.projectRoot,
     storeDir: resolved.storeDir,
-    home: homedir(),
   };
 }
 

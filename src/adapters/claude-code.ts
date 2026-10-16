@@ -9,7 +9,6 @@ import type {
   LinkResult,
 } from "./adapter.ts";
 
-const ID = "claude-code";
 const TITLE = "Claude Code";
 // Claude Code's native auto-memory can be relocated with this setting. Pointing it
 // at the shared store makes Claude read AND write there natively — no rule or hook
@@ -46,7 +45,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 export const claudeCodeAdapter: Adapter = {
-  id: ID,
+  id: "claude-code",
   title: TITLE,
 
   async link(ctx: AdapterContext): Promise<LinkResult> {
@@ -56,7 +55,6 @@ export const claudeCodeAdapter: Adapter = {
     settings[DIR_KEY] = ctx.storeDir;
     await writeJson(settingsPath, settings);
     return {
-      agent: ID,
       title: TITLE,
       actions: [
         `set ${DIR_KEY} → ${ctx.storeDir} in ${SETTINGS_REL}`,
@@ -69,12 +67,11 @@ export const claudeCodeAdapter: Adapter = {
     const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
     const settings = await readSettings(settingsPath);
     if (settings[DIR_KEY] === undefined) {
-      return { agent: ID, title: TITLE, actions: ["nothing to remove"] };
+      return { title: TITLE, actions: ["nothing to remove"] };
     }
     delete settings.autoMemoryDirectory;
     await writeJson(settingsPath, settings);
     return {
-      agent: ID,
       title: TITLE,
       actions: [`removed ${DIR_KEY} from ${SETTINGS_REL}`],
     };
@@ -93,6 +90,6 @@ export const claudeCodeAdapter: Adapter = {
     } else {
       detail = `${DIR_KEY} set elsewhere (${current})`;
     }
-    return { agent: ID, title: TITLE, linked, details: [detail] };
+    return { title: TITLE, linked, details: [detail] };
   },
 };

@@ -39,7 +39,6 @@ export function rulesFileAdapter(config: RulesFileConfig): Adapter {
       await mkdir(dirname(path), { recursive: true });
       await writeFile(path, contents(), "utf-8");
       return {
-        agent: id,
         title,
         actions: [`${existed ? "updated" : "wrote"} ${rulePath}`],
       };
@@ -48,16 +47,15 @@ export function rulesFileAdapter(config: RulesFileConfig): Adapter {
     async unlink(ctx: AdapterContext): Promise<LinkResult> {
       const path = join(ctx.projectRoot, rulePath);
       if (!existsSync(path)) {
-        return { agent: id, title, actions: ["nothing to remove"] };
+        return { title, actions: ["nothing to remove"] };
       }
       await rm(path);
-      return { agent: id, title, actions: [`removed ${rulePath}`] };
+      return { title, actions: [`removed ${rulePath}`] };
     },
 
     status(ctx: AdapterContext): Promise<AgentStatus> {
       const linked = existsSync(join(ctx.projectRoot, rulePath));
       return Promise.resolve({
-        agent: id,
         title,
         linked,
         details: [linked ? `protocol present (${rulePath})` : "not installed"],

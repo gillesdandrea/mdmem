@@ -15,14 +15,13 @@ import {
   upsertMarkedBlock,
 } from "./util.ts";
 
-const ID = "agents";
 const TITLE = "AGENTS.md";
 // AGENTS.md is the cross-agent instruction file read by Codex, Cursor, Gemini CLI,
 // Aider, and others — one block here reaches every agent that lacks native memory.
 const AGENTS_REL = "AGENTS.md";
 
 export const agentsAdapter: Adapter = {
-  id: ID,
+  id: "agents",
   title: TITLE,
 
   async link(ctx: AdapterContext): Promise<LinkResult> {
@@ -35,7 +34,6 @@ export const agentsAdapter: Adapter = {
       "utf-8"
     );
     return {
-      agent: ID,
       title: TITLE,
       actions: [`${verb} memory protocol block in ${AGENTS_REL}`],
     };
@@ -44,20 +42,18 @@ export const agentsAdapter: Adapter = {
   async unlink(ctx: AdapterContext): Promise<LinkResult> {
     const path = join(ctx.projectRoot, AGENTS_REL);
     if (!existsSync(path)) {
-      return { agent: ID, title: TITLE, actions: ["nothing to remove"] };
+      return { title: TITLE, actions: ["nothing to remove"] };
     }
     const next = removeMarkedBlock(await readFile(path, "utf-8"));
     if (next.trim().length === 0) {
       await rm(path);
       return {
-        agent: ID,
         title: TITLE,
         actions: [`removed ${AGENTS_REL} (was only the memory block)`],
       };
     }
     await writeFile(path, next, "utf-8");
     return {
-      agent: ID,
       title: TITLE,
       actions: [`removed memory protocol block from ${AGENTS_REL}`],
     };
@@ -68,7 +64,6 @@ export const agentsAdapter: Adapter = {
     const linked =
       existsSync(path) && hasMarkedBlock(await readFile(path, "utf-8"));
     return {
-      agent: ID,
       title: TITLE,
       linked,
       details: [linked ? "protocol block present" : "not installed"],
