@@ -1,3 +1,5 @@
+import { RefusalError } from "./refusal.ts";
+
 /**
  * Obvious credentials a memory must never hold: the store is shared with every
  * agent on the project, and Claude Code refuses such writes in every store. This
@@ -72,7 +74,7 @@ export function describeSecrets(matches: SecretMatch[]): string {
 export function assertNoSecrets(file: string, content: string): void {
   const matches = findSecrets(content);
   if (matches.length > 0) {
-    throw new Error(
+    throw new RefusalError(
       `Refused "${file}": it looks like it holds a secret at ${describeSecrets(matches)}. Memories are shared with every agent on the project, so never save secrets or credentials in one; say where the secret is kept instead`
     );
   }

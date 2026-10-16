@@ -11,6 +11,7 @@ import {
   deleteDocument,
   describeStore,
   listDocuments,
+  openStore,
   readDocument,
   searchMemories,
   writeDocument,
@@ -21,12 +22,9 @@ import type {
   WriteResult,
 } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
-import {
-  findStoreRoot,
-  MemoryStore,
-  versionOf,
-  VersionConflictError,
-} from "../core/store.ts";
+import { RefusalError } from "../core/refusal.ts";
+import { versionOf, VersionConflictError } from "../core/store.ts";
+import type { MemoryStore } from "../core/store.ts";
 
 /**
  * MCP surface over the shared `.memory/` store, for agents that would rather call
@@ -41,15 +39,13 @@ function text(body: string): CallToolResult {
   return { content: [{ type: "text", text: body }] };
 }
 
+function errorText(body: string): CallToolResult {
+  return { ...text(body), isError: true };
+}
+
 /** The project's store, checked against the caller's store id (omitted means the project's store). */
 function resolveStore(id?: string): MemoryStore {
-  const dir = findStoreRoot(process.cwd());
-  if (!dir) {
-    throw new Error(
-      "No .memory/ store found — run `mdmem init` in the project first."
-    );
-  }
-  const store = new MemoryStore(dir);
+  const store = openStore(process.cwd());
   assertStoreId(store, id);
   return store;
 }
@@ -172,18 +168,15 @@ async function withStore(
   try {
     return await fn(resolveStore(id));
   } catch (error) {
+    // A refusal (ADR 0002) says what to do next; a version conflict also hands back the current content.
     if (error instanceof VersionConflictError) {
       return conflictResult(error);
     }
-    return {
-      content: [
-        {
-          type: "text",
-          text: error instanceof Error ? error.message : String(error),
-        },
-      ],
-      isError: true,
-    };
+    if (error instanceof RefusalError) {
+      return errorText(error.message);
+    }
+    // Anything else, such as a broken memory met while reading the store, is still a result, never a crash.
+    return errorText(error instanceof Error ? error.message : String(error));
   }
 }
 

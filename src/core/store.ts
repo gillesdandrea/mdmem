@@ -11,15 +11,19 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 
+import { RefusalError } from "./refusal.ts";
+
 /**
  * MemoryStore is the filesystem behind a `.memory/` directory. It exposes read
  * (`view`), write (`create`), delete (`remove`) and list, each write and delete
  * under an optional version guard that lets a writer detect a lost update on a
- * read-modify-write, or insist on creating a new file (the MCP write path uses
- * it). It holds no policy: what a memory must contain, and the Check that reports
- * problems with memories and the index (GLOSSARY.md), live above it. Its one
- * typed refusal is VersionConflictError, which carries the current content for
- * a merge (ADR 0002, docs/adr/0002-refuse-or-degrade-never-crash.md). The derived
+ * read-modify-write, or insist on creating a new file (the document operations
+ * in ./operations.ts always pass one). It holds no policy: what a memory must
+ * contain, and the Check that reports problems with memories and the index
+ * (GLOSSARY.md), live above it. It refuses a path that escapes the store, and a
+ * write or delete against a version the caller has not seen with
+ * VersionConflictError, which carries the current content for a merge (ADR 0002,
+ * docs/adr/0002-refuse-or-degrade-never-crash.md). The derived
  * index stays off the concurrent-write path entirely (see ./index.ts).
  */
 
@@ -29,7 +33,7 @@ export const INDEX_FILE = "MEMORY.md";
 /** The version a writer passes for a file that must not exist yet. */
 export const NEW_FILE_VERSION = "new";
 
-export class VersionConflictError extends Error {
+export class VersionConflictError extends RefusalError {
   /** The file's content when the conflict was found; undefined when it does not exist. */
   readonly current: string | undefined;
 
@@ -62,7 +66,7 @@ export class MemoryStore {
   private full(path: string): string {
     const full = resolve(this.root, path);
     if (full !== this.root && !full.startsWith(this.root + sep)) {
-      throw new Error(`Path "${path}" escapes the memory store`);
+      throw new RefusalError(`Path "${path}" escapes the memory store`);
     }
     return full;
   }

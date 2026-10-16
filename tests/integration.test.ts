@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { agentsAdapter } from "../src/adapters/agents.ts";
 import { bobAdapter } from "../src/adapters/bob.ts";
@@ -196,15 +203,38 @@ describe("tracer bullet: shared memory across agents", () => {
   });
 });
 
-/** Run the CLI in `root`, capturing its exit code and output. */
-function runCli(root: string, ...args: string[]) {
-  const proc = Bun.spawnSync(["bun", CLI, ...args], { cwd: root });
+/** Run the CLI in `root` with `args` and `env` added to this process's environment, capturing its exit code and output. */
+function runCliWith(root: string, args: string[], env: Record<string, string>) {
+  const proc = Bun.spawnSync(["bun", CLI, ...args], {
+    cwd: root,
+    env: { ...process.env, ...env },
+  });
   return {
     code: proc.exitCode,
     out: proc.stdout.toString(),
     err: proc.stderr.toString(),
   };
 }
+
+/** Run the CLI in `root`, capturing its exit code and output. */
+function runCli(root: string, ...args: string[]) {
+  return runCliWith(root, args, {});
+}
+
+/** An editor for `mdmem edit`: a shell script in `root` that runs `command` on the file it is given as $1. */
+async function editorScript(root: string, command: string): Promise<string> {
+  const path = join(root, "editor.sh");
+  await writeFile(path, `#!/bin/sh\n${command}\n`, "utf-8");
+  await chmod(path, 0o755);
+  return path;
+}
+
+/** Run `mdmem edit <name>` in `root` with `editor` as $VISUAL. */
+function runEdit(root: string, editor: string, name: string) {
+  return runCliWith(root, ["edit", name], { VISUAL: editor });
+}
+
+const EDIT_KEPT_RE = /your edit is kept at (?<copy>\S+)\n$/u;
 
 /** A project with an initialized store, removed after `fn`. */
 async function withCliProject(
@@ -287,6 +317,10 @@ describe("cli", () => {
       expect(read.code).toBe(0);
       expect(read.out).toContain("Use bun.");
 
+      const readIndex = run("read", "MEMORY.md");
+      expect(readIndex.code).toBe(0);
+      expect(readIndex.out).toContain("[uses-bun](uses-bun.md)");
+
       const status = run("status");
       expect(status.code).toBe(0);
       expect(status.out).toContain("Memories: 1");
@@ -312,7 +346,10 @@ describe("cli", () => {
         "--body",
         "x"
       );
-      expect(dup.code).not.toBe(0);
+      expect(dup.code).toBe(1);
+      expect(dup.err).toBe(
+        'mdmem: a memory named "uses-bun" already exists — pass --force to overwrite, or `mdmem delete uses-bun`\n'
+      );
       const forced = run(
         "add",
         "--type",
@@ -327,9 +364,10 @@ describe("cli", () => {
       );
       expect(forced.code).toBe(0);
 
+      // the no-op editor leaves the memory as it was
       const edited = run("edit", "uses-bun");
       expect(edited.code).toBe(0);
-      expect(edited.out).toContain("Saved uses-bun.md");
+      expect(edited.out).toBe("Unchanged uses-bun.md\n");
 
       const doctor = run("doctor");
       expect(doctor.code).toBe(0);
@@ -368,7 +406,8 @@ describe("cli", () => {
       expect(keep.code).toBe(0);
       expect(keep.out).toBe("Saved keep.md\n");
       expect(keep.err).toBe(staleWarning);
-      const editKeep = run("edit", "keep");
+      const append = await editorScript(root, `printf 'More.\\n' >> "$1"`);
+      const editKeep = runEdit(root, append, "keep");
       expect(editKeep.code).toBe(0);
       expect(editKeep.out).toBe("Saved keep.md\n");
       expect(editKeep.err).toBe(staleWarning);
@@ -380,6 +419,46 @@ describe("cli", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test("edit refuses an invalid memory, leaving the store untouched and keeping the edit", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1);
+      const before = await store.view("m-0.md");
+      const breaks = await editorScript(root, `echo 'no frontmatter' > "$1"`);
+      const edit = runEdit(root, breaks, "m-0");
+      expect(edit.code).toBe(1);
+      expect(edit.err).toStartWith(
+        "mdmem: m-0.md: unparseable — Memory file is missing YAML frontmatter"
+      );
+      expect(await store.view("m-0.md")).toBe(before);
+      const copy = edit.err.match(EDIT_KEPT_RE)?.groups?.copy ?? "";
+      expect(copy).toMatch(/[/\\]mdmem-[^/\\]+[/\\]m-0\.md$/u);
+      expect(await readFile(copy, "utf-8")).toBe("no frontmatter\n");
+      await rm(dirname(copy), { recursive: true, force: true });
+    });
+  });
+
+  test("edit refuses the index before opening an editor, and keeps the copy when the editor fails", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1);
+      const marker = join(root, "editor-ran");
+      const touches = await editorScript(root, `touch "${marker}"`);
+      const index = runEdit(root, touches, "MEMORY.md");
+      expect(index.code).toBe(1);
+      expect(index.err).toStartWith(
+        'mdmem: Refused "MEMORY.md": that is the index\'s path'
+      );
+      expect(existsSync(marker)).toBe(false);
+
+      const fails = await editorScript(root, `echo 'half' > "$1"; exit 3`);
+      const edit = runEdit(root, fails, "m-0");
+      expect(edit.code).toBe(1);
+      expect(edit.err).toStartWith("mdmem: editor exited with code 3\n");
+      const copy = edit.err.match(EDIT_KEPT_RE)?.groups?.copy ?? "";
+      expect(await readFile(copy, "utf-8")).toBe("half\n");
+      await rm(dirname(copy), { recursive: true, force: true });
+    });
   });
 
   test("add refuses a secret, naming its line and kind but never the secret", async () => {

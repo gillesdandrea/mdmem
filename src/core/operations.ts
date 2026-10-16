@@ -1,23 +1,44 @@
 import { basename, dirname } from "node:path";
 
 import { indexCapacity, reindex } from "./index.ts";
-import type { MemoryType } from "./memory.ts";
+import type { Memory, MemoryType } from "./memory.ts";
 import {
   memoryFileFor,
   memoryFileName,
-  parseMemory,
   parseMemoryFile,
   serializeMemory,
 } from "./memory.ts";
+import { RefusalError } from "./refusal.ts";
 import { assertNoSecrets } from "./secrets.ts";
-import { INDEX_FILE, versionOf } from "./store.ts";
-import type { DocumentInfo, MemoryStore } from "./store.ts";
+import {
+  findStoreRoot,
+  INDEX_FILE,
+  MemoryStore,
+  NEW_FILE_VERSION,
+  STORE_DIR,
+  versionOf,
+} from "./store.ts";
+import type { DocumentInfo } from "./store.ts";
 
 /**
  * Memory-level operations shared by both surfaces (CLI and MCP). They compose the
  * store's file ops with memory (de)serialization and reindexing so the two surfaces
  * can't drift — the CLI and MCP keep only their own argument parsing and output.
+ * The document operations (writeDocument, deleteDocument) are the one path by which
+ * a memory is written or deleted, and every validation lives there; readDocument
+ * reads one memory by its path. Search and listing still read the store directly.
  */
+
+/** The store of the project enclosing `startDir`, found by walking up to its `.memory/`. */
+export function openStore(startDir: string): MemoryStore {
+  const root = findStoreRoot(startDir);
+  if (!root) {
+    throw new RefusalError(
+      `No ${STORE_DIR}/ store found in this directory or any parent: run \`mdmem init\` in the project first`
+    );
+  }
+  return new MemoryStore(root);
+}
 
 /**
  * The memory file a write touched, and the warnings the write leaves: the rebuilt
@@ -80,7 +101,7 @@ export function assertStoreId(
 ): void {
   const valid = describeStore(store).id;
   if (id !== undefined && id !== valid) {
-    throw new Error(`Unknown store "${id}". Valid store ids: ${valid}`);
+    throw new RefusalError(`Unknown store "${id}". Valid store ids: ${valid}`);
   }
 }
 
@@ -119,33 +140,6 @@ export interface MemoryInput {
   description: string;
   type: MemoryType;
   body: string;
-}
-
-/**
- * Serialize + validate a memory, write it, and refresh the index. Content that
- * looks like it holds a secret is refused. Returns the file
- * name and the write's warnings. `ifVersion` opts into the store's lost-update guard
- * for read-modify-write.
- */
-export async function saveMemory(
-  store: MemoryStore,
-  input: MemoryInput,
-  opts?: { ifVersion?: string }
-): Promise<WriteResult> {
-  const content = serializeMemory({
-    frontmatter: {
-      name: input.name,
-      description: input.description,
-      metadata: { type: input.type },
-    },
-    body: input.body,
-  });
-  // Parse-validate before writing so a malformed memory never lands in the store.
-  parseMemory(content);
-  const file = memoryFileName(input.name);
-  assertNoSecrets(file, content);
-  await store.create(file, content, opts?.ifVersion);
-  return reindexAfterWrite(store, file);
 }
 
 export interface SearchHit {
@@ -199,20 +193,32 @@ export interface VersionedDocument {
   version: string;
 }
 
-/** A memory document by its path in the store; the index is generated first if it doesn't exist yet. */
-export async function readDocument(
+/** `readDocument`, but null when no document is at `path`. */
+async function findDocument(
   store: MemoryStore,
   path: string
-): Promise<VersionedDocument> {
+): Promise<VersionedDocument | null> {
   let content: string;
   if (isIndexPath(path)) {
     content = await readIndex(store);
   } else if (path.endsWith(".md") && store.exists(path)) {
     content = await store.view(path);
   } else {
-    throw new Error(`No memory document at "${path}"`);
+    return null;
   }
   return { content, version: versionOf(content) };
+}
+
+/** A memory document by its path in the store; the index is generated first if it doesn't exist yet. */
+export async function readDocument(
+  store: MemoryStore,
+  path: string
+): Promise<VersionedDocument> {
+  const document = await findDocument(store, path);
+  if (!document) {
+    throw new RefusalError(`No memory document at "${path}"`);
+  }
+  return document;
 }
 
 /** A write that landed, with the version token of the content it wrote. */
@@ -221,19 +227,33 @@ export interface VersionedWriteResult extends WriteResult {
 }
 
 /** Refuse a memory write whose path can't hold a memory, before touching the store. */
-function assertMemoryPath(path: string): void {
+export function assertMemoryPath(path: string): void {
   if (path.includes("/") || path.includes("\\")) {
-    throw new Error(
+    throw new RefusalError(
       `Refused "${path}": memories live at the top of the store, and nested files are never indexed or searched; use a path with no directory`
     );
   }
   if (isIndexPath(path)) {
-    throw new Error(
+    throw new RefusalError(
       `Refused "${path}": that is the index's path (${INDEX_FILE}), and the index is generated from the memories' frontmatter; write a memory instead`
     );
   }
   if (!path.endsWith(".md")) {
-    throw new Error(`Refused "${path}": a memory's path is <name>.md`);
+    throw new RefusalError(`Refused "${path}": a memory's path is <name>.md`);
+  }
+}
+
+/** Parse the content of a write; content that is not a memory is refused. */
+function parseWrittenMemory(path: string, content: string): Memory {
+  try {
+    return parseMemoryFile(path, content);
+  } catch (error) {
+    throw new RefusalError(
+      error instanceof Error ? error.message : String(error),
+      {
+        cause: error,
+      }
+    );
   }
 }
 
@@ -250,10 +270,10 @@ export async function writeDocument(
   ifVersion: string
 ): Promise<VersionedWriteResult> {
   assertMemoryPath(path);
-  const { name } = parseMemoryFile(path, content).frontmatter;
+  const { name } = parseWrittenMemory(path, content).frontmatter;
   const expected = path.slice(0, -".md".length);
   if (name !== expected) {
-    throw new Error(
+    throw new RefusalError(
       `Refused "${path}": its name is "${name}", but a memory's name must equal its file name without .md ("${expected}")`
     );
   }
@@ -265,6 +285,15 @@ export async function writeDocument(
   };
 }
 
+/** Refuse deleting the index, before touching the store. */
+function assertNotIndexDelete(path: string): void {
+  if (isIndexPath(path)) {
+    throw new RefusalError(
+      `Refused "${path}": that is the index's path (${INDEX_FILE}), and the index is generated from the memories' frontmatter, so it cannot be deleted`
+    );
+  }
+}
+
 /**
  * Delete a memory document under the store's version guard (`ifVersion` as in
  * `writeDocument`) and refresh the index. The index itself cannot be deleted.
@@ -274,30 +303,60 @@ export async function deleteDocument(
   path: string,
   ifVersion: string
 ): Promise<WriteResult> {
-  if (isIndexPath(path)) {
-    throw new Error(
-      `Refused "${path}": that is the index's path (${INDEX_FILE}), and the index is generated from the memories' frontmatter, so it cannot be deleted`
-    );
-  }
+  assertNotIndexDelete(path);
   if (!path.endsWith(".md") || !store.exists(path)) {
-    throw new Error(`No memory document at "${path}"`);
+    throw new RefusalError(`No memory document at "${path}"`);
   }
   await store.remove(path, ifVersion);
   return reindexAfterWrite(store, path);
 }
 
 /**
- * Remove a memory by name (a name or `<name>.md`) and refresh the index. Returns the
- * removed file name and the write's warnings, or null if no such memory existed.
+ * Save a memory at `<name>.md` through `writeDocument`, which validates it and
+ * refreshes the index. Without `force`, an existing memory is refused with a
+ * VersionConflictError. With `force`, it is overwritten under the version read
+ * just before, so a change made in between is refused the same way, not lost.
+ */
+export async function saveMemory(
+  store: MemoryStore,
+  input: MemoryInput,
+  { force = false }: { force?: boolean } = {}
+): Promise<WriteResult> {
+  const file = memoryFileName(input.name);
+  const content = serializeMemory({
+    frontmatter: {
+      name: input.name,
+      description: input.description,
+      metadata: { type: input.type },
+    },
+    body: input.body,
+  });
+  // Refuse the path before the read, which would regenerate a missing index.
+  assertMemoryPath(file);
+  const current = force ? await findDocument(store, file) : null;
+  return writeDocument(
+    store,
+    file,
+    content,
+    current?.version ?? NEW_FILE_VERSION
+  );
+}
+
+/**
+ * Remove a memory by name (a name or `<name>.md`) through `deleteDocument`, under
+ * the version read just before, and refresh the index. Returns the removed file
+ * name and the write's warnings, or null if no such memory existed.
  */
 export async function removeMemory(
   store: MemoryStore,
   name: string
 ): Promise<WriteResult | null> {
   const file = memoryFileFor(name);
-  if (!store.exists(file)) {
+  // Refuse the index before the read, which would regenerate it if missing.
+  assertNotIndexDelete(file);
+  const current = await findDocument(store, file);
+  if (!current) {
     return null;
   }
-  await store.remove(file);
-  return reindexAfterWrite(store, file);
+  return deleteDocument(store, file, current.version);
 }

@@ -59,10 +59,10 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | Command | Purpose |
 |---|---|
 | `mdmem init` | Create `.memory/` in the project and gitignore it |
-| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory; refuses an existing name unless `--force`. Body may also be piped via stdin. |
+| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory; refuses an existing name unless `--force`, and refuses a `--force` overwrite if the memory changes while it is saved. Body may also be piped via stdin. |
 | `mdmem list` | Print the memory index (`MEMORY.md`) |
-| `mdmem read <name>` | Print one memory by its name (or `<name>.md`) |
-| `mdmem edit <name>` | Open a memory in `$VISUAL`/`$EDITOR`, reindex on save |
+| `mdmem read <name>` | Print one memory by its name (or `<name>.md`), or the index (`MEMORY.md`) |
+| `mdmem edit <name>` | Edit a copy of a memory in `$VISUAL`/`$EDITOR`, then save it back and reindex |
 | `mdmem delete` (alias `rm`) `<name>` | Remove a memory by its name (or `<name>.md`) |
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Rebuild `MEMORY.md` from memory frontmatter |
@@ -76,8 +76,12 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 
 Agents: `claude-code`, `agents`, `bob`, `cursor`. Memory types: `user`, `feedback`, `project`, `reference`.
 
-With no `$VISUAL`/`$EDITOR` set, `mdmem edit` prints the memory's path instead of
-opening it — edit it by hand, then run `mdmem reindex`.
+`mdmem edit` saves the copy back the way `add` saves a memory, so an edit that is
+not a valid memory, holds a secret, or races another change to the memory is
+refused: the store stays as it was, and the command prints where the copy is
+kept so the edit is not lost. With no `$VISUAL`/`$EDITOR` set, `mdmem edit`
+prints the memory's path instead of opening it — edit it by hand, then run
+`mdmem reindex`.
 
 ## Memory format
 

@@ -1,7 +1,15 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { AdapterContext } from "../adapters/index.ts";
@@ -17,19 +25,22 @@ import {
   memoryFileFor,
   memoryFileName,
   MEMORY_TYPES,
-  parseMemory,
   parseMemoryFile,
 } from "../core/memory.ts";
 import type { Memory, MemoryType } from "../core/memory.ts";
 import {
+  assertMemoryPath,
+  openStore,
+  readDocument,
   readIndex,
-  reindexAfterWrite,
   removeMemory,
   saveMemory,
   searchMemories,
+  writeDocument,
 } from "../core/operations.ts";
 import type { WriteResult } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
+import { RefusalError } from "../core/refusal.ts";
 import { describeSecrets, findSecrets } from "../core/secrets.ts";
 import {
   findProjectRoot,
@@ -37,6 +48,7 @@ import {
   INDEX_FILE,
   MemoryStore,
   STORE_DIR,
+  VersionConflictError,
 } from "../core/store.ts";
 
 function print(msg = ""): void {
@@ -60,24 +72,20 @@ function die(msg: string): never {
   process.exit(1);
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 interface Resolved {
   store: MemoryStore;
   storeDir: string;
   projectRoot: string;
 }
 
+/** The project's store; without one, the refusal reaches `main`, which prints it. */
 function resolveStore(): Resolved {
-  const storeDir = findStoreRoot(process.cwd());
-  if (!storeDir) {
-    die(
-      `no ${STORE_DIR}/ found in this directory or any parent — run \`mdmem init\` first`
-    );
-  }
-  return {
-    store: new MemoryStore(storeDir),
-    storeDir,
-    projectRoot: dirname(storeDir),
-  };
+  const store = openStore(process.cwd());
+  return { store, storeDir: store.root, projectRoot: dirname(store.root) };
 }
 
 function context(resolved: Resolved): AdapterContext {
@@ -147,17 +155,25 @@ async function cmdAdd(args: string[]): Promise<void> {
   }
 
   const { store } = resolveStore();
-  if (store.exists(memoryFileName(name)) && !values.force) {
-    die(
-      `a memory named "${name}" already exists — pass --force to overwrite, or \`mdmem delete ${name}\``
+  const force = values.force ?? false;
+  let result: WriteResult;
+  try {
+    result = await saveMemory(
+      store,
+      { name, description, type: values.type, body: body.trim() },
+      { force }
     );
+  } catch (error) {
+    // Without --force the write insists on a new file; with it, a conflict means the memory changed mid-write.
+    if (error instanceof VersionConflictError) {
+      die(
+        force
+          ? `the memory "${name}" changed while it was saved, so it was not overwritten — run the command again to overwrite the new version`
+          : `a memory named "${name}" already exists — pass --force to overwrite, or \`mdmem delete ${name}\``
+      );
+    }
+    throw error;
   }
-  const result = await saveMemory(store, {
-    name,
-    description,
-    type: values.type,
-    body: body.trim(),
-  });
   reportWrite("Saved", result);
 }
 
@@ -181,11 +197,25 @@ async function cmdRead(args: string[]): Promise<void> {
     die("usage: mdmem read <name>");
   }
   const { store } = resolveStore();
-  const file = memoryFileFor(name);
-  if (!store.exists(file)) {
-    die(`no memory "${name}" (looked for ${file})`);
-  }
-  print(await store.view(file));
+  const { content } = await readDocument(store, memoryFileFor(name));
+  print(content);
+}
+
+/** Open `path` in `editor` (a command, possibly with arguments), wait for it to exit, and return its exit code. */
+function runEditor(editor: string, path: string): number | null {
+  const [cmd, ...editorArgs] = editor.split(" ");
+  const proc = Bun.spawnSync([cmd ?? editor, ...editorArgs, path], {
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  return proc.exitCode;
+}
+
+/** End `mdmem edit` on `reason`, printing where the edited copy is kept so the edit is not lost. */
+function dieKeepingCopy(reason: string, copy: string): never {
+  process.stderr.write(`mdmem: ${reason}\n`);
+  die(`your edit is kept at ${copy}`);
 }
 
 async function cmdEdit(args: string[]): Promise<void> {
@@ -195,33 +225,45 @@ async function cmdEdit(args: string[]): Promise<void> {
   }
   const { store, storeDir } = resolveStore();
   const file = memoryFileFor(name);
-  if (!store.exists(file)) {
-    die(`no memory "${name}" (looked for ${file})`);
-  }
-  const fullPath = join(storeDir, file);
+  // Refuse a path no edit could be saved to (such as the index) before opening an editor on it.
+  assertMemoryPath(file);
+  const { content, version } = await readDocument(store, file);
   const editor = process.env.VISUAL ?? process.env.EDITOR;
   if (!editor) {
     // no $EDITOR — print the path so it can be opened by hand
-    print(fullPath);
+    print(join(storeDir, file));
     return;
   }
-  const [cmd, ...editorArgs] = editor.split(" ");
-  const proc = Bun.spawnSync([cmd ?? editor, ...editorArgs, fullPath], {
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  if (proc.exitCode !== 0) {
-    die(`editor exited with code ${proc.exitCode}`);
+  // Edit a copy, named <file> so the editor stays in Markdown mode, then write it back under the version read.
+  const copyDir = await mkdtemp(join(tmpdir(), "mdmem-"));
+  const copy = join(copyDir, basename(file));
+  await writeFile(copy, content, "utf-8");
+  const exitCode = runEditor(editor, copy);
+  if (exitCode !== 0) {
+    dieKeepingCopy(`editor exited with code ${exitCode}`, copy);
   }
+  let edited: string;
   try {
-    parseMemory(await store.view(file));
+    edited = await readFile(copy, "utf-8");
   } catch (error) {
-    die(
-      `edited memory is invalid, not reindexed — ${error instanceof Error ? error.message : String(error)}`
-    );
+    // The editor removed the copy: there is no edit left to keep.
+    await rm(copyDir, { recursive: true, force: true });
+    die(`could not read the edited copy — ${messageOf(error)}`);
   }
-  reportWrite("Saved", await reindexAfterWrite(store, file));
+  if (edited === content) {
+    await rm(copyDir, { recursive: true, force: true });
+    print(`Unchanged ${file}`);
+    return;
+  }
+  let result: WriteResult;
+  try {
+    result = await writeDocument(store, file, edited, version);
+  } catch (error) {
+    // The store is untouched; keep the copy so the edit is not lost.
+    dieKeepingCopy(messageOf(error), copy);
+  }
+  await rm(copyDir, { recursive: true, force: true });
+  reportWrite("Saved", result);
 }
 
 async function cmdDelete(args: string[]): Promise<void> {
@@ -230,7 +272,19 @@ async function cmdDelete(args: string[]): Promise<void> {
     die("usage: mdmem delete <name>");
   }
   const { store } = resolveStore();
-  const result = await removeMemory(store, name);
+  let result: WriteResult | null;
+  try {
+    result = await removeMemory(store, name);
+  } catch (error) {
+    if (error instanceof VersionConflictError) {
+      die(
+        error.current === undefined
+          ? `no memory "${name}" (looked for ${memoryFileFor(name)}): it was deleted while this command ran`
+          : `the memory "${name}" changed while it was deleted, so it was kept — run the command again to delete the new version`
+      );
+    }
+    throw error;
+  }
   if (!result) {
     die(`no memory "${name}" (looked for ${memoryFileFor(name)})`);
   }
@@ -414,10 +468,12 @@ Usage: mdmem <command> [options]
 
   init                      Create .memory/ in this project and gitignore it
   add --type <t> --name <n> --description <d> [--body <text>] [--force]
-                            Save a memory (body may be piped via stdin; --force overwrites an existing one)
+                            Save a memory (body may be piped via stdin; --force overwrites an existing one,
+                            unless it changes while being saved)
   list                      Print the memory index (MEMORY.md)
-  read <name>               Print one memory by its name (or <name>.md)
-  edit <name>               Open a memory in $VISUAL/$EDITOR, reindex on save
+  read <name>               Print one memory by its name (or <name>.md), or the index (MEMORY.md)
+  edit <name>               Edit a copy of a memory in $VISUAL/$EDITOR, then save it back; an invalid
+                            edit or one that conflicts is refused and its copy kept
   delete | rm <name>        Remove a memory by its name (or <name>.md)
   search <query>            Find memories containing text
   reindex                   Rebuild MEMORY.md from memory frontmatter
@@ -477,8 +533,12 @@ async function main(): Promise<void> {
   try {
     await handler(args);
   } catch (error) {
-    // Expected failures (a broken memory, a version conflict) end as one line, not a stack trace.
-    die(error instanceof Error ? error.message : String(error));
+    // A refusal (ADR 0002) ends as its one line, which says what to do next.
+    if (error instanceof RefusalError) {
+      die(error.message);
+    }
+    // Anything else, such as a broken memory met while reading the store, also ends as one line, not a stack trace.
+    die(messageOf(error));
   }
 }
 
