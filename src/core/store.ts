@@ -12,14 +12,15 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 
 /**
- * MemoryStore is the filesystem behind a `.memory/` directory, reproducing the
- * Anthropic text-editor/memory tool surface (create, view, str_replace, insert,
- * remove) as the store's public API. It holds no policy — no notion of what a
- * memory should contain, when to save, or what to exclude; it only reads and writes
- * files. Its optional version guard lets a writer detect a lost update on a
- * memory-file read-modify-write, or insist on creating a new file (the MCP write
- * path uses it); the derived index stays off the concurrent-write path entirely
- * (see ./index.ts).
+ * MemoryStore is the filesystem behind a `.memory/` directory. It exposes read
+ * (`view`), write (`create`), delete (`remove`) and list, each write and delete
+ * under an optional version guard that lets a writer detect a lost update on a
+ * read-modify-write, or insist on creating a new file (the MCP write path uses
+ * it). It holds no policy: what a memory must contain, and the Check that reports
+ * problems with memories and the index (GLOSSARY.md), live above it. Its one
+ * typed refusal is VersionConflictError, which carries the current content for
+ * a merge (ADR 0002, docs/adr/0002-refuse-or-degrade-never-crash.md). The derived
+ * index stays off the concurrent-write path entirely (see ./index.ts).
  */
 
 export const STORE_DIR = ".memory";
@@ -106,15 +107,9 @@ export class MemoryStore {
     return versionOf(await readFile(this.full(path), "utf-8"));
   }
 
-  /** Read a file, or list a directory's entries when the path is a directory. */
-  async view(path = "."): Promise<string> {
-    const full = this.full(path);
-    const info = await stat(full);
-    if (info.isDirectory()) {
-      const entries = await readdir(full);
-      return entries.toSorted().join("\n");
-    }
-    return readFile(full, "utf-8");
+  /** Read a file in the store. */
+  async view(path: string): Promise<string> {
+    return await readFile(this.full(path), "utf-8");
   }
 
   async create(
@@ -126,40 +121,6 @@ export class MemoryStore {
     const full = this.full(path);
     await mkdir(dirname(full), { recursive: true });
     await writeFile(full, content, "utf-8");
-  }
-
-  async strReplace(
-    path: string,
-    oldStr: string,
-    newStr: string,
-    ifVersion?: string
-  ): Promise<void> {
-    await this.assertVersion(path, ifVersion);
-    const content = await this.view(path);
-    const first = content.indexOf(oldStr);
-    if (first === -1) {
-      throw new Error(`str_replace: no match for the given text in "${path}"`);
-    }
-    if (content.includes(oldStr, first + oldStr.length)) {
-      throw new Error(`str_replace: text is not unique in "${path}"`);
-    }
-    await this.create(path, content.replace(oldStr, newStr));
-  }
-
-  async insert(
-    path: string,
-    line: number,
-    text: string,
-    ifVersion?: string
-  ): Promise<void> {
-    await this.assertVersion(path, ifVersion);
-    const content = await this.view(path);
-    const lines = content.split("\n");
-    if (line < 0 || line > lines.length) {
-      throw new Error(`insert: line ${line} is out of range for "${path}"`);
-    }
-    lines.splice(line, 0, text);
-    await this.create(path, lines.join("\n"));
   }
 
   async remove(path: string, ifVersion?: string): Promise<void> {
