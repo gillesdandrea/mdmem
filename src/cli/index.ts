@@ -40,7 +40,7 @@ function warn(msg: string): void {
   process.stderr.write(`mdmem: warning: ${msg}\n`);
 }
 
-/** The write landed, so say so; its warnings (a stale or full index) are not failures. */
+/** The write landed, so say so; its warnings (a broken memory, a stale or full index) are not failures. */
 function reportWrite(verb: string, { file, warnings }: WriteResult): void {
   print(`${verb} ${file}`);
   for (const warning of warnings) {
@@ -117,7 +117,8 @@ async function cmdAdd(args: string[]): Promise<void> {
   if (!isMemoryType(values.type)) {
     die(`--type must be one of: ${MEMORY_TYPES.join(", ")}`);
   }
-  const name = values.name ?? die("--name is required (kebab-case)");
+  const name =
+    values.name ?? die("--name is required (kebab-case or snake_case)");
   const description = values.description ?? die("--description is required");
   let { body } = values;
   if (body === undefined) {
@@ -150,7 +151,7 @@ async function cmdAdd(args: string[]): Promise<void> {
 async function cmdReindex(): Promise<void> {
   const { store } = resolveStore();
   const warnings = await reindex(store);
-  print("Rebuilt MEMORY.md");
+  print("Updated MEMORY.md");
   for (const warning of warnings) {
     warn(warning);
   }
@@ -374,10 +375,10 @@ Usage: mdmem <command> [options]
                             edit or one that conflicts is refused and its copy kept
   delete | rm <name>        Remove a memory by its name (or <name>.md)
   search <query>            Find memories containing text
-  reindex                   Rebuild MEMORY.md from memory frontmatter
+  reindex                   Bring MEMORY.md up to date with the memories, keeping its other lines
   consolidate               Print a prompt that has an agent consolidate the store
-  doctor | check            Check the store (parse errors, name≠filename, secrets, long pointers,
-                            dangling links, stale index, index over its read limits)
+  doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
+                            long pointers, dangling links, stale index, index over its size limit)
   enable <agent…> | --all   Wire an agent to the shared store
   disable <agent…> | --all  Remove an agent's wiring
   status                    Show the store and which agents are enabled

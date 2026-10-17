@@ -2,11 +2,14 @@ import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
 import { INDEX_FILE, loadMemories, refreshIndex, reindex } from "./check.ts";
+import type { SavedMemory } from "./check.ts";
 import { isIgnoredByGit } from "./git.ts";
 import type { Memory, MemoryType } from "./memory.ts";
 import {
+  MEMORY_NAME_RE,
   memoryFileFor,
   memoryFileName,
+  parseMemory,
   parseMemoryFile,
   serializeMemory,
 } from "./memory.ts";
@@ -70,23 +73,24 @@ export async function initStore(startDir: string): Promise<InitResult> {
 }
 
 /**
- * The memory file a write touched, and the warnings the write leaves: the rebuilt
- * MEMORY.md near or over Claude Code's read limits, or MEMORY.md stale because it
- * could not be rebuilt (e.g. another memory is unparseable). The write landed either
- * way, so callers report it, then each warning. The warnings are worded once here so
- * the CLI and MCP say the same thing.
+ * The memory file a write touched, and the warnings the write leaves: a broken
+ * memory met while updating MEMORY.md, MEMORY.md near or over the size a
+ * session-start hook can inject, or MEMORY.md stale because it could not be updated.
+ * The write landed either way, so callers report it, then each warning. The warnings
+ * are worded once in ./check.ts so the CLI and MCP say the same thing.
  */
 export interface WriteResult {
   file: string;
   warnings: string[];
 }
 
-/** Rebuild the index after `file` was written or removed, keeping any failure as a warning. */
+/** Update the index after `file` was written or removed, keeping any failure as a warning. */
 async function reindexAfterWrite(
   store: MemoryStore,
-  file: string
+  file: string,
+  saved?: SavedMemory
 ): Promise<WriteResult> {
-  return { file, warnings: await refreshIndex(store) };
+  return { file, warnings: await refreshIndex(store, saved) };
 }
 
 /** How many documents one listing page holds; a longer listing continues from a cursor. */
@@ -131,8 +135,8 @@ export interface DocumentPage {
 /**
  * One page of the store's memory documents, sorted by path. The store is flat, so
  * `pathPrefix` filters top-level names; `cursor` is the last path of the previous page.
- * A missing index is generated first, as `readDocument` does, so the listing shows it;
- * if it can't be generated (a memory is unparseable), the rest is still listed.
+ * A missing index is created first, as `readDocument` does, so the listing shows it;
+ * if it can't be created, the rest is still listed.
  */
 export async function listDocuments(
   store: MemoryStore,
@@ -190,7 +194,7 @@ export async function searchMemories(
   return { hits, warnings: broken.map(({ problem }) => problem) };
 }
 
-/** The index text, generating it first if it doesn't exist yet. */
+/** The index text, creating it first if it doesn't exist yet. */
 export async function readIndex(store: MemoryStore): Promise<string> {
   if (!store.exists(INDEX_FILE)) {
     await reindex(store);
@@ -229,7 +233,7 @@ async function findDocument(
   return { content, version: versionOf(content) };
 }
 
-/** A memory document by its path in the store; the index is generated first if it doesn't exist yet. */
+/** A memory document by its path in the store; the index is created first if it doesn't exist yet. */
 export async function readDocument(
   store: MemoryStore,
   path: string
@@ -255,11 +259,26 @@ export function assertMemoryPath(path: string): void {
   }
   if (isIndexPath(path)) {
     throw new RefusalError(
-      `Refused "${path}": that is the index's path (${INDEX_FILE}), and the index is generated from the memories' frontmatter; write a memory instead`
+      `Refused "${path}": that is the index's path (${INDEX_FILE}), and mdmem keeps the index up to date from the memories; write a memory instead`
     );
   }
   if (!path.endsWith(".md")) {
     throw new RefusalError(`Refused "${path}": a memory's path is <name>.md`);
+  }
+}
+
+/** The description of the memory at `path` before a write, or undefined when it is new or does not parse. */
+async function previousDescription(
+  store: MemoryStore,
+  path: string
+): Promise<string | undefined> {
+  if (!store.exists(path)) {
+    return undefined;
+  }
+  try {
+    return parseMemory(await store.view(path)).frontmatter.description;
+  } catch {
+    return undefined;
   }
 }
 
@@ -280,8 +299,9 @@ function parseWrittenMemory(path: string, content: string): Memory {
 /**
  * Write a whole memory document under the store's version guard: `ifVersion` is the
  * version last read or written at `path`, or `new` for a file that must not exist
- * yet. The content must parse as a memory named after its file and hold no secret.
- * Refreshes the index.
+ * yet. The content must parse as a memory named after its file, in kebab-case or
+ * snake_case, and hold no secret; it is stored as given, unknown fields included.
+ * Updates the index, rewriting the memory's pointer only if its description changed.
  */
 export async function writeDocument(
   store: MemoryStore,
@@ -290,17 +310,27 @@ export async function writeDocument(
   ifVersion: string
 ): Promise<VersionedWriteResult> {
   assertMemoryPath(path);
-  const { name } = parseWrittenMemory(path, content).frontmatter;
+  const { name, description } = parseWrittenMemory(path, content).frontmatter;
   const expected = path.slice(0, -".md".length);
+  if (!MEMORY_NAME_RE.test(expected)) {
+    throw new RefusalError(
+      `Refused "${path}": mdmem writes only memories named in kebab-case or snake_case (lowercase letters and digits, words joined by - or _), and "${expected}" is neither`
+    );
+  }
   if (name !== expected) {
     throw new RefusalError(
       `Refused "${path}": its name is "${name}", but a memory's name must equal its file name without .md ("${expected}")`
     );
   }
   assertNoSecrets(path, content);
+  const previous = await previousDescription(store, path);
   await store.create(path, content, ifVersion);
   return {
-    ...(await reindexAfterWrite(store, path)),
+    ...(await reindexAfterWrite(store, path, {
+      file: path,
+      description,
+      previousDescription: previous,
+    })),
     version: versionOf(content),
   };
 }
@@ -309,14 +339,14 @@ export async function writeDocument(
 function assertNotIndexDelete(path: string): void {
   if (isIndexPath(path)) {
     throw new RefusalError(
-      `Refused "${path}": that is the index's path (${INDEX_FILE}), and the index is generated from the memories' frontmatter, so it cannot be deleted`
+      `Refused "${path}": that is the index's path (${INDEX_FILE}), and mdmem keeps the index up to date from the memories, so it cannot be deleted`
     );
   }
 }
 
 /**
  * Delete a memory document under the store's version guard (`ifVersion` as in
- * `writeDocument`) and refresh the index. The index itself cannot be deleted.
+ * `writeDocument`) and update the index. The index itself cannot be deleted.
  */
 export async function deleteDocument(
   store: MemoryStore,
@@ -351,7 +381,7 @@ export async function saveMemory(
     },
     body: input.body,
   });
-  // Refuse the path before the read, which would regenerate a missing index.
+  // Refuse the path before the read, which would create a missing index.
   assertMemoryPath(file);
   const current = force ? await findDocument(store, file) : null;
   return writeDocument(
@@ -372,7 +402,7 @@ export async function removeMemory(
   name: string
 ): Promise<WriteResult | null> {
   const file = memoryFileFor(name);
-  // Refuse the index before the read, which would regenerate it if missing.
+  // Refuse the index before the read, which would create it if missing.
   assertNotIndexDelete(file);
   const current = await findDocument(store, file);
   if (!current) {

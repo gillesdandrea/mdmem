@@ -56,13 +56,14 @@ Focus on:
 
 ## Phase 4 — Prune
 
-mdmem generates the index from each memory's name and description, one pointer per
-memory: `- [name](name.md) — description`. It regenerates the index after every save
-through the tools and on `mdmem reindex`, so you shape the index through the memories
+mdmem keeps the index up to date from the memories, one pointer per memory:
+`- [name](name.md) — description`. It updates the index after every save through
+the tools and on `mdmem reindex`, so you shape the index through the memories
 alone. Never edit `MEMORY.md`.
 
-Keep the index under {{index_max_lines}} lines and under ~{{index_max_kb}}KB, the part
-Claude Code reads; `mdmem doctor` warns as it nears either limit.
+Keep the whole index under about {{index_max_chars}} characters, the size a
+session-start hook can inject; a save warns as it nears that limit, and
+`mdmem doctor` reports an index over it.
 
 - Shorten the description of any memory whose pointer runs past
   ~{{pointer_max_chars}} characters, and move the detail into its body

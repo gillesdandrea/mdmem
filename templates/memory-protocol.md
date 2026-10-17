@@ -136,14 +136,16 @@ with the body as it changes.
 ## The index
 
 `.memory/MEMORY.md` is the index, one pointer per memory, in this form:
-`- [name](name.md) — description`. mdmem generates it from the memories' frontmatter,
-so you shape it only through the memories. Never write or edit `MEMORY.md`, and never
-put memory content in it.
+`- [name](name.md) — description`. mdmem keeps it up to date from the memories: it
+adds a pointer for a new memory, removes the pointer of a deleted one, and updates
+a pointer's description when the memory's description changes. Never write or edit
+`MEMORY.md`, and never put memory content in it: shape the index only through the
+memories.
 
-Agents read the index at the start of every session, and Claude Code reads only its
-first {{index_max_lines}} lines and ~{{index_max_kb}}KB. Keep each description short
-enough that its pointer stays under ~{{pointer_max_chars}} characters; put the detail
-in the body.
+Agents read the index at the start of every session, and the whole index must stay
+under about {{index_max_chars}} characters. Keep each description short enough that
+its pointer stays under ~{{pointer_max_chars}} characters; put the detail in the
+body.
 
 ## Save
 

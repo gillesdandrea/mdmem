@@ -1,34 +1,32 @@
-import type { Frontmatter, Memory, MemoryType } from "./memory.ts";
-import { MEMORY_TYPES, memoryFileName, parseMemoryFile } from "./memory.ts";
-import { RefusalError } from "./refusal.ts";
+import type { Frontmatter, Memory } from "./memory.ts";
+import { memoryFileName, parseMemoryFile } from "./memory.ts";
 import { describeSecrets, findSecrets } from "./secrets.ts";
 import type { MemoryStore } from "./store.ts";
 
 /**
  * The memory-level view of a store: it loads every memory once, runs the Check
- * (GLOSSARY.md) over the memories and the index, and renders and refreshes the
- * index. The index (`MEMORY.md`) is derived, never hand-edited: agents write
- * memory files, and reindex regenerates the index from their frontmatter, which
- * keeps the one shared, mutable file off the concurrent-write path.
+ * (GLOSSARY.md) over the memories and the index, and keeps the index up to date.
+ * Agents write memory files, never the index (`MEMORY.md`). mdmem updates the index
+ * in place rather than regenerating it (ADR 0001), so a hand edit or an index
+ * imported from Claude Code survives: every line that is not a pointer is kept, and
+ * an existing pointer keeps its title.
  *
- * A broken memory blocks only the index (ADR 0002,
- * docs/adr/0002-refuse-or-degrade-never-crash.md): reindex refuses, naming every
- * unparseable memory, while loading keeps the memories that parse and reports the
+ * A broken memory blocks nothing (ADR 0002,
+ * docs/adr/0002-refuse-or-degrade-never-crash.md): it keeps the pointer it has, gets
+ * none if it has none, and loading keeps the memories that parse and reports the
  * broken ones beside them.
  */
 
 export const INDEX_FILE = "MEMORY.md";
 
 /**
- * Claude Code loads the first 200 lines or 25KB of an index, whichever comes first,
- * and drops the rest (code.claude.com/docs/en/memory). The docs don't say whether 25KB
- * is 25,000 or 25,600 bytes, so mdmem takes the lower figure. mdmem measures the whole
- * generated index, its one-line HTML comment included; if Claude Code skips that
- * comment, this errs by a line on the safe side.
+ * A session-start hook injects the index into each session (ADR 0003), and Claude
+ * Code caps the context of one hook entry at about 10,000 characters. mdmem keeps the
+ * whole index, every line counted, under 9,500 characters, leaving the hook room for
+ * the lines it adds around it.
  */
-export const INDEX_MAX_LINES = 200;
-export const INDEX_MAX_BYTES = 25_000;
-/** An index at or past this fraction of a limit is near it, and a write warns. */
+export const INDEX_MAX_CHARS = 9500;
+/** An index at or past this fraction of its limit is near it, and a write warns. */
 const INDEX_NEAR_FRACTION = 0.9;
 /** Claude Code keeps each pointer to one line under about this many characters. */
 export const POINTER_MAX_CHARS = 150;
@@ -109,137 +107,272 @@ interface PointerSource {
   frontmatter: Frontmatter;
 }
 
-/** A pointer: one line of the index, a memory's name linked to its file, then its description. */
+/** A pointer: one line of the index, a memory's title linked to its file, then its description. */
 type Pointer = string;
 
+/** A file name a pointer can link to as it is, with no angle brackets. */
+const BARE_TARGET_RE = /^[^\s()<>\\]+$/u;
+/** Characters a backslash escapes in a pointer's title (`[]\`) or angle-bracketed target (`<>\`). */
+const TITLE_ESCAPED_RE = /[[\]\\]/gu;
+const ANGLE_ESCAPED_RE = /[<>\\]/gu;
+const WHITESPACE_RE = /\s+/gu;
+
+/** `text` on one line, so a pointer never spans two: every run of whitespace becomes one space. */
+function oneLine(text: string): string {
+  return text.replaceAll(WHITESPACE_RE, " ").trim();
+}
+
+/** A link target for `file` that `matchPointer` reads back as `file`: bare, or in angle brackets. */
+function linkTarget(file: string): string {
+  return BARE_TARGET_RE.test(file)
+    ? file
+    : `<${file.replaceAll(ANGLE_ESCAPED_RE, "\\$&")}>`;
+}
+
+/**
+ * The pointer mdmem writes for a memory: titled with its name, since the format has
+ * no title field, and written so that `matchPointer` recognizes it whatever the name
+ * and file name hold, or reconciling would append it again on every save.
+ */
 function pointerLine({ file, frontmatter }: PointerSource): Pointer {
-  return `- [${frontmatter.name}](${file}) — ${frontmatter.description}`;
+  const title = oneLine(frontmatter.name).replaceAll(TITLE_ESCAPED_RE, "\\$&");
+  return `- [${title}](${linkTarget(file)}) — ${oneLine(frontmatter.description)}`;
 }
 
 function pointerSource({ file, memory }: LoadedMemory): PointerSource {
   return { file, frontmatter: memory.frontmatter };
 }
 
-const TYPE_HEADINGS: Record<MemoryType, string> = {
-  user: "User",
-  feedback: "Feedback",
-  project: "Project",
-  reference: "Reference",
-};
+/**
+ * A line that points at a memory file: a list item, bulleted or numbered, opening
+ * with a Markdown link whose target is a `<file>.md` with no directory, or `./` before
+ * it. The title may hold backslash escapes and
+ * balanced brackets; the target is bare, or in angle brackets when it holds spaces,
+ * parentheses or backslash escapes. A link to a URL or into a directory is never a
+ * pointer, so such a line is kept as it is.
+ */
+const POINTER_RE =
+  /^\s*(?:[-*+]|\d+[.)])\s+\[(?:[^[\]\\]|\\.|\[(?:[^[\]\\]|\\.)*\])*\]\((?:<(?<angle>(?:[^<>\n\\]|\\.)+)>|(?<bare>[^()\s<>\\]+))\)/u;
+/** A `./` before a target, which still names a file in the store. */
+const CURRENT_DIR_RE = /^\.\//u;
+/** A backslash escape in an angle-bracketed target: CommonMark escapes ASCII punctuation only. */
+const TARGET_ESCAPE_RE = /\\(?<char>[!-/:-@[-`{-~])/gu;
 
-function renderIndex(sources: readonly PointerSource[]): string {
-  const lines: string[] = [
-    "# Memory index",
-    "",
-    "<!-- Generated by mdmem from memory frontmatter. Do not edit by hand. -->",
-    "",
-  ];
+/** Separates a pointer's link from its description. */
+const HOOK_DASH = "—";
 
-  if (sources.length === 0) {
-    lines.push("_No memories yet._", "");
-    return lines.join("\n");
-  }
-
-  for (const type of MEMORY_TYPES) {
-    const group = sources
-      .filter((p) => p.frontmatter.metadata.type === type)
-      .toSorted((a, b) => a.frontmatter.name.localeCompare(b.frontmatter.name));
-    if (group.length === 0) {
-      continue;
-    }
-    lines.push(`## ${TYPE_HEADINGS[type]}`, "");
-    for (const p of group) {
-      lines.push(pointerLine(p));
-    }
-    lines.push("");
-  }
-
-  return lines.join("\n");
+interface PointerMatch {
+  /** The memory file the pointer links to. */
+  target: string;
+  /** Where the link ends in the line. */
+  linkEnd: number;
 }
 
-interface IndexLimit {
-  unit: string;
-  max: number;
-  measure: (content: string) => number;
-  /** What brings the index back under this limit. */
-  remedy: string;
+/** The memory file `line` points at, or undefined when it is not a pointer. */
+function matchPointer(line: string): PointerMatch | undefined {
+  const match = POINTER_RE.exec(line);
+  if (match === null) {
+    return undefined;
+  }
+  const { angle, bare } = match.groups ?? {};
+  const target = (
+    angle?.replaceAll(TARGET_ESCAPE_RE, "$<char>") ?? bare
+  )?.replace(CURRENT_DIR_RE, "");
+  if (
+    target === undefined ||
+    !target.endsWith(".md") ||
+    target.includes("/") ||
+    target.toLowerCase() === INDEX_FILE.toLowerCase()
+  ) {
+    return undefined;
+  }
+  return { target, linkEnd: match[0].length };
 }
 
-function lineCount(content: string): number {
+/** A memory just saved: its file, its description, and its description before the save. */
+export interface SavedMemory {
+  file: string;
+  description: string;
+  /** Undefined when the memory is new, or did not parse before. */
+  previousDescription?: string;
+}
+
+/**
+ * The saved memory's pointer: the line and its title are kept, and the text after
+ * the dash becomes the new description only when the description changed. A pointer
+ * with no dash gets one, followed by the description.
+ */
+function savedPointer(
+  line: string,
+  { linkEnd }: PointerMatch,
+  { description, previousDescription }: SavedMemory
+): Pointer {
+  const dash = line.indexOf(HOOK_DASH, linkEnd);
+  if (dash === -1) {
+    return `${line.trimEnd()} ${HOOK_DASH} ${oneLine(description)}`;
+  }
+  if (description === previousDescription) {
+    return line;
+  }
+  return `${line.slice(0, dash)}${HOOK_DASH} ${oneLine(description)}`;
+}
+
+/** What an index lacks or holds in excess against the memory files, each by file name. */
+interface IndexFindings {
+  /** Memories that parse and have no pointer. */
+  missing: string[];
+  /** Pointers to files that do not exist. */
+  dangling: string[];
+  /** Files with more than one pointer, once each. */
+  duplicated: string[];
+}
+
+/** An index brought up to date, the files it points at, and what was wrong with it. */
+interface Reconciled {
+  content: string;
+  pointed: ReadonlySet<string>;
+  findings: IndexFindings;
+}
+
+const LINE_BREAK_RE = /\r?\n/u;
+
+/** The line ending `content` uses: CRLF when it holds one, else LF. */
+function lineEndingOf(content: string): string {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
+
+/** The lines of `content`, without their endings or the empty one after a final line break. */
+function linesOf(content: string): string[] {
   if (content === "") {
-    return 0;
+    return [];
   }
-  const lines = content.split("\n").length;
-  return content.endsWith("\n") ? lines - 1 : lines;
+  const lines = content.split(LINE_BREAK_RE);
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  return lines;
 }
 
-const INDEX_LIMITS: readonly IndexLimit[] = [
-  {
-    unit: "line",
-    max: INDEX_MAX_LINES,
-    measure: lineCount,
-    remedy: "Merge or delete memories: the index holds one line per memory.",
-  },
-  {
-    unit: "byte",
-    max: INDEX_MAX_BYTES,
-    measure: (content) => Buffer.byteLength(content, "utf-8"),
-    remedy: "Shorten descriptions, or merge or delete memories.",
-  },
-];
+/**
+ * Bring the index `current` up to date with the memory files `files`, in place:
+ * pointers to missing files are dropped, a file's pointers after its first are
+ * dropped, the saved memory's pointer gets its new description, and a memory that
+ * parses and has no pointer gets one appended at the end. Every other line is kept.
+ */
+function reconcileIndex(
+  current: string,
+  files: ReadonlySet<string>,
+  memories: readonly LoadedMemory[],
+  saved?: SavedMemory
+): Reconciled {
+  const kept: string[] = [];
+  const pointed = new Set<string>();
+  const findings: IndexFindings = { missing: [], dangling: [], duplicated: [] };
+  for (const line of linesOf(current)) {
+    const pointer = matchPointer(line);
+    if (pointer === undefined) {
+      kept.push(line);
+    } else if (!files.has(pointer.target)) {
+      findings.dangling.push(pointer.target);
+    } else if (pointed.has(pointer.target)) {
+      if (!findings.duplicated.includes(pointer.target)) {
+        findings.duplicated.push(pointer.target);
+      }
+    } else {
+      pointed.add(pointer.target);
+      kept.push(
+        saved?.file === pointer.target
+          ? savedPointer(line, pointer, saved)
+          : line
+      );
+    }
+  }
+  for (const loaded of memories) {
+    if (!pointed.has(loaded.file)) {
+      findings.missing.push(loaded.file);
+      kept.push(pointerLine(pointerSource(loaded)));
+    }
+  }
+  const eol = lineEndingOf(current);
+  const content = kept.length === 0 ? "" : `${kept.join(eol)}${eol}`;
+  return { content, pointed, findings };
+}
 
-/** An index near or over one of Claude Code's read limits. */
+/** The index's text, or empty when there is none yet. */
+async function currentIndex(store: MemoryStore): Promise<string> {
+  return store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
+}
+
+/** An index near or over the size a session-start hook can inject. */
 interface CapacityReport {
   over: boolean;
   message: string;
 }
 
-/** The read limits `content`, an index, is near or over, one report per limit. */
-function indexCapacity(content: string): CapacityReport[] {
-  const reports: CapacityReport[] = [];
-  for (const { unit, max, measure, remedy } of INDEX_LIMITS) {
-    const size = measure(content);
-    if (size < max * INDEX_NEAR_FRACTION) {
-      continue;
-    }
-    const over = size > max;
-    const consequence = over
-      ? "everything past the limit is dropped each time the index is loaded"
-      : "past it, the rest is dropped each time the index is loaded";
-    reports.push({
-      over,
-      message: `${INDEX_FILE} is at ${size} ${unit}s, ${over ? "over" : "near"} its ${max}-${unit} read limit: ${consequence}. ${remedy}`,
-    });
+/** Whether `content`, an index, is near or over its limit; undefined when it is well under. */
+function indexCapacity(content: string): CapacityReport | undefined {
+  const size = [...content].length;
+  if (size < INDEX_MAX_CHARS * INDEX_NEAR_FRACTION) {
+    return undefined;
   }
-  return reports;
+  const over = size > INDEX_MAX_CHARS;
+  const consequence = over
+    ? "a session-start hook cannot inject all of it"
+    : "past it, a session-start hook cannot inject all of it";
+  return {
+    over,
+    message: `${INDEX_FILE} is at ${size.toLocaleString("en-US")} characters, ${over ? "over" : "near"} its ${INDEX_MAX_CHARS.toLocaleString("en-US")}-character limit, the size a session-start hook can inject: ${consequence}. Shorten descriptions, or merge or delete memories.`,
+  };
+}
+
+/** The warning for a broken memory met while updating the index, saying what became of its pointer. */
+function brokenWarning(
+  { file, problem }: BrokenMemory,
+  pointed: ReadonlySet<string>
+): string {
+  return pointed.has(file)
+    ? `${problem} (it keeps its pointer in ${INDEX_FILE})`
+    : `${problem} (it has no pointer in ${INDEX_FILE} until it parses)`;
 }
 
 /**
- * Regenerate the index from the memories' frontmatter. A broken memory refuses it,
- * naming every unparseable memory, because an index that silently drops a memory is
- * worse than a stale one. Returns the warnings for an index near or over Claude
- * Code's read limits.
+ * Bring the index up to date with the memory files, in place (`reconcileIndex`
+ * says how), writing it only when it changes. `saved` is the memory a write just
+ * saved, whose pointer takes its new description. Returns a warning for each broken
+ * memory, and one for an index near or over its limit.
  */
-export async function reindex(store: MemoryStore): Promise<string[]> {
-  const { memories, broken } = await loadMemories(store);
-  if (broken.length > 0) {
-    throw new RefusalError(broken.map(({ problem }) => problem).join("; "));
+export async function reindex(
+  store: MemoryStore,
+  saved?: SavedMemory
+): Promise<string[]> {
+  const entries = await loadFiles(store);
+  const { memories, broken } = splitLoad(entries);
+  const current = await currentIndex(store);
+  const files = new Set(entries.map(({ file }) => file));
+  const { content, pointed } = reconcileIndex(current, files, memories, saved);
+  if (content !== current || !store.exists(INDEX_FILE)) {
+    await store.create(INDEX_FILE, content);
   }
-  const content = renderIndex(memories.map(pointerSource));
-  await store.create(INDEX_FILE, content);
-  return indexCapacity(content).map(({ message }) => message);
+  const capacity = indexCapacity(content);
+  return [
+    ...broken.map((entry) => brokenWarning(entry, pointed)),
+    ...(capacity ? [capacity.message] : []),
+  ];
 }
 
 /**
- * `reindex` after a write that already landed: a refusal becomes a warning that the
+ * `reindex` after a write that already landed: a failure becomes a warning that the
  * index is stale, worded once here so the CLI and MCP say the same thing.
  */
-export async function refreshIndex(store: MemoryStore): Promise<string[]> {
+export async function refreshIndex(
+  store: MemoryStore,
+  saved?: SavedMemory
+): Promise<string[]> {
   try {
-    return await reindex(store);
+    return await reindex(store, saved);
   } catch (error) {
     return [
-      `${INDEX_FILE} is stale: ${messageOf(error)} (run \`mdmem doctor\`)`,
+      `${INDEX_FILE} is stale: ${messageOf(error)} (run \`mdmem reindex\`)`,
     ];
   }
 }
@@ -250,7 +383,7 @@ export interface Check {
   problems: string[];
 }
 
-const LINK_RE = /\[\[(?<name>[a-z0-9-]+)\]\]/gu;
+const LINK_RE = /\[\[(?<name>[a-z0-9_-]+)\]\]/gu;
 
 /** The names a memory's body links to with `[[name]]`. */
 function linkNames(body: string): string[] {
@@ -264,7 +397,7 @@ function linkNames(body: string): string[] {
   return names;
 }
 
-/** Problems with one memory file on its own: a secret, then an unparseable memory or a name that differs from its file name. */
+/** Problems with one memory file on its own: a secret, then an unparseable memory, or a name that differs from its file name and conflicting types. */
 function fileProblems(entry: LoadedMemory | BrokenMemory): string[] {
   const problems: string[] = [];
   // Checked before parsing, so a secret in an unparseable memory is reported too.
@@ -278,9 +411,18 @@ function fileProblems(entry: LoadedMemory | BrokenMemory): string[] {
     problems.push(entry.problem);
     return problems;
   }
-  const { name } = entry.memory.frontmatter;
+  const { name, type, metadata } = entry.memory.frontmatter;
   if (memoryFileName(name) !== entry.file) {
     problems.push(`${entry.file}: name "${name}" ≠ filename`);
+  }
+  if (
+    type !== undefined &&
+    metadata?.type !== undefined &&
+    type !== metadata.type
+  ) {
+    problems.push(
+      `${entry.file}: metadata.type "${metadata.type}" ≠ type "${type}" — metadata.type wins; remove one`
+    );
   }
   return problems;
 }
@@ -305,36 +447,49 @@ function memoryProblems(
   return problems;
 }
 
-/** Problems with the index: stale against the memories that parse, or over a read limit. */
+/** Problems with the index: stale against the memory files, or over its limit. */
 async function indexProblems(
   store: MemoryStore,
+  files: ReadonlySet<string>,
   memories: readonly LoadedMemory[]
 ): Promise<string[]> {
-  const problems: string[] = [];
-  const fresh = renderIndex(memories.map(pointerSource));
-  const current = store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
-  if (current.trim() !== fresh.trim()) {
-    problems.push(`${INDEX_FILE} is stale — run \`mdmem reindex\``);
-  }
-  for (const { over, message } of indexCapacity(fresh)) {
-    if (over) {
-      problems.push(message);
-    }
+  const current = await currentIndex(store);
+  const { missing, dangling, duplicated } = reconcileIndex(
+    current,
+    files,
+    memories
+  ).findings;
+  const stale = [
+    ...missing.map((file) => `no pointer to ${file}`),
+    ...dangling.map((file) => `a pointer to ${file}, which does not exist`),
+    ...duplicated.map((file) => `more than one pointer to ${file}`),
+  ];
+  const problems = stale.map(
+    (finding) => `${INDEX_FILE} is stale: ${finding} — run \`mdmem reindex\``
+  );
+  const capacity = indexCapacity(current);
+  if (capacity?.over) {
+    problems.push(capacity.message);
   }
   return problems;
 }
 
 /** Run a Check over the store: every problem with its memories and its index. It never writes. */
 export async function checkStore(store: MemoryStore): Promise<Check> {
-  const files = await loadFiles(store);
-  const { memories } = splitLoad(files);
-  const known = new Set(memories.map(({ memory }) => memory.frontmatter.name));
+  const entries = await loadFiles(store);
+  const { memories } = splitLoad(entries);
+  const files = new Set(entries.map(({ file }) => file));
+  // A link resolves to a memory's name or to a memory file's name without .md.
+  const known = new Set([
+    ...memories.map(({ memory }) => memory.frontmatter.name),
+    ...[...files].map((file) => file.slice(0, -".md".length)),
+  ]);
   const problems = [
-    ...files.flatMap(fileProblems),
+    ...entries.flatMap(fileProblems),
     ...memories.flatMap((loaded) => memoryProblems(loaded, known)),
-    ...(await indexProblems(store, memories)),
+    ...(await indexProblems(store, files, memories)),
   ];
-  return { memoryCount: files.length, problems };
+  return { memoryCount: entries.length, problems };
 }
 
 function countMemories(count: number): string {

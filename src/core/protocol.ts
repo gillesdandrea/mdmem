@@ -1,10 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import {
-  INDEX_MAX_BYTES,
-  INDEX_MAX_LINES,
-  POINTER_MAX_CHARS,
-} from "./check.ts";
+import { INDEX_MAX_CHARS, POINTER_MAX_CHARS } from "./check.ts";
 
 /**
  * The text mdmem hands to agents lives as editable Markdown under `templates/`, so it
@@ -22,8 +18,6 @@ import {
 type TemplateName = "memory-protocol" | "consolidate";
 
 const PLACEHOLDER_RE = /\{\{(?<key>[^{}]*)\}\}/gu;
-
-const BYTES_PER_KB = 1000;
 
 const cache = new Map<TemplateName, string>();
 
@@ -57,8 +51,7 @@ function renderTemplate(
 function indexLimits(): Record<string, string> {
   return {
     pointer_max_chars: String(POINTER_MAX_CHARS),
-    index_max_lines: String(INDEX_MAX_LINES),
-    index_max_kb: String(INDEX_MAX_BYTES / BYTES_PER_KB),
+    index_max_chars: INDEX_MAX_CHARS.toLocaleString("en-US"),
   };
 }
 

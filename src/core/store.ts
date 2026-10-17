@@ -26,7 +26,7 @@ import { RefusalError } from "./refusal.ts";
  * write or delete against a version the caller has not seen with
  * VersionConflictError, which carries the current content for a merge (ADR 0002,
  * docs/adr/0002-refuse-or-degrade-never-crash.md). Which file is the index, and
- * how it is derived from the memories, is the business of ./check.ts.
+ * how it is kept up to date from the memories, is the business of ./check.ts.
  */
 
 export const STORE_DIR = ".memory";

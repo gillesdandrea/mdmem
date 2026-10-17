@@ -76,7 +76,7 @@ Writing a new memory, or updating an existing one in place of a duplicate.
 _Avoid_: record, remember
 
 **Check**:
-A pass over a memory store that reports every problem with its memories and its index: an unparseable memory, a name that differs from its file name, a secret, an over-long pointer, a dangling link, a stale or over-capacity index. `mdmem doctor` runs a check.
+A pass over a memory store that reports every problem with its memories and its index: an unparseable memory, a name that differs from its file name, two memory types that disagree, a secret, an over-long pointer, a dangling link, a stale or over-capacity index. `mdmem doctor` runs a check.
 _Avoid_: lint, validation, health check
 
 **Consolidation**:

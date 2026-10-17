@@ -446,8 +446,8 @@ describe("cli", () => {
       );
 
       // a broken memory elsewhere doesn't make a write that landed read as failed
-      const staleWarning =
-        "mdmem: warning: MEMORY.md is stale: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (run `mdmem doctor`)\n";
+      const brokenWarning =
+        "mdmem: warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (it has no pointer in MEMORY.md until it parses)\n";
       const keep = run(
         "add",
         "--type",
@@ -461,16 +461,16 @@ describe("cli", () => {
       );
       expect(keep.code).toBe(0);
       expect(keep.out).toBe("Saved keep.md\n");
-      expect(keep.err).toBe(staleWarning);
+      expect(keep.err).toBe(brokenWarning);
       const append = await editorScript(root, `printf 'More.\\n' >> "$1"`);
       const editKeep = runEdit(root, append, "keep");
       expect(editKeep.code).toBe(0);
       expect(editKeep.out).toBe("Saved keep.md\n");
-      expect(editKeep.err).toBe(staleWarning);
+      expect(editKeep.err).toBe(brokenWarning);
       const dropKeep = run("delete", "keep");
       expect(dropKeep.code).toBe(0);
       expect(dropKeep.out).toBe("Deleted keep.md\n");
-      expect(dropKeep.err).toBe(staleWarning);
+      expect(dropKeep.err).toBe(brokenWarning);
       expect(existsSync(join(root, ".memory/keep.md"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });

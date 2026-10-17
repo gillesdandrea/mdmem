@@ -14,20 +14,31 @@ export const MEMORY_TYPES = [
 ] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 
-export const frontmatterSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .regex(
-      /^[a-z0-9]+(?:-[a-z0-9]+)*$/u,
-      "name must be kebab-case (a-z, 0-9, hyphens)"
-    ),
-  description: z.string().min(1),
-  metadata: z.object({
-    type: z.enum(MEMORY_TYPES),
-  }),
-});
+/**
+ * A memory's frontmatter as mdmem reads it: as loosely as Claude Code writes it
+ * (ADR 0001). The name is any non-empty string, the type sits under `metadata` or at
+ * the top level, and unknown fields, nested or not, are kept. What mdmem itself
+ * writes is stricter: see `MEMORY_NAME_RE`.
+ */
+export const frontmatterSchema = z
+  .looseObject({
+    name: z.string().min(1),
+    description: z.string().min(1),
+    type: z.enum(MEMORY_TYPES).optional(),
+    metadata: z
+      .looseObject({ type: z.enum(MEMORY_TYPES).optional() })
+      .nullish(),
+  })
+  .refine(
+    (frontmatter) =>
+      frontmatter.metadata?.type !== undefined ||
+      frontmatter.type !== undefined,
+    { message: "a memory type is required, in metadata.type or type" }
+  );
 export type Frontmatter = z.infer<typeof frontmatterSchema>;
+
+/** The names mdmem writes: lowercase words of letters and digits, joined by `-` or `_`. */
+export const MEMORY_NAME_RE = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/u;
 
 export interface Memory {
   frontmatter: Frontmatter;

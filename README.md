@@ -10,7 +10,7 @@ any agent is visible to all of them.
 ## How it works
 
 - **One store per project:** `.memory/` at the project's root, holding Markdown
-  memories and a generated `MEMORY.md` index. In git, the root is the main
+  memories and a `MEMORY.md` index. In git, the root is the main
   checkout's directory: every linked worktree, subdirectory and submodule uses that
   one store, and a `.memory/` lower down is ignored. A bare repository's root is
   the directory holding it as `.git`, or the bare `x.git` itself. Without git,
@@ -19,9 +19,14 @@ any agent is visible to all of them.
   directory itself, it still looks there). mdmem never edits `.gitignore`: ignoring or
   committing `.memory/` is your choice, and `mdmem init` says when git does not
   ignore it.
-- **The index is derived.** Agents only ever write their own memory files;
-  `mdmem reindex` regenerates `MEMORY.md`. No shared file is hand-edited, so
-  concurrent agents never conflict over it.
+- **mdmem keeps the index up to date from the memories.** Agents only ever write
+  their own memory files. After every save or delete through mdmem, and on
+  `mdmem reindex`, mdmem updates `MEMORY.md` in place: it appends a pointer for a
+  memory that has none, removes pointers to missing files and duplicate pointers,
+  and rewrites a pointer's description only when that memory's description
+  changed. Every other line (a title, headings, prose, a pointer's own title) is
+  kept, so an index written by hand or by Claude Code survives. An empty store has
+  an empty index.
 - **Each agent is wired to the store in its own native way** (`mdmem enable`):
   - **Claude Code** (specific) — sets `autoMemoryDirectory` in
     `.claude/settings.local.json` so Claude's *own* memory reads and writes the
@@ -73,9 +78,9 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem edit <name>` | Edit a copy of a memory in `$VISUAL`/`$EDITOR`, then save it back and reindex |
 | `mdmem delete` (alias `rm`) `<name>` | Remove a memory by its name (or `<name>.md`) |
 | `mdmem search <query>` | Find memories containing text |
-| `mdmem reindex` | Rebuild `MEMORY.md` from memory frontmatter |
+| `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
-| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, secrets, pointers over 150 characters, dangling `[[links]]`, stale index, index over Claude Code's read limits |
+| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer), index over 9,500 characters, the size a session-start hook can inject |
 | `mdmem enable <agent…> \| --all` | Wire an agent to the shared store |
 | `mdmem disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
 | `mdmem status` | Show the store and per-agent status |
@@ -92,10 +97,10 @@ prints the memory's path instead of opening it — edit it by hand, then run
 `mdmem reindex`.
 
 A memory that does not parse locks no one out. `search` and `status` answer
-from the memories that do and warn about the broken one on stderr, and a save
-still lands with a warning that `MEMORY.md` is stale. Only `reindex` refuses,
-naming every unparseable memory, because an index that silently drops a memory
-is worse than a stale one. `doctor` reports it with the store's other problems.
+from the memories that do and warn about the broken one on stderr. `reindex` and
+every save or delete update the index anyway: the broken memory keeps the pointer
+it has, gets none if it has none, and each one is named in a warning. `doctor`
+reports it with the store's other problems.
 
 ## Memory format
 
@@ -118,6 +123,15 @@ Use bun for scripts and tests.
 `feedback`/`project` memories add `**Why:**` and `**How to apply:**` lines; link
 related memories with `[[name]]`.
 
+mdmem reads memories as loosely as Claude Code writes them: any non-empty name,
+the type under `metadata` or at the top level (`metadata.type` wins when both are
+set), and unknown fields, which it keeps. What it writes (`add`, `edit`,
+`memory_write`) is strict: the name must equal the file name without `.md`, in
+kebab-case or snake_case, so a memory whose name differs from its file must have
+its name fixed before mdmem saves it. `doctor` reports a name that differs from
+its file name and two types that disagree; a `[[link]]` resolves to a memory's
+name or its file name.
+
 ## MCP server
 
 For agents that call tools instead of reading files, `mdmem mcp` runs a stdio
@@ -127,7 +141,7 @@ server with the same memory-store tools as Claude Code, plus three of its own:
 |---|---|
 | `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
 | `memory_read` | Read one document by `path` (`prefers-bun.md`, or the index `MEMORY.md`), with its version token. |
-| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. |
+| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` is refused. |
 | `memory_search` | List the memories containing a query, by path with their description. A memory that does not parse is skipped and named in a warning. |
 | `memory_check` | Check the store as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems. |
@@ -139,7 +153,7 @@ unknown store id is an error that names the valid one. `memory_write` and
 `memory_write` takes the literal `new`. When the document has changed since that
 version, or `new` names a file that already exists, the call is rejected and
 returns the current content and version, so the agent can merge and retry. Both
-tools regenerate `MEMORY.md` afterwards.
+tools update `MEMORY.md` afterwards.
 
 The server also serves one prompt, `consolidate` (see below).
 

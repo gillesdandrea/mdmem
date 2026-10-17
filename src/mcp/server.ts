@@ -32,8 +32,8 @@ import type { MemoryStore } from "../core/store.ts";
  * tools than read files. It mirrors Claude Code's memory-store tools (memory_list,
  * memory_read, memory_write: whole documents addressed by path, guarded by a required
  * if_version) plus memory_search, memory_check and memory_delete (docs/adr/0001). The
- * operations live in ../core/operations and ../core/check; writes reindex automatically
- * so the index stays fresh.
+ * operations live in ../core/operations and ../core/check; writes update the index
+ * automatically, so it stays up to date.
  * It also serves the consolidation prompt, as the MCP prompt consolidate.
  */
 
@@ -101,7 +101,7 @@ function warningLines(warnings: readonly string[]): string[] {
   return warnings.map((w) => `Warning: ${w}`);
 }
 
-/** The write landed, so it is not an error; its warnings (a stale or full index) ride along. */
+/** The write landed, so it is not an error; its warnings (a broken memory, a stale or full index) ride along. */
 function writeText(
   verb: string,
   { file, warnings }: WriteResult
@@ -243,7 +243,7 @@ export async function startMcpServer(): Promise<void> {
     "memory_check",
     {
       title: "Check a memory store",
-      description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a dangling [[link]], a stale index, or an index over Claude Code's read limits. Returns the problems one per line, or a line with the memory count saying there are none. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also rewrites a stale index once every memory parses.`,
+      description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a metadata.type and a type that disagree, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a dangling [[link]], a stale index (a memory without a pointer, a pointer to a missing file, or a duplicate pointer), or an index over the size a session-start hook can inject. Returns the problems one per line, or a line with the memory count saying there are none. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also brings a stale index up to date.`,
       inputSchema: z.object({ store: storeParam }),
     },
     ({ store: id }) =>
@@ -277,7 +277,7 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Write a memory document",
       description:
-        "Create or update a memory document with full content, in the memory store named by store (call memory_list with no arguments to see it; omitted means the project's store). Overwrites if the path already exists: content replaces the ENTIRE document — this is not an append or a patch. Include every existing line you intend to keep; any line you omit is deleted. The content is a memory — YAML frontmatter with name, description and metadata.type (user, feedback, project or reference), then the body — and its name must equal the path without .md. MEMORY.md is generated from the memories, so it cannot be written. Use this to save durable knowledge about the project and how to work in it — not transient task state. Always pass if_version: the version token from your most recent memory_read or memory_write of this path, or the literal word new (without quotes) for a file that does not yet exist. The listing shows paths but not version tokens, so for any file already there you must memory_read it first. Writes with if_version=new to an existing path are rejected so you can't overwrite content you haven't seen. Both the rejection and a version conflict return the current content and version so you can merge and retry. The result includes the new version token for follow-up writes. Never write secrets or credentials into a memory — the store is shared with every agent on the project, and content that looks like it holds an API key, token, private key or password is refused.",
+        "Create or update a memory document with full content, in the memory store named by store (call memory_list with no arguments to see it; omitted means the project's store). Overwrites if the path already exists: content replaces the ENTIRE document — this is not an append or a patch. Include every existing line you intend to keep; any line you omit is deleted. The content is a memory — YAML frontmatter with name, description and metadata.type (user, feedback, project or reference), then the body — and its name must equal the path without .md, in kebab-case or snake_case. mdmem keeps MEMORY.md up to date from the memories, so it cannot be written. Use this to save durable knowledge about the project and how to work in it — not transient task state. Always pass if_version: the version token from your most recent memory_read or memory_write of this path, or the literal word new (without quotes) for a file that does not yet exist. The listing shows paths but not version tokens, so for any file already there you must memory_read it first. Writes with if_version=new to an existing path are rejected so you can't overwrite content you haven't seen. Both the rejection and a version conflict return the current content and version so you can merge and retry. The result includes the new version token for follow-up writes. Never write secrets or credentials into a memory — the store is shared with every agent on the project, and content that looks like it holds an API key, token, private key or password is refused.",
       inputSchema: z.object({
         store: storeParam,
         path: z
@@ -301,7 +301,7 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Delete a memory document",
       description:
-        "Delete a memory document from the memory store named by store (omitted means the project's store), then regenerate the index. Always pass if_version: the version token from your most recent memory_read or memory_write of this path. If the document changed since, the delete is rejected with its current content and version, so you can decide again. MEMORY.md is generated, so it cannot be deleted.",
+        "Delete a memory document from the memory store named by store (omitted means the project's store), then update the index. Always pass if_version: the version token from your most recent memory_read or memory_write of this path. If the document changed since, the delete is rejected with its current content and version, so you can decide again. mdmem keeps MEMORY.md up to date from the memories, so it cannot be deleted.",
       inputSchema: z.object({
         store: storeParam,
         path: z

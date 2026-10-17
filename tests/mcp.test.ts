@@ -155,7 +155,7 @@ describe("mcp server", () => {
     });
   });
 
-  test("memory_list with a store lists MEMORY.md even before it is generated", async () => {
+  test("memory_list with a store lists MEMORY.md even before it is created", async () => {
     await withServer(async ({ client, store, storeId }) => {
       await store.remove("MEMORY.md");
       const list = await client.callTool({
@@ -241,15 +241,16 @@ describe("mcp server", () => {
     });
   });
 
-  test("memory_read reads the index at MEMORY.md, generating it when missing", async () => {
+  test("memory_read reads the index at MEMORY.md, creating it when missing", async () => {
     await withServer(async ({ client, store }) => {
+      await store.create("note.md", memory("note", "x"));
       await store.remove("MEMORY.md");
       const read = await client.callTool({
         name: "memory_read",
         arguments: { path: "MEMORY.md" },
       });
       expect(read.isError).toBeFalsy();
-      expect(textOf(read)).toContain("# Memory index");
+      expect(textOf(read)).toContain("- [note](note.md) — About note\n");
       expect(versionOfResult(read)).toBe(await store.version("MEMORY.md"));
     });
   });
@@ -377,7 +378,7 @@ describe("mcp server", () => {
     });
   });
 
-  test("memory_write refuses the index path: the index is generated", async () => {
+  test("memory_write refuses the index path: mdmem keeps the index up to date", async () => {
     await withServer(async ({ client, store }) => {
       const before = await store.view("MEMORY.md");
       const result = await write(
@@ -387,7 +388,7 @@ describe("mcp server", () => {
         await store.version("MEMORY.md")
       );
       expect(result.isError).toBe(true);
-      expect(textOf(result)).toContain("generated");
+      expect(textOf(result)).toContain("mdmem keeps the index up to date");
       expect(await store.view("MEMORY.md")).toBe(before);
     });
   });
@@ -402,7 +403,7 @@ describe("mcp server", () => {
         await store.version("MEMORY.md")
       );
       expect(result.isError).toBe(true);
-      expect(textOf(result)).toContain("the index is generated");
+      expect(textOf(result)).toContain("mdmem keeps the index up to date");
       expect(await store.view("MEMORY.md")).toBe(before);
     });
   });
@@ -436,12 +437,12 @@ describe("mcp server", () => {
     });
   });
 
-  test("memory_write regenerates the index, warning when that fails", async () => {
+  test("memory_write updates the index, warning of a broken memory", async () => {
     await withServer(async ({ client, store }) => {
       await write(client, "note.md", memory("note", "x"), "new");
       expect(await store.view("MEMORY.md")).toContain("[note](note.md)");
 
-      // Another memory is unparseable, so the index can't be rebuilt; the write still lands.
+      // Another memory is unparseable: it gets no pointer, and the write warns of it.
       await store.create("broken.md", "no frontmatter");
       const result = await write(
         client,
@@ -450,12 +451,16 @@ describe("mcp server", () => {
         "new"
       );
       expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toContain("Warning: MEMORY.md is stale");
-      expect(store.exists("other.md")).toBe(true);
+      expect(textOf(result)).toContain(
+        "Warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (it has no pointer in MEMORY.md until it parses)"
+      );
+      expect(await store.view("MEMORY.md")).toBe(
+        "- [note](note.md) — About note\n- [other](other.md) — About other\n"
+      );
     });
   });
 
-  test("memory_delete deletes a document at its version and regenerates the index", async () => {
+  test("memory_delete deletes a document at its version and updates the index", async () => {
     await withServer(async ({ client, store, storeId }) => {
       const saved = await write(client, "note.md", memory("note", "x"), "new");
       const result = await client.callTool({
@@ -522,7 +527,7 @@ describe("mcp server", () => {
         },
       });
       expect(result.isError).toBe(true);
-      expect(textOf(result)).toContain("the index is generated");
+      expect(textOf(result)).toContain("mdmem keeps the index up to date");
       expect(await store.view("MEMORY.md")).toBe(before);
     });
   });
