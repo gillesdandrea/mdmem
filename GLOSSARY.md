@@ -25,7 +25,7 @@ One Markdown file holding one fact: frontmatter with a name, a description and a
 _Avoid_: fact (that is what a memory holds), entry, note, topic file
 
 **Name**:
-A memory's short kebab-case identifier, unique in the project and equal to its file name without `.md`.
+A memory's short identifier, unique in the project and normally equal to its file name without `.md`; a memory written by mdmem always matches its file name.
 _Avoid_: slug, id, key
 
 **Description**:
@@ -82,3 +82,9 @@ _Avoid_: lint, validation, health check
 **Consolidation**:
 A reflective pass over a memory store's memories that merges, corrects and prunes them. Claude Code calls one such pass a *dream*.
 _Avoid_: cleanup, compaction
+
+### Agents
+
+**Wiring**:
+What connects one agent to a project's memory store in that agent's native way, so it recalls and saves there: a setting, a hook, a rule file.
+_Avoid_: link (a `[[name]]` in a memory), integration, setup
