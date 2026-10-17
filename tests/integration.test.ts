@@ -18,8 +18,12 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import { cursorAdapter } from "../src/adapters/cursor.ts";
 import type { AdapterContext } from "../src/adapters/index.ts";
 import { reindex } from "../src/core/check.ts";
+import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
 import { serializeMemory } from "../src/core/memory.ts";
-import { getConsolidatePrompt } from "../src/core/protocol.ts";
+import {
+  getConsolidatePrompt,
+  getMemoryProtocol,
+} from "../src/core/protocol.ts";
 import { MemoryStore } from "../src/core/store.ts";
 import { git, gitRepo } from "./git-fixture.ts";
 
@@ -547,6 +551,234 @@ describe("cli", () => {
       expect(consolidate.out).toBe(getConsolidatePrompt(storeDir));
       expect(consolidate.out).toContain(`Memory store: \`${storeDir}\``);
       expect(consolidate.out).toContain("## Phase 5 — Reconcile");
+    });
+  });
+});
+
+/** Run `mdmem hook <agent> <part>` in `cwd` with `payload` on stdin, capturing its exit code and output. */
+function runHookCli(cwd: string, part: string, payload: unknown) {
+  const proc = Bun.spawnSync(["bun", CLI, "hook", "claude-code", part], {
+    cwd,
+    stdin: Buffer.from(
+      typeof payload === "string" ? payload : JSON.stringify(payload)
+    ),
+  });
+  return {
+    code: proc.exitCode,
+    out: proc.stdout.toString(),
+    err: proc.stderr.toString(),
+  };
+}
+
+/** A SessionStart payload for a new session in `cwd`. */
+function startPayload(cwd: string) {
+  return { cwd, hook_event_name: "SessionStart", source: "startup" };
+}
+
+/** The context `mdmem hook` printed, after checking its output is the SessionStart form. */
+function injected(out: string): string {
+  const parsed = JSON.parse(out) as {
+    hookSpecificOutput: { hookEventName: string; additionalContext: string };
+  };
+  expect(Object.keys(parsed)).toEqual(["hookSpecificOutput"]);
+  expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
+  const context = parsed.hookSpecificOutput.additionalContext;
+  expect([...context].length).toBeLessThan(HOOK_CONTEXT_MAX_CHARS);
+  return context;
+}
+
+/** Write `count` memory files with no frontmatter, each a warning in the index part. */
+async function seedBroken(store: MemoryStore, count: number): Promise<void> {
+  await Promise.all(
+    Array.from({ length: count }, (_, i) =>
+      store.create(`broken-${i}.md`, "no frontmatter")
+    )
+  );
+}
+
+/** An index over its limit: every line kept by reindex, since none is a pointer. */
+function oversizedIndex(): string {
+  return Array.from(
+    { length: 200 },
+    (_, i) => `Line ${i}: ${"x".repeat(60)}\n`
+  ).join("");
+}
+
+describe("hook", () => {
+  test("the protocol part injects the rendered memory protocol", async () => {
+    await withCliProject((root) => {
+      const hook = runHookCli(root, "protocol", startPayload(root));
+      expect(hook.code).toBe(0);
+      expect(injected(hook.out)).toBe(getMemoryProtocol());
+    });
+  });
+
+  test("the index part names the store's absolute path, then holds the index", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 2);
+      const storeDir = join(await realpath(root), ".memory");
+      const index = await readFile(join(storeDir, "MEMORY.md"), "utf-8");
+
+      const hook = runHookCli(root, "index", startPayload(root));
+      expect(hook.code).toBe(0);
+      expect(injected(hook.out)).toBe(
+        `Memory store: ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
+      );
+    });
+  });
+
+  test("it prints nothing without a store, on resume, or for another event", async () => {
+    const bare = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
+    try {
+      expect(runHookCli(bare, "index", startPayload(bare))).toEqual({
+        code: 0,
+        out: "",
+        err: "",
+      });
+      await withCliProject((root) => {
+        for (const payload of [
+          { ...startPayload(root), source: "resume" },
+          { cwd: root, hook_event_name: "UserPromptSubmit" },
+        ]) {
+          expect(runHookCli(root, "protocol", payload)).toEqual({
+            code: 0,
+            out: "",
+            err: "",
+          });
+        }
+      });
+    } finally {
+      await rm(bare, { recursive: true, force: true });
+    }
+  });
+
+  test("a payload cwd in a linked worktree resolves the main checkout's store", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
+    try {
+      const repo = join(tmp, "repo");
+      await mkdir(join(repo, ".memory"), { recursive: true });
+      await gitRepo(repo);
+      const worktree = join(tmp, "wt");
+      git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
+
+      // run from elsewhere: the payload's cwd decides
+      const hook = runHookCli(tmp, "index", startPayload(worktree));
+      expect(injected(hook.out)).toStartWith(
+        `Memory store: ${join(repo, ".memory")}\n`
+      );
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("the index part warns of a broken memory and a stale index, one line each", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1);
+      await store.create("broken.md", "no\nfrontmatter");
+      await store.create(
+        "late.md",
+        serializeMemory({
+          frontmatter: {
+            name: "late",
+            description: "d",
+            metadata: { type: "project" },
+          },
+          body: "b",
+        })
+      );
+
+      const context = injected(
+        runHookCli(root, "index", startPayload(root)).out
+      );
+      expect(context.split("\n").slice(1, 4)).toEqual([
+        "Warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`",
+        "Warning: MEMORY.md is stale: no pointer to late.md — run `mdmem reindex`",
+        "",
+      ]);
+    });
+  });
+
+  test("warnings past the size limit are counted, not listed", async () => {
+    await withCliProject(async (root, store) => {
+      // an index near its limit leaves room for only a few warnings
+      await seedMemories(store, 370);
+      await seedBroken(store, 40);
+
+      const context = injected(
+        runHookCli(root, "index", startPayload(root)).out
+      );
+      const warnings = context
+        .split("\n")
+        .filter((line) => line.startsWith("Warning: broken-"));
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(warnings.length).toBeLessThan(40);
+      expect(context).toContain(
+        `Warning: ${40 - warnings.length} more warnings left out; memory_check lists them all.`
+      );
+      // the index itself is whole
+      expect(context).toContain("\n\nMEMORY.md:\n- [m-0](m-0.md) — d\n");
+      expect(context).toEndWith("- [m-99](m-99.md) — d");
+    });
+  });
+
+  test("an index over its limit is cut short, with warnings, under the size limit", async () => {
+    await withCliProject(async (root, store) => {
+      await store.create("MEMORY.md", oversizedIndex());
+      await seedBroken(store, 40);
+
+      const context = injected(
+        runHookCli(root, "index", startPayload(root)).out
+      );
+      expect(context).toMatch(
+        /\nMEMORY\.md, cut short \(\d+ of 200 lines\): memory_read MEMORY\.md for the rest, and run a consolidation to bring it under 9,500 characters\.\nLine 0: /u
+      );
+      expect(context).toContain("more warnings left out");
+    });
+  });
+
+  test("an index under its limit cut only to fit a long store path asks for no consolidation", async () => {
+    const base = await mkdtemp(join(tmpdir(), "mdmem-int-"));
+    try {
+      const root = join(base, "d".repeat(200), "e".repeat(200));
+      const store = new MemoryStore(join(root, ".memory"));
+      await reindex(store);
+      // 150 lines of 62 characters: 9,449 characters, under the index limit
+      const index = Array.from(
+        { length: 150 },
+        (_, i) => `${String(i).padStart(3, "0")} ${"x".repeat(58)}\n`
+      ).join("");
+      await writeFile(join(store.root, "MEMORY.md"), index);
+
+      const context = injected(
+        runHookCli(root, "index", startPayload(root)).out
+      );
+      expect(context).toMatch(
+        /\n\nMEMORY\.md, cut short \(\d+ of 150 lines\): memory_read MEMORY\.md for the rest\.\n000 /u
+      );
+      expect(context).not.toContain("consolidation");
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  test("an internal error becomes a one-line context, and the hook exits 0", async () => {
+    await withCliProject(async (root, store) => {
+      const garbled = runHookCli(root, "index", "{not json");
+      expect(garbled.code).toBe(0);
+      expect(injected(garbled.out)).toStartWith(
+        "mdmem could not load the memory: the hook payload is not JSON"
+      );
+
+      await rm(join(store.root, "MEMORY.md"));
+      await mkdir(join(store.root, "MEMORY.md"));
+
+      const hook = runHookCli(root, "index", startPayload(root));
+      expect(hook.code).toBe(0);
+      expect(hook.err).toBe("");
+      const context = injected(hook.out);
+      expect(context).toStartWith("mdmem could not load the memory: ");
+      expect(context).not.toContain("\n");
+      expect(context).not.toContain("    at ");
     });
   });
 });

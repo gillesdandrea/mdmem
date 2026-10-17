@@ -13,6 +13,7 @@ import {
   reindex,
 } from "../core/check.ts";
 import { workTreeRoot } from "../core/git.ts";
+import { HOOK_AGENTS, HOOK_PARTS, runHook } from "../core/hook.ts";
 import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import type { MemoryType } from "../core/memory.ts";
 import {
@@ -355,6 +356,21 @@ function cmdConsolidate(): void {
   process.stdout.write(getConsolidatePrompt(store.root));
 }
 
+/** Run by an agent's session-start hook, never by hand; it always exits 0. */
+async function cmdHook(args: string[]): Promise<void> {
+  const [agent = "", part = ""] = args;
+  const output = await runHook({
+    agent,
+    part,
+    readPayload: async () =>
+      process.stdin.isTTY ? "" : await Bun.stdin.text(),
+    cwd: process.cwd(),
+  });
+  if (output !== "") {
+    print(output);
+  }
+}
+
 function cmdPath(): void {
   const { storeDir } = resolveStore();
   print(storeDir);
@@ -384,6 +400,9 @@ Usage: mdmem <command> [options]
   status                    Show the store and which agents are enabled
   path                      Print the store directory
   mcp                       Run the MCP server over stdio (for agent tool-calls)
+  hook <agent> <part>       Run by an agent's session-start hook, not typed by hand: print the
+                            memory protocol or the index as context to inject (agent: ${HOOK_AGENTS.join(", ")};
+                            part: ${HOOK_PARTS.join(", ")}); prints nothing outside a project with a store
 
 Agents: ${adapterIds().join(", ")}
 Memory types: ${MEMORY_TYPES.join(", ")}`);
@@ -413,6 +432,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   status: () => cmdStatus(),
   path: () => cmdPath(),
   mcp: runMcp,
+  hook: (args) => cmdHook(args),
 };
 
 async function main(): Promise<void> {

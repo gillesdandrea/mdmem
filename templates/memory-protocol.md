@@ -1,10 +1,10 @@
 # Memory protocol
 
-This project has a persistent, file-based memory: the memory store at `.memory/`, a
-directory of Markdown memories shared by every agent that works here. Build it up over
-time, so that future sessions, yours or another agent's, start with a complete picture
-of who the user is, how they want to work with you, what to avoid and what to repeat,
-and the context behind the work.
+This project has a persistent, file-based memory: the memory store, a `.memory/`
+directory of Markdown memories at the root of the project's main checkout, shared by
+every agent that works here. Build it up over time, so that future sessions, yours or another agent's,
+start with a complete picture of who the user is, how they want to work with you,
+what to avoid and what to repeat, and the context behind the work.
 
 When the user explicitly asks you to save something ("remember that…"), save it at
 once as whichever memory type fits best. When they ask you to forget something, find
@@ -75,14 +75,13 @@ ticket tracker, a chat channel.
   authoritative.
 - Debugging solutions and fix recipes: the fix is in the code, its context in the
   commit message.
-- Anything your project instruction files (`AGENTS.md`, `CLAUDE.md`, rule files)
+- Anything the project's instruction files (`AGENTS.md`, `CLAUDE.md`, rule files)
   already say.
 - Ephemeral task state: work in progress, temporary decisions, the current
   conversation.
 - Secrets and credentials: API keys, tokens, private keys, passwords. Every agent on
-  the project reads the store. `memory_write` and `mdmem add` refuse content that
-  looks like a secret, and `mdmem doctor` reports one in a memory file written
-  directly.
+  the project reads the store; `memory_write` refuses content that looks like a
+  secret, and `mdmem check` finds one written directly.
 - Sensitive personal data: health, political or religious beliefs, sexual history,
   financial details, criminal history, or other personally identifying information,
   even when the user shares it directly. Leave that part out rather than writing a
@@ -105,9 +104,9 @@ session belongs elsewhere:
 
 ## Format
 
-One memory per file: `.memory/<name>.md`, where `<name>` is the memory's short
-kebab-case name (`short-summaries`, `staging-deploy-freeze`), unique in the project. Each
-memory is YAML frontmatter followed by its body:
+One memory per file: `<name>.md` in the store, where `<name>` is the memory's short
+kebab-case name (`short-summaries`, `staging-deploy-freeze`), unique in the project.
+Each memory is YAML frontmatter followed by its body:
 
 ```markdown
 ---
@@ -120,8 +119,7 @@ metadata:
 End each task with a summary of a few lines: what changed and what is left.
 
 **Why:** the user reads the diff themselves; a long recap repeats it.
-**How to apply:** after every change, lead with the outcome and skip the
-file-by-file walk-through.
+**How to apply:** lead with the outcome; skip the file-by-file walk-through.
 ```
 
 - `name` equals the file name without `.md`.
@@ -135,50 +133,27 @@ with the body as it changes.
 
 ## The index
 
-`.memory/MEMORY.md` is the index, one pointer per memory, in this form:
-`- [name](name.md) — description`. mdmem keeps it up to date from the memories: it
-adds a pointer for a new memory, removes the pointer of a deleted one, and updates
-a pointer's description when the memory's description changes. Never write or edit
-`MEMORY.md`, and never put memory content in it: shape the index only through the
+`MEMORY.md` in the store is the index: one pointer per memory,
+`- [name](name.md) — description`. mdmem keeps it up to date from the memories after
+every save and delete through mdmem. Never write or edit `MEMORY.md`: shape it only through the
 memories.
 
-Agents read the index at the start of every session, and the whole index must stay
-under about {{index_max_chars}} characters. Keep each description short enough that
-its pointer stays under ~{{pointer_max_chars}} characters; put the detail in the
-body.
-
-## Save
-
-Save in the same reply as the correction, confirmation or discovery that prompted
-it, not at the end of the session: a session can end at any turn.
-
-Before writing a new memory, check the index and `memory_search` (or `mdmem search`)
-for one that already covers the subject, and update that memory instead of adding a
-duplicate. Update or delete a memory that turns out to be wrong or outdated.
-
-With the mdmem tools (`memory_list`, `memory_read`, `memory_write`, `memory_search`,
-`memory_delete`), save through them; the store is shared, and the tools guard each
-write against another agent's:
-
-- **New memory:** `memory_write` the whole document at `<name>.md` with `if_version`
-  set to `new`.
-- **Update:** `memory_read` the memory, then `memory_write` the whole updated
-  document with the version it returned as `if_version`. The content replaces the
-  entire document: keep every line you mean to keep.
-- **Delete:** `memory_read` the memory, then `memory_delete` it with that version.
-- **Conflict:** when another agent changed the memory since you read it, the call is
-  refused and returns the current content and version. Merge your change into that
-  content and retry with the new version.
-
-Without the tools, write `.memory/<name>.md` directly, then run `mdmem reindex` so the
-index reflects it. Delete a memory with `mdmem delete <name>`.
+The whole index must stay under about {{index_max_chars}} characters. Keep each
+description short enough that its pointer stays under ~{{pointer_max_chars}}
+characters; put the detail in the body.
 
 ## Recall
 
-Read `.memory/MEMORY.md` before starting work, and open a memory whose pointer bears
-on the task. Recall memory also when the user refers to earlier work, and always when
-they ask you to check or recall what you know. When the user says to ignore memory,
-work as if the index were empty: don't apply, cite or mention what the memories say.
+At session start, a block separate from this protocol opens with
+`Memory store: <absolute path>` and holds the index, `MEMORY.md`. Its `Warning:`
+lines name problems mdmem found: repair an unparseable memory with `memory_read` and
+`memory_write`; your next save, or `mdmem reindex`, brings a stale index up to date.
+If that block did not arrive, `memory_read` `MEMORY.md`; without the mdmem tools,
+read the store's files directly. Open a memory whose pointer bears on the task
+with `memory_read`, and find one by its content with `memory_search`. Recall memory
+also when the user refers to earlier work, and always when they ask you to check or
+recall what you know. When the user says to ignore memory, work as if the index were
+empty: don't apply, cite or mention what the memories say.
 
 A memory was true when it was written. Use it as context about that moment, and check
 it before you act on it:
@@ -191,6 +166,33 @@ it before you act on it:
 of the repository is frozen at the time it was written; for current state, read the
 code or `git log`. When a memory conflicts with what you observe, trust the
 observation, and update or delete the stale memory.
+
+## Save
+
+Save in the same reply as the correction, confirmation or discovery that prompted
+it, not at the end of the session: a session can end at any turn.
+
+Before writing a new memory, check the index and `memory_search` for one that
+already covers the subject, and update that memory instead of adding a duplicate.
+Update or delete a memory that turns out to be wrong or outdated.
+
+Save through the mdmem MCP tools, always. The store is shared, and the tools guard
+each write against another agent's:
+
+- **New memory:** `memory_write` the whole document at `<name>.md` with `if_version`
+  set to `new`.
+- **Update:** `memory_read` the memory, then `memory_write` the whole updated
+  document with the version it returned as `if_version`. The content replaces the
+  entire document: keep every line you mean to keep.
+- **Delete:** `memory_read` the memory, then `memory_delete` it with that version.
+- **Conflict:** when another agent changed the memory since you read it, the call is
+  refused and returns the current content and version. Merge your change into that
+  content and retry with the new version.
+
+Only when the mdmem tools are missing, write `<name>.md` in the store directly, then
+run `mdmem reindex`; delete with `mdmem delete <name>`. A direct write can fail when
+the store lies outside your workspace, as it does from a linked worktree or a
+sandbox.
 
 ## Consolidation
 

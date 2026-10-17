@@ -6,9 +6,9 @@ import { INDEX_MAX_CHARS, POINTER_MAX_CHARS } from "./check.ts";
  * The text mdmem hands to agents lives as editable Markdown under `templates/`, so it
  * can be tuned without touching code:
  *
- * - `memory-protocol.md`, the memory protocol installed into agents that lack native
- *   memory (the AGENTS.md, Bob and Cursor adapters install it); edit it and re-run
- *   `mdmem enable`.
+ * - `memory-protocol.md`, the memory protocol: `mdmem hook <agent> protocol` injects
+ *   it at session start, and the AGENTS.md, Bob and Cursor adapters install it (re-run
+ *   `mdmem enable` after editing it for those).
  * - `consolidate.md`, the consolidation prompt served by `mdmem consolidate` and the
  *   MCP prompt `consolidate`.
  *

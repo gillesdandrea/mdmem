@@ -35,8 +35,9 @@ any agent is visible to all of them.
     `AGENTS.md`, the instruction file read by Codex, Cursor, Gemini CLI, Aider, and
     others. The protocol adapts Claude Code's own memory instructions to the shared
     store: the memory types, when to save and what not to, checking a recalled memory
-    before acting on it, and saving through the MCP tools when the agent has them. Its
-    text lives in `templates/memory-protocol.md` and is easy to edit.
+    before acting on it, and saving through the MCP tools (writing files directly only
+    when an agent lacks them). Its text lives in `templates/memory-protocol.md` and is
+    easy to edit.
   - **IBM Bob** (`bob`) — writes that same protocol to `.bob/rules/memory.md`.
   - **Cursor** (`cursor`) — writes `.cursor/rules/memory.mdc` (Cursor requires the
     `.mdc` extension and `alwaysApply: true` frontmatter to load a rule every session).
@@ -86,8 +87,23 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem status` | Show the store and per-agent status |
 | `mdmem path` | Print the store directory |
 | `mdmem mcp` | Run the MCP server over stdio |
+| `mdmem hook <agent> <part>` | Run by an agent's session-start hook, not typed by hand (see below) |
 
 Agents: `claude-code`, `agents`, `bob`, `cursor`. Memory types: `user`, `feedback`, `project`, `reference`.
+
+`mdmem hook` is what the agents' session-start hooks run: `<agent>` is
+`claude-code`, `bob` or `codex`, and `<part>` is `protocol` (the memory protocol)
+or `index` (a line naming the store's absolute path, the check's warnings for
+unparseable memories and a stale index, then `MEMORY.md`). It reads the hook's
+JSON payload on stdin, resolves the store from the payload's `cwd` (else the
+working directory), and prints the
+part as SessionStart context, each under 10,000 characters: warnings past that are
+counted instead of listed, and an index over its limit is cut short with a note to
+`memory_read` the rest and run a consolidation. It prints nothing outside a
+project with a store, on a resumed session, or for any event but SessionStart; empty
+stdin counts as an empty payload, so run by hand it prints nothing. It never fails a
+session: an error becomes a one-line context saying why the memory
+could not be loaded, and it exits 0.
 
 `mdmem edit` saves the copy back the way `add` saves a memory, so an edit that is
 not a valid memory, holds a secret, or races another change to the memory is

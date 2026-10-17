@@ -6,19 +6,20 @@ durable, well-organized memories so that future sessions can orient quickly.
 
 Memory store: `{{store}}`
 
-Your memory instructions (the memory protocol in your project instruction files, or
-your own auto-memory section) are the source of truth for the memory format, the
-memory types, and what to save.
+The memory protocol injected at the start of your session is the source of truth for
+the memory format, the memory types, and what to save.
 
 ## Scope
 
 Read anything: the code, the git history, your project instruction files. Change only
 memory documents in the memory store.
 
-Save through the mdmem tools when you have them: `memory_list` lists the store,
+Save through the mdmem MCP tools, always: `memory_list` lists the store,
 `memory_read` returns a memory document with its version, and `memory_write` and
-`memory_delete` take that version as `if_version`. Without the tools, edit the memory
-files directly, then run `mdmem reindex`.
+`memory_delete` take that version as `if_version`. Only when the tools are missing,
+edit the memory files directly, then run `mdmem reindex`; a direct write can fail
+when the store lies outside your workspace, as it does from a linked worktree or a
+sandbox.
 
 ---
 
@@ -63,11 +64,11 @@ alone. Never edit `MEMORY.md`.
 
 Keep the whole index under about {{index_max_chars}} characters, the size a
 session-start hook can inject; a save warns as it nears that limit, and
-`mdmem doctor` reports an index over it.
+`memory_check` (or `mdmem check`) reports an index over it.
 
 - Shorten the description of any memory whose pointer runs past
   ~{{pointer_max_chars}} characters, and move the detail into its body
-  (`mdmem doctor` names them)
+  (`memory_check` names them)
 - Delete memories that are now stale, wrong, or superseded; their pointers go with
   them
 - Resolve contradictions — if two memories disagree, fix the wrong one

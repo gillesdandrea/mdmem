@@ -447,13 +447,12 @@ function memoryProblems(
   return problems;
 }
 
-/** Problems with the index: stale against the memory files, or over its limit. */
-async function indexProblems(
-  store: MemoryStore,
+/** The ways the index `current` is stale against the memory files, one problem each. */
+function staleIndexProblems(
+  current: string,
   files: ReadonlySet<string>,
   memories: readonly LoadedMemory[]
-): Promise<string[]> {
-  const current = await currentIndex(store);
+): string[] {
   const { missing, dangling, duplicated } = reconcileIndex(
     current,
     files,
@@ -464,9 +463,19 @@ async function indexProblems(
     ...dangling.map((file) => `a pointer to ${file}, which does not exist`),
     ...duplicated.map((file) => `more than one pointer to ${file}`),
   ];
-  const problems = stale.map(
+  return stale.map(
     (finding) => `${INDEX_FILE} is stale: ${finding} — run \`mdmem reindex\``
   );
+}
+
+/** Problems with the index: stale against the memory files, or over its limit. */
+async function indexProblems(
+  store: MemoryStore,
+  files: ReadonlySet<string>,
+  memories: readonly LoadedMemory[]
+): Promise<string[]> {
+  const current = await currentIndex(store);
+  const problems = staleIndexProblems(current, files, memories);
   const capacity = indexCapacity(current);
   if (capacity?.over) {
     problems.push(capacity.message);
@@ -490,6 +499,32 @@ export async function checkStore(store: MemoryStore): Promise<Check> {
     ...(await indexProblems(store, files, memories)),
   ];
   return { memoryCount: entries.length, problems };
+}
+
+/** The index as a session starts with it, and what the session needs warning of. */
+export interface SessionIndex {
+  /** The index's text, empty when there is none yet. */
+  index: string;
+  /** Each unparseable memory, then each way the index is stale, worded as the Check words them. */
+  warnings: string[];
+}
+
+/**
+ * The index and the Check's problems a session-start hook reports beside it: the
+ * unparseable memories and a stale index. It never writes, so it creates no index.
+ */
+export async function sessionIndex(store: MemoryStore): Promise<SessionIndex> {
+  const entries = await loadFiles(store);
+  const { memories, broken } = splitLoad(entries);
+  const files = new Set(entries.map(({ file }) => file));
+  const index = await currentIndex(store);
+  return {
+    index,
+    warnings: [
+      ...broken.map(({ problem }) => problem),
+      ...staleIndexProblems(index, files, memories),
+    ],
+  };
 }
 
 function countMemories(count: number): string {
