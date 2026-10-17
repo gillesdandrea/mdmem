@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   readFile,
   realpath,
@@ -20,6 +21,7 @@ import { reindex } from "../src/core/check.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import { getConsolidatePrompt } from "../src/core/protocol.ts";
 import { MemoryStore } from "../src/core/store.ts";
+import { git, gitRepo } from "./git-fixture.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
 const CLAUDE_SETTINGS = ".claude/settings.local.json";
@@ -241,8 +243,6 @@ async function withCliProject(
   fn: (root: string, store: MemoryStore) => Promise<void> | void
 ): Promise<void> {
   const { root, store } = await tempProject();
-  // deterministic project root
-  await writeFile(join(root, "package.json"), "{}\n", "utf-8");
   try {
     await fn(root, store);
   } finally {
@@ -273,10 +273,66 @@ async function seedMemories(store: MemoryStore, count: number): Promise<void> {
 }
 
 describe("cli", () => {
+  test("init in a linked worktree creates the store at the main checkout's root, leaving .gitignore alone", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
+    try {
+      const repo = join(tmp, "repo");
+      await mkdir(repo);
+      await gitRepo(repo);
+      await writeFile(join(repo, ".gitignore"), "node_modules/\n", "utf-8");
+      const worktree = join(tmp, "wt");
+      git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
+
+      // the user's global excludes must not decide whether git ignores .memory/
+      const init = runCliWith(worktree, ["init"], {
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+      });
+      expect(init.code).toBe(0);
+      expect(init.out).toBe(
+        [
+          `Initialized memory store at ${join(repo, ".memory")}`,
+          "Note: git does not ignore .memory/; ignoring or committing it is your choice.",
+          "Next: `mdmem enable --all` to wire up your agents.",
+          "",
+        ].join("\n")
+      );
+      expect(existsSync(join(repo, ".memory/MEMORY.md"))).toBe(true);
+      expect(existsSync(join(worktree, ".memory"))).toBe(false);
+      expect(await readFile(join(repo, ".gitignore"), "utf-8")).toBe(
+        "node_modules/\n"
+      );
+
+      // enable wires the worktree it runs in, not the main checkout holding the store
+      expect(runCli(worktree, "enable", "agents").code).toBe(0);
+      expect(existsSync(join(worktree, "AGENTS.md"))).toBe(true);
+      expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("without git, init stops its walk before $HOME and creates the store in the working directory", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
+    try {
+      const home = join(tmp, "home");
+      await mkdir(join(home, ".memory"), { recursive: true });
+      const start = join(home, "a", "b");
+      await mkdir(start, { recursive: true });
+
+      const init = runCliWith(start, ["init"], { HOME: home });
+      expect(init.code).toBe(0);
+      expect(init.out).toStartWith(
+        `Initialized memory store at ${join(start, ".memory")}\n`
+      );
+      expect(existsSync(join(start, ".memory/MEMORY.md"))).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
   test("init, add, status, enable run end-to-end", async () => {
     const root = await mkdtemp(join(tmpdir(), "mdmem-cli-"));
-    // deterministic project root
-    await writeFile(join(root, "package.json"), "{}\n", "utf-8");
     try {
       const run = (...args: string[]) => {
         const proc = Bun.spawnSync(["bun", CLI, ...args], {

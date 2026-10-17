@@ -1,6 +1,8 @@
+import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
 import { INDEX_FILE, loadMemories, refreshIndex, reindex } from "./check.ts";
+import { isIgnoredByGit } from "./git.ts";
 import type { Memory, MemoryType } from "./memory.ts";
 import {
   memoryFileFor,
@@ -11,7 +13,7 @@ import {
 import { RefusalError } from "./refusal.ts";
 import { assertNoSecrets } from "./secrets.ts";
 import {
-  findStoreRoot,
+  locateStore,
   MemoryStore,
   NEW_FILE_VERSION,
   STORE_DIR,
@@ -29,15 +31,42 @@ import type { DocumentInfo } from "./store.ts";
  * by its path, and searchMemories searches the memories the Check module loads.
  */
 
-/** The store of the project enclosing `startDir`, found by walking up to its `.memory/`. */
+/** The store of the project holding `startDir` (store.ts's locateStore says where it is). */
 export function openStore(startDir: string): MemoryStore {
-  const root = findStoreRoot(startDir);
-  if (!root) {
+  const location = locateStore(startDir);
+  if (!location.exists) {
     throw new RefusalError(
-      `No ${STORE_DIR}/ store found in this directory or any parent: run \`mdmem init\` in the project first`
+      `No ${STORE_DIR}/ store for this project (looked for ${location.dir}): run \`mdmem init\` in the project first`
     );
   }
-  return new MemoryStore(root);
+  return new MemoryStore(location.dir);
+}
+
+/** What `mdmem init` did: the project's store, whether init created it, and whether git ignores it. */
+export interface InitResult {
+  store: MemoryStore;
+  created: boolean;
+  /** Whether git ignores the store; undefined outside a git work tree. */
+  ignored: boolean | undefined;
+}
+
+/**
+ * Create the store of the project holding `startDir`, with an empty index, unless it
+ * exists. It never edits `.gitignore`: whether to ignore or commit the store is the
+ * user's choice, so it only reports whether git ignores it.
+ */
+export async function initStore(startDir: string): Promise<InitResult> {
+  const location = locateStore(startDir);
+  const store = new MemoryStore(location.dir);
+  if (!location.exists) {
+    await mkdir(location.dir, { recursive: true });
+    await reindex(store);
+  }
+  return {
+    store,
+    created: !location.exists,
+    ignored: isIgnoredByGit(location.root, STORE_DIR),
+  };
 }
 
 /**

@@ -9,8 +9,16 @@ any agent is visible to all of them.
 
 ## How it works
 
-- **One store per project:** `./.memory/` — Markdown memories plus a generated
-  `MEMORY.md` index. Gitignored by default.
+- **One store per project:** `.memory/` at the project's root, holding Markdown
+  memories and a generated `MEMORY.md` index. In git, the root is the main
+  checkout's directory: every linked worktree, subdirectory and submodule uses that
+  one store, and a `.memory/` lower down is ignored. A bare repository's root is
+  the directory holding it as `.git`, or the bare `x.git` itself. Without git,
+  mdmem uses the first `.memory/` walking up from the working directory; under
+  your home directory the walk stops before reaching it (run from the home
+  directory itself, it still looks there). mdmem never edits `.gitignore`: ignoring or
+  committing `.memory/` is your choice, and `mdmem init` says when git does not
+  ignore it.
 - **The index is derived.** Agents only ever write their own memory files;
   `mdmem reindex` regenerates `MEMORY.md`. No shared file is hand-edited, so
   concurrent agents never conflict over it.
@@ -43,7 +51,7 @@ Run `mdmem` from inside your project. The MCP registration below also expects
 ## Quickstart
 
 ```bash
-mdmem init                  # create .memory/ and gitignore it
+mdmem init                  # create .memory/ at the project's root
 mdmem enable --all          # wire up Claude Code + the AGENTS.md agents
 mdmem add --type feedback --name uses-bun \
   --description "This project uses bun, not node" \
@@ -58,7 +66,7 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 
 | Command | Purpose |
 |---|---|
-| `mdmem init` | Create `.memory/` in the project and gitignore it |
+| `mdmem init` | Create `.memory/` at the project's root, or report the existing store |
 | `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory; refuses an existing name unless `--force`, and refuses a `--force` overwrite if the memory changes while it is saved. Body may also be piped via stdin. |
 | `mdmem list` | Print the memory index (`MEMORY.md`) |
 | `mdmem read <name>` | Print one memory by its name (or `<name>.md`), or the index (`MEMORY.md`) |

@@ -1,6 +1,6 @@
 /* oxlint-disable max-classes-per-file -- the small error class is co-located with the store that throws it */
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import {
   mkdir,
   readdir,
@@ -9,8 +9,10 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 
+import { repositoryRoot } from "./git.ts";
 import { RefusalError } from "./refusal.ts";
 
 /**
@@ -155,37 +157,69 @@ export class MemoryStore {
   }
 }
 
-/** Walk up from `startDir` to the first existing `.memory/` directory. */
-export function findStoreRoot(startDir: string): string | null {
-  let dir = resolve(startDir);
-  for (;;) {
-    const candidate = join(dir, STORE_DIR);
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) {
-      return null;
-    }
-    dir = parent;
+/**
+ * Where a project's store is: `root` is the project directory, `dir` its `.memory/`,
+ * and `exists` whether that directory is there yet.
+ */
+export interface StoreLocation {
+  root: string;
+  dir: string;
+  exists: boolean;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
   }
 }
 
-/** Walk up to the enclosing project root (`.git` or `package.json`), else `startDir`. */
-export function findProjectRoot(startDir: string): string {
-  const start = resolve(startDir);
+function storeAt(root: string): StoreLocation {
+  const dir = join(root, STORE_DIR);
+  return { root, dir, exists: isDirectory(dir) };
+}
+
+function realDir(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+/**
+ * The store of the project holding `startDir`. In git, the project is the repository
+ * (./git.ts says which directory keys it), so every worktree, subdirectory and submodule
+ * shares one store and a `.memory/` lower down is ignored. Without git, it is the first
+ * directory holding a `.memory/`, walking up from `startDir` and stopping before the home
+ * directory (unless `startDir` is the home directory), else `startDir` itself, where
+ * `mdmem init` creates one.
+ */
+export function locateStore(
+  startDir: string,
+  home: string = homedir()
+): StoreLocation {
+  const start = realDir(startDir);
+  const repository = repositoryRoot(start);
+  if (repository !== null) {
+    return storeAt(repository);
+  }
+  const stop = realDir(home);
   let dir = start;
   for (;;) {
-    if (
-      existsSync(join(dir, ".git")) ||
-      existsSync(join(dir, "package.json"))
-    ) {
-      return dir;
+    if (dir === stop && dir !== start) {
+      break;
+    }
+    const location = storeAt(dir);
+    if (location.exists) {
+      return location;
     }
     const parent = dirname(dir);
     if (parent === dir) {
-      return start;
+      break;
     }
     dir = parent;
   }
+  return storeAt(start);
 }

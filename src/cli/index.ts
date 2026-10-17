@@ -1,13 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync } from "node:fs";
-import {
-  appendFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -20,10 +12,12 @@ import {
   loadMemories,
   reindex,
 } from "../core/check.ts";
+import { workTreeRoot } from "../core/git.ts";
 import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import type { MemoryType } from "../core/memory.ts";
 import {
   assertMemoryPath,
+  initStore,
   openStore,
   readDocument,
   readIndex,
@@ -35,13 +29,8 @@ import {
 import type { WriteResult } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
-import {
-  findProjectRoot,
-  findStoreRoot,
-  MemoryStore,
-  STORE_DIR,
-  VersionConflictError,
-} from "../core/store.ts";
+import type { MemoryStore } from "../core/store.ts";
+import { STORE_DIR, VersionConflictError } from "../core/store.ts";
 
 function print(msg = ""): void {
   process.stdout.write(`${msg}\n`);
@@ -71,18 +60,21 @@ function messageOf(error: unknown): string {
 interface Resolved {
   store: MemoryStore;
   storeDir: string;
-  projectRoot: string;
 }
 
 /** The project's store; without one, the refusal reaches `main`, which prints it. */
 function resolveStore(): Resolved {
   const store = openStore(process.cwd());
-  return { store, storeDir: store.root, projectRoot: dirname(store.root) };
+  return { store, storeDir: store.root };
 }
 
+/**
+ * The adapters wire the working directory's own work tree (a linked worktree or
+ * submodule, not the checkout holding the store), else the store's project directory.
+ */
 function context(resolved: Resolved): AdapterContext {
   return {
-    projectRoot: resolved.projectRoot,
+    projectRoot: workTreeRoot(process.cwd()) ?? dirname(resolved.storeDir),
     storeDir: resolved.storeDir,
   };
 }
@@ -93,35 +85,21 @@ function isMemoryType(value: string | undefined): value is MemoryType {
   );
 }
 
-async function ensureGitignore(root: string): Promise<boolean> {
-  const path = join(root, ".gitignore");
-  const line = `${STORE_DIR}/`;
-  const current = existsSync(path) ? await readFile(path, "utf-8") : "";
-  if (current.split(/\r?\n/u).some((l) => l.trim() === line)) {
-    return false;
-  }
-  const prefix = current.length > 0 && !current.endsWith("\n") ? "\n" : "";
-  await appendFile(path, `${prefix}${line}\n`);
-  return true;
-}
-
 async function cmdInit(): Promise<void> {
-  const existing = findStoreRoot(process.cwd());
-  if (existing) {
-    print(`Memory store already exists at ${existing}`);
-    return;
+  const { store, created, ignored } = await initStore(process.cwd());
+  print(
+    created
+      ? `Initialized memory store at ${store.root}`
+      : `Memory store already exists at ${store.root}`
+  );
+  if (ignored === false) {
+    print(
+      `Note: git does not ignore ${STORE_DIR}/; ignoring or committing it is your choice.`
+    );
   }
-  const root = findProjectRoot(process.cwd());
-  const storeDir = join(root, STORE_DIR);
-  await mkdir(storeDir, { recursive: true });
-  const store = new MemoryStore(storeDir);
-  await reindex(store);
-  const ignored = await ensureGitignore(root);
-  print(`Initialized memory store at ${storeDir}`);
-  if (ignored) {
-    print(`Added ${STORE_DIR}/ to .gitignore`);
+  if (created) {
+    print("Next: `mdmem enable --all` to wire up your agents.");
   }
-  print("Next: `mdmem enable --all` to wire up your agents.");
 }
 
 async function cmdAdd(args: string[]): Promise<void> {
@@ -386,7 +364,7 @@ function usage(): void {
 
 Usage: mdmem <command> [options]
 
-  init                      Create .memory/ in this project and gitignore it
+  init                      Create .memory/ at the project's root (a repository's main checkout)
   add --type <t> --name <n> --description <d> [--body <text>] [--force]
                             Save a memory (body may be piped via stdin; --force overwrites an existing one,
                             unless it changes while being saved)

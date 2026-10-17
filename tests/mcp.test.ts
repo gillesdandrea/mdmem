@@ -26,7 +26,7 @@ interface Session {
 async function withServer(fn: (session: Session) => Promise<void>) {
   const dir = await mkdtemp(join(tmpdir(), "mdmem-mcp-"));
   const store = new MemoryStore(join(dir, ".memory"));
-  // empty store so the server's findStoreRoot succeeds
+  // an empty store for the server to open
   await reindex(store);
   const transport = new StdioClientTransport({
     command: "bun",
