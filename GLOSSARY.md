@@ -86,5 +86,5 @@ _Avoid_: cleanup, compaction
 ### Agents
 
 **Wiring**:
-What connects one agent to a project's memory store in that agent's native way, so it recalls and saves there: a setting, a hook, a rule file.
+What connects one agent to a project's memory store in that agent's native way, so it recalls and saves there: its session-start hooks and its registration of the mdmem MCP server.
 _Avoid_: link (a `[[name]]` in a memory), integration, setup

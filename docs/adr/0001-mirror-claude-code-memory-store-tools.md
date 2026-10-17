@@ -5,7 +5,7 @@ mdmem reproduces Claude Code's memory system: the same vocabulary, the same memo
 ## Consequences
 
 - The files stay the source of truth. Direct edits remain legal, `mdmem reindex` repairs the index after them, and `mdmem doctor` reports what they broke.
-- Claude Code shares the store through its own auto-memory directory (ADR 0003). It edits that directory directly and writes its own pointers, and mdmem cannot route its built-in memory through tools.
-- The index has two writers, Claude Code by hand and mdmem, so mdmem updates it in place rather than regenerating it (amended 2026-10-17): it keeps every line it did not write, appends a pointer for a memory that has none, removes pointers to missing files, and rewrites only the description of a memory it saves. A pointer mdmem writes is titled with the memory's name, because the format has no title field.
-- mdmem reads memories as loosely as Claude Code writes them (any name, `type` at the top level or under `metadata`, unknown fields kept) and writes only memories named after their file.
+- In a project using mdmem, Claude Code's own auto memory is off and Claude saves through these tools like every other agent (ADR 0003).
+- mdmem updates the index in place rather than regenerating it (amended 2026-10-17), so a hand edit or an imported Claude index survives: it keeps every line it did not write, appends a pointer for a memory that has none, removes pointers to missing files, and rewrites only the description of a memory it saves. A pointer mdmem writes is titled with the memory's name, because the format has no title field.
+- mdmem reads memories as loosely as Claude Code writes them (any name, `type` at the top level or under `metadata`, unknown fields kept), so imported Claude memories parse, and writes only memories named after their file.
 - mdmem adds tools Claude Code lacks: `memory_search`, `memory_check` (the check `mdmem doctor` runs), and `memory_delete` (Claude Code deletes memory files with `rm`).
