@@ -88,3 +88,7 @@ _Avoid_: cleanup, compaction
 **Wiring**:
 What connects one agent to a project's memory store in that agent's native way, so it recalls and saves there: its session-start hooks and its registration of the mdmem MCP server.
 _Avoid_: link (a `[[name]]` in a memory), integration, setup
+
+**Import**:
+The one-time move of the memories an agent kept in its own directories into the project's memory store, when that agent is wired and its own memory is turned off: Claude Code's auto memory, from each of its memory directories for the repository. Same-name files that differ are a conflict, which stops the import before anything changes.
+_Avoid_: migration, sync

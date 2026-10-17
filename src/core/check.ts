@@ -189,6 +189,11 @@ function matchPointer(line: string): PointerMatch | undefined {
   return { target, linkEnd: match[0].length };
 }
 
+/** The memory file a line of an index points at, or undefined when the line is not a pointer. */
+export function pointerTarget(line: string): string | undefined {
+  return matchPointer(line)?.target;
+}
+
 /** A memory just saved: its file, its description, and its description before the save. */
 export interface SavedMemory {
   file: string;
@@ -256,14 +261,14 @@ function linesOf(content: string): string[] {
 /**
  * Bring the index `current` up to date with the memory files `files`, in place:
  * pointers to missing files are dropped, a file's pointers after its first are
- * dropped, the saved memory's pointer gets its new description, and a memory that
+ * dropped, each saved memory's pointer gets its new description, and a memory that
  * parses and has no pointer gets one appended at the end. Every other line is kept.
  */
 function reconcileIndex(
   current: string,
   files: ReadonlySet<string>,
   memories: readonly LoadedMemory[],
-  saved?: SavedMemory
+  saved: readonly SavedMemory[] = []
 ): Reconciled {
   const kept: string[] = [];
   const pointed = new Set<string>();
@@ -280,11 +285,8 @@ function reconcileIndex(
       }
     } else {
       pointed.add(pointer.target);
-      kept.push(
-        saved?.file === pointer.target
-          ? savedPointer(line, pointer, saved)
-          : line
-      );
+      const savedHere = saved.find(({ file }) => file === pointer.target);
+      kept.push(savedHere ? savedPointer(line, pointer, savedHere) : line);
     }
   }
   for (const loaded of memories) {
@@ -338,18 +340,25 @@ function brokenWarning(
 /**
  * Bring the index up to date with the memory files, in place (`reconcileIndex`
  * says how), writing it only when it changes. `saved` is the memory a write just
- * saved, whose pointer takes its new description. Returns a warning for each broken
- * memory, and one for an index near or over its limit.
+ * saved, or the memories an import replaced, whose pointers take their new
+ * descriptions. Returns a warning for each broken memory, and one for an index near
+ * or over its limit.
  */
 export async function reindex(
   store: MemoryStore,
-  saved?: SavedMemory
+  saved?: SavedMemory | readonly SavedMemory[]
 ): Promise<string[]> {
   const entries = await loadFiles(store);
   const { memories, broken } = splitLoad(entries);
   const current = await currentIndex(store);
   const files = new Set(entries.map(({ file }) => file));
-  const { content, pointed } = reconcileIndex(current, files, memories, saved);
+  const savedList = saved === undefined ? [] : [saved].flat();
+  const { content, pointed } = reconcileIndex(
+    current,
+    files,
+    memories,
+    savedList
+  );
   if (content !== current || !store.exists(INDEX_FILE)) {
     await store.create(INDEX_FILE, content);
   }

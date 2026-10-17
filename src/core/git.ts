@@ -94,3 +94,21 @@ export function isIgnoredByGit(
   }
   return undefined;
 }
+
+const WORKTREE_LINE_PREFIX = "worktree ";
+
+/**
+ * The absolute path of every worktree of the repository holding `dir`, as
+ * `git worktree list` gives them: the main worktree (a bare repository's own
+ * directory) first, then each linked worktree. Empty outside git.
+ */
+export function worktreePaths(dir: string): string[] {
+  const out = gitOutput(dir, ["worktree", "list", "--porcelain"]);
+  if (out === null) {
+    return [];
+  }
+  return out
+    .split("\n")
+    .filter((line) => line.startsWith(WORKTREE_LINE_PREFIX))
+    .map((line) => line.slice(WORKTREE_LINE_PREFIX.length));
+}
