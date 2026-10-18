@@ -1,95 +1,172 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
+import { HOOK_PARTS } from "../core/hook.ts";
+import type { HookPart } from "../core/hook.ts";
+import {
+  formatImport,
+  importClaudeMemories,
+  importMarker,
+} from "../core/import.ts";
 import type {
   Adapter,
   AdapterContext,
   AgentStatus,
-  LinkResult,
+  EnableOptions,
+  WiringResult,
 } from "./adapter.ts";
+import {
+  arrayItemEntry,
+  configStatus,
+  planConfigs,
+  valueEntry,
+  writeConfigs,
+} from "./json-config.ts";
+import type { JsonConfigFile, PlannedFile } from "./json-config.ts";
 
 const TITLE = "Claude Code";
-// Claude Code's native auto-memory can be relocated with this setting. Pointing it
-// at the shared store makes Claude read AND write there natively — no rule or hook
-// needed. The value must be an absolute path, so it belongs in the personal,
-// auto-gitignored settings file rather than the committed one.
-const SETTINGS_REL = ".claude/settings.local.json";
-const DIR_KEY = "autoMemoryDirectory";
 
-interface Settings {
-  autoMemoryDirectory?: string;
-  [key: string]: unknown;
+// Claude Code is wired through files committed with the repository (ADR 0003): its
+// auto memory off, two session-start hooks injecting the protocol and the index, and
+// the mdmem MCP server with permission for its tools.
+const SETTINGS = ".claude/settings.json";
+const MCP_CONFIG = ".mcp.json";
+// A new session, /clear and compaction; never a resume, which already holds the injection.
+const HOOK_MATCHER = "startup|clear|compact";
+const SERVER = { type: "stdio", command: "mdmem", args: ["mcp"] };
+const TOOLS_PERMISSION = "mcp__mdmem";
+
+function hookEntry(part: HookPart) {
+  const command = `mdmem hook claude-code ${part}`;
+  return arrayItemEntry(
+    `SessionStart hook "${command}"`,
+    ["hooks", "SessionStart"],
+    { matcher: HOOK_MATCHER, hooks: [{ type: "command", command }] }
+  );
 }
 
-async function readSettings(path: string): Promise<Settings> {
-  if (!existsSync(path)) {
-    return {};
-  }
-  const raw = await readFile(path, "utf-8");
-  if (raw.trim().length === 0) {
-    return {};
-  }
-  const parsed: unknown = JSON.parse(raw);
-  // A settings file that isn't a JSON object (e.g. `42` or `null`) is treated as
-  // empty rather than trusted — we only ever read/write string-keyed settings.
-  if (typeof parsed !== "object" || parsed === null) {
-    return {};
-  }
-  return parsed as Settings;
+const FILES: readonly JsonConfigFile[] = [
+  {
+    file: SETTINGS,
+    entries: [
+      valueEntry("autoMemoryEnabled: false", ["autoMemoryEnabled"], false),
+      ...HOOK_PARTS.map(hookEntry),
+      arrayItemEntry(
+        `permissions.allow "${TOOLS_PERMISSION}"`,
+        ["permissions", "allow"],
+        TOOLS_PERMISSION
+      ),
+    ],
+  },
+  {
+    file: MCP_CONFIG,
+    entries: [valueEntry("mcpServers.mdmem", ["mcpServers", "mdmem"], SERVER)],
+  },
+];
+
+function describePlan(
+  plan: readonly PlannedFile[],
+  mode: "add" | "remove"
+): string[] {
+  return plan.map(({ file, next, changed }) => {
+    if (changed.length === 0) {
+      return mode === "add"
+        ? `${file} already holds mdmem's entries`
+        : `${file} holds none of mdmem's entries`;
+    }
+    if (next === null) {
+      return `deleted ${file}: it held only mdmem's entries`;
+    }
+    return `${mode === "add" ? "added" : "removed"} in ${file}: ${changed.join(", ")}`;
+  });
 }
 
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
+/**
+ * Import Claude's memories unless this user already did for the repository: the
+ * import runs once, so a later enable neither refuses again over files settled with
+ * --prefer nor brings back a memory deleted since. Returns the report and warnings.
+ */
+async function importOnce(
+  ctx: AdapterContext,
+  options: EnableOptions
+): Promise<{ lines: string[]; warnings: string[]; record?: string }> {
+  const environment = { env: ctx.env, home: ctx.home };
+  const marker = await importMarker(ctx.store, environment);
+  if (existsSync(marker)) {
+    const text = await readFile(marker, "utf-8");
+    const recorded = text.trim();
+    return {
+      lines: [
+        `Claude Code's memories were already imported (${recorded || marker}): skipped the import.`,
+      ],
+      warnings: [],
+    };
+  }
+  const result = await importClaudeMemories(ctx.store, {
+    ...environment,
+    prefer: options.prefer,
+  });
+  return {
+    lines: formatImport(result),
+    warnings: result.warnings,
+    // Nothing to remember when Claude held no memories for the repository.
+    record: result.sources.length > 0 ? marker : undefined,
+  };
 }
 
 export const claudeCodeAdapter: Adapter = {
   id: "claude-code",
   title: TITLE,
 
-  async link(ctx: AdapterContext): Promise<LinkResult> {
-    const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
-    const settings = await readSettings(settingsPath);
-    // Claude requires an absolute path
-    settings[DIR_KEY] = ctx.storeDir;
-    await writeJson(settingsPath, settings);
+  async enable(
+    ctx: AdapterContext,
+    options: EnableOptions
+  ): Promise<WiringResult> {
+    // Read every file first, so an unparseable one is refused before the import writes.
+    const plan = await planConfigs(ctx.projectRoot, FILES, "add");
+    const imported = await importOnce(ctx, options);
+    // Recorded before the config files, so a failed write leaves the import done once.
+    if (imported.record !== undefined) {
+      await mkdir(dirname(imported.record), { recursive: true });
+      await writeFile(
+        imported.record,
+        `${new Date().toISOString()} into ${ctx.store.root}\n`,
+        "utf-8"
+      );
+    }
+    await writeConfigs(plan);
     return {
       title: TITLE,
       actions: [
-        `set ${DIR_KEY} → ${ctx.storeDir} in ${SETTINGS_REL}`,
-        "note: auto-memory is on by default; if disabled, re-enable it via /memory",
+        ...imported.lines,
+        ...describePlan(plan, "add"),
+        `Commit ${SETTINGS} and ${MCP_CONFIG}: they wire Claude Code for everyone working in the repository, who then needs mdmem on PATH.`,
       ],
+      warnings: imported.warnings,
     };
   },
 
-  async unlink(ctx: AdapterContext): Promise<LinkResult> {
-    const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
-    const settings = await readSettings(settingsPath);
-    if (settings[DIR_KEY] === undefined) {
-      return { title: TITLE, actions: ["nothing to remove"] };
-    }
-    delete settings.autoMemoryDirectory;
-    await writeJson(settingsPath, settings);
+  async disable(ctx: AdapterContext): Promise<WiringResult> {
+    const plan = await planConfigs(ctx.projectRoot, FILES, "remove");
+    await writeConfigs(plan);
     return {
       title: TITLE,
-      actions: [`removed ${DIR_KEY} from ${SETTINGS_REL}`],
+      actions: [
+        ...describePlan(plan, "remove"),
+        "The memories imported from Claude Code stay in the store.",
+      ],
+      warnings: [],
     };
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
-    const settingsPath = join(ctx.projectRoot, SETTINGS_REL);
-    const settings = await readSettings(settingsPath);
-    const current = settings[DIR_KEY];
-    const linked = current === ctx.storeDir;
-    let detail: string;
-    if (linked) {
-      detail = `${DIR_KEY} points at the store`;
-    } else if (current === undefined) {
-      detail = `${DIR_KEY} not set`;
-    } else {
-      detail = `${DIR_KEY} set elsewhere (${current})`;
-    }
-    return { title: TITLE, linked, details: [detail] };
+    const { entries, warnings } = await configStatus(ctx.projectRoot, FILES);
+    return {
+      title: TITLE,
+      wired: entries.every(({ present }) => present),
+      entries,
+      warnings,
+    };
   },
 };

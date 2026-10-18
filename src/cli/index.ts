@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
@@ -14,6 +14,8 @@ import {
 } from "../core/check.ts";
 import { workTreeRoot } from "../core/git.ts";
 import { HOOK_AGENTS, HOOK_PARTS, runHook } from "../core/hook.ts";
+import { IMPORT_PREFERENCES } from "../core/import.ts";
+import type { ImportPreference } from "../core/import.ts";
 import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import type { MemoryType } from "../core/memory.ts";
 import {
@@ -76,8 +78,24 @@ function resolveStore(): Resolved {
 function context(resolved: Resolved): AdapterContext {
   return {
     projectRoot: workTreeRoot(process.cwd()) ?? dirname(resolved.storeDir),
-    storeDir: resolved.storeDir,
+    store: resolved.store,
+    env: process.env,
+    home: homedir(),
   };
+}
+
+/** `enable --prefer`'s value, which settles an import conflict. */
+function preferOption(
+  value: string | boolean | undefined
+): ImportPreference | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const preference = IMPORT_PREFERENCES.find((p) => p === value);
+  return (
+    preference ??
+    die(`--prefer must be one of: ${IMPORT_PREFERENCES.join(", ")}`)
+  );
 }
 
 function isMemoryType(value: string | undefined): value is MemoryType {
@@ -294,15 +312,27 @@ function resolveTargets(
   return positionals;
 }
 
-async function cmdLink(
+async function cmdWiring(
   args: string[],
   mode: "enable" | "disable"
 ): Promise<void> {
+  // One table for both modes, so an option given to the wrong one gets mdmem's own refusal.
   const { values, positionals } = parseArgs({
     args,
-    options: { all: { type: "boolean" } },
+    options: {
+      all: { type: "boolean" },
+      prefer: { type: "string" },
+      global: { type: "boolean" },
+    },
     allowPositionals: true,
   });
+  if (mode === "disable" && values.prefer !== undefined) {
+    die("--prefer applies to `mdmem enable` only");
+  }
+  if (mode === "enable" && values.global !== undefined) {
+    die("--global applies to `mdmem disable` only");
+  }
+  const prefer = preferOption(values.prefer);
   const resolved = resolveStore();
   const ctx = context(resolved);
   for (const id of resolveTargets(values, positionals)) {
@@ -312,11 +342,14 @@ async function cmdLink(
     }
     // oxlint-disable-next-line no-await-in-loop -- writes stay in argument order, and an unknown agent stops the run before later ones are touched
     const result = await (mode === "enable"
-      ? adapter.link(ctx)
-      : adapter.unlink(ctx));
+      ? adapter.enable(ctx, { prefer })
+      : adapter.disable(ctx, { global: values.global }));
     print(`${result.title}:`);
     for (const action of result.actions) {
-      print(`  - ${action}`);
+      print(`  ${action}`);
+    }
+    for (const warning of result.warnings) {
+      warn(warning);
     }
   }
 }
@@ -333,9 +366,13 @@ async function cmdStatus(): Promise<void> {
     listAdapters().map((adapter) => adapter.status(ctx))
   );
   for (const status of statuses) {
-    print(
-      `  ${status.linked ? "✓" : "·"} ${status.title} — ${status.details.join("; ")}`
-    );
+    print(`  ${status.wired ? "✓" : "·"} ${status.title}`);
+    for (const { label, file, present } of status.entries) {
+      print(`      ${present ? "✓" : "· missing:"} ${label} (${file})`);
+    }
+  }
+  for (const warning of statuses.flatMap(({ warnings }) => warnings)) {
+    warn(warning);
   }
   for (const { problem } of broken) {
     warn(problem);
@@ -395,9 +432,13 @@ Usage: mdmem <command> [options]
   consolidate               Print a prompt that has an agent consolidate the store
   doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
                             long pointers, dangling links, stale index, index over its size limit)
-  enable <agent…> | --all   Wire an agent to the shared store
-  disable <agent…> | --all  Remove an agent's wiring
-  status                    Show the store and which agents are enabled
+  enable <agent…> | --all [--prefer claude|mdmem]
+                            Wire an agent to the shared store, in files meant to be committed
+                            (claude-code: import Claude's memories once, turn its auto memory off,
+                            add its session-start hooks and the mdmem MCP server; --prefer settles
+                            an import conflict by keeping Claude's file or the store's)
+  disable <agent…> | --all  Remove exactly mdmem's entries from an agent's files (leaves the store)
+  status                    Show the store and each agent's wiring, entry by entry
   path                      Print the store directory
   mcp                       Run the MCP server over stdio (for agent tool-calls)
   hook <agent> <part>       Run by an agent's session-start hook, not typed by hand: print the
@@ -427,8 +468,8 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   doctor: () => cmdDoctor(),
   check: () => cmdDoctor(),
   consolidate: () => cmdConsolidate(),
-  enable: (args) => cmdLink(args, "enable"),
-  disable: (args) => cmdLink(args, "disable"),
+  enable: (args) => cmdWiring(args, "enable"),
+  disable: (args) => cmdWiring(args, "disable"),
   status: () => cmdStatus(),
   path: () => cmdPath(),
   mcp: runMcp,

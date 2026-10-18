@@ -28,9 +28,9 @@ any agent is visible to all of them.
   kept, so an index written by hand or by Claude Code survives. An empty store has
   an empty index.
 - **Each agent is wired to the store in its own native way** (`mdmem enable`):
-  - **Claude Code** (specific) — sets `autoMemoryDirectory` in
-    `.claude/settings.local.json` so Claude's *own* memory reads and writes the
-    shared store, no rule or hook needed.
+  - **Claude Code** (`claude-code`): turns Claude's own auto memory off and
+    wires it through session-start hooks and the mdmem MCP server, in files
+    meant to be committed. See [Claude Code](#claude-code) below.
   - **AGENTS.md** (`agents`) — a memory-protocol block in the repo-root
     `AGENTS.md`, the instruction file read by Codex, Cursor, Gemini CLI, Aider, and
     others. The protocol adapts Claude Code's own memory instructions to the shared
@@ -51,7 +51,8 @@ bun install
 bun link          # puts `mdmem` on your PATH
 ```
 
-Run `mdmem` from inside your project. The MCP registration below also expects
+Run `mdmem` from inside your project. The hooks and MCP server that
+`mdmem enable claude-code` writes (see [Claude Code](#claude-code)) also expect
 `mdmem` on your PATH.
 
 ## Quickstart
@@ -82,9 +83,9 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
 | `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer), index over 9,500 characters, the size a session-start hook can inject |
-| `mdmem enable <agent…> \| --all` | Wire an agent to the shared store |
-| `mdmem disable <agent…> \| --all` | Remove an agent's wiring (leaves the store) |
-| `mdmem status` | Show the store and per-agent status |
+| `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--prefer` settles a Claude Code import conflict. |
+| `mdmem disable <agent…> \| --all` | Remove exactly mdmem's entries from an agent's files (leaves the store) |
+| `mdmem status` | Show the store and each agent's wiring, entry by entry (present or missing) |
 | `mdmem path` | Print the store directory |
 | `mdmem mcp` | Run the MCP server over stdio |
 | `mdmem hook <agent> <part>` | Run by an agent's session-start hook, not typed by hand (see below) |
@@ -117,6 +118,51 @@ from the memories that do and warn about the broken one on stderr. `reindex` and
 every save or delete update the index anyway: the broken memory keeps the pointer
 it has, gets none if it has none, and each one is named in a warning. `doctor`
 reports it with the store's other problems.
+
+## Claude Code
+
+`mdmem enable claude-code` does three things, in this order:
+
+1. It imports the memories Claude Code kept for the repository
+   (`~/.claude/projects/<key>/memory/`, and the directory of each of the
+   repository's worktrees) into `.memory/`, backing the store up first. A file
+   that exists on both sides with different content stops the command before
+   anything is written; it lists each conflict, and `--prefer claude` or
+   `--prefer mdmem` settles them. The import runs once per user and repository:
+   mdmem records it in `~/.claude/projects/<key>/mdmem-imported`, so a later
+   `enable` skips it, neither refusing again over files settled with `--prefer`
+   nor bringing back a memory you have deleted since.
+2. It merges these entries into `.claude/settings.json`, leaving its other
+   keys, and their order and indentation, as they were:
+   - `"autoMemoryEnabled": false`, which turns Claude's own memory off for the
+     project;
+   - two `SessionStart` hooks, matcher `startup|clear|compact`, running
+     `mdmem hook claude-code protocol` and `mdmem hook claude-code index`;
+   - `"permissions": {"allow": ["mcp__mdmem"]}`, so the mdmem tools run without
+     asking.
+3. It merges the mdmem server into `.mcp.json`:
+   `"mcpServers": {"mdmem": {"type": "stdio", "command": "mdmem", "args": ["mcp"]}}`.
+
+Commit both files: they wire Claude Code for everyone working in the
+repository, and everyone then needs `mdmem` on PATH. `mdmem disable claude-code`
+removes exactly these entries, along with an object or array they leave empty
+(an empty `"permissions": {}` you had before goes too), and deletes a file that
+held nothing else; the imported memories stay in `.memory/`. `mdmem status` lists each entry as present
+or missing.
+
+Claude Code asks each user to approve a server from a project's `.mcp.json`
+before it connects it; until then the mdmem tools are missing and agents fall
+back to writing files directly. Approving it in that dialog writes
+`"enabledMcpjsonServers": ["mdmem"]` to your `.claude/settings.local.json`. The
+same key in the committed `.claude/settings.json` skips the dialog, but only in
+a folder whose trust dialog you have accepted: in an untrusted folder Claude Code
+ignores the repository's own approval. `mdmem enable` does not write that key.
+Checked with `claude mcp list` on Claude Code 2.1.302 against an isolated
+config directory, and against the
+[settings reference](https://code.claude.com/docs/en/settings-reference): with
+the key in the project settings of a trusted folder the server connects; without
+it, or in an untrusted folder, it stays pending approval. A `claude -p` run
+connects project servers without asking, approved or not.
 
 ## Memory format
 
@@ -173,15 +219,8 @@ tools update `MEMORY.md` afterwards.
 
 The server also serves one prompt, `consolidate` (see below).
 
-Claude Code (`.mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "mdmem": { "type": "stdio", "command": "mdmem", "args": ["mcp"] }
-  }
-}
-```
+Claude Code: `mdmem enable claude-code` registers it in `.mcp.json` (see
+[Claude Code](#claude-code)).
 
 Codex CLI:
 

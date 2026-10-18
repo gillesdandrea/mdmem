@@ -543,6 +543,21 @@ async function realDirectory(path: string): Promise<string> {
   }
 }
 
+/** The file, in Claude Code's project directory for the repository, that records an import ran there for this user. */
+const IMPORT_MARKER = "mdmem-imported";
+
+/**
+ * Where the import of the repository whose store is `store` is recorded as done:
+ * next to its backups, so per user and per repository, and outside the store.
+ */
+export async function importMarker(
+  store: MemoryStore,
+  environment: ClaudeEnvironment = {}
+): Promise<string> {
+  const projectRoot = await realDirectory(dirname(store.root));
+  return join(claudeProjectDir(projectRoot, environment), IMPORT_MARKER);
+}
+
 /**
  * Import Claude Code's memories for the project whose store is `store` (ADR 0003):
  * the memory directory at the repository's key and every other Claude project

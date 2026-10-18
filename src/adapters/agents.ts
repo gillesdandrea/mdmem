@@ -7,7 +7,7 @@ import type {
   Adapter,
   AdapterContext,
   AgentStatus,
-  LinkResult,
+  WiringResult,
 } from "./adapter.ts";
 import {
   hasMarkedBlock,
@@ -24,7 +24,7 @@ export const agentsAdapter: Adapter = {
   id: "agents",
   title: TITLE,
 
-  async link(ctx: AdapterContext): Promise<LinkResult> {
+  async enable(ctx: AdapterContext): Promise<WiringResult> {
     const path = join(ctx.projectRoot, AGENTS_REL);
     const current = existsSync(path) ? await readFile(path, "utf-8") : "";
     const verb = hasMarkedBlock(current) ? "updated" : "installed";
@@ -36,13 +36,14 @@ export const agentsAdapter: Adapter = {
     return {
       title: TITLE,
       actions: [`${verb} memory protocol block in ${AGENTS_REL}`],
+      warnings: [],
     };
   },
 
-  async unlink(ctx: AdapterContext): Promise<LinkResult> {
+  async disable(ctx: AdapterContext): Promise<WiringResult> {
     const path = join(ctx.projectRoot, AGENTS_REL);
     if (!existsSync(path)) {
-      return { title: TITLE, actions: ["nothing to remove"] };
+      return { title: TITLE, actions: ["nothing to remove"], warnings: [] };
     }
     const next = removeMarkedBlock(await readFile(path, "utf-8"));
     if (next.trim().length === 0) {
@@ -50,23 +51,26 @@ export const agentsAdapter: Adapter = {
       return {
         title: TITLE,
         actions: [`removed ${AGENTS_REL} (was only the memory block)`],
+        warnings: [],
       };
     }
     await writeFile(path, next, "utf-8");
     return {
       title: TITLE,
       actions: [`removed memory protocol block from ${AGENTS_REL}`],
+      warnings: [],
     };
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const path = join(ctx.projectRoot, AGENTS_REL);
-    const linked =
+    const present =
       existsSync(path) && hasMarkedBlock(await readFile(path, "utf-8"));
     return {
       title: TITLE,
-      linked,
-      details: [linked ? "protocol block present" : "not installed"],
+      wired: present,
+      entries: [{ label: "memory protocol block", file: AGENTS_REL, present }],
+      warnings: [],
     };
   },
 };

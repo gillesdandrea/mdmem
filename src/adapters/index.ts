@@ -27,5 +27,7 @@ export type {
   Adapter,
   AdapterContext,
   AgentStatus,
-  LinkResult,
+  EnableOptions,
+  WiringEntry,
+  WiringResult,
 } from "./adapter.ts";

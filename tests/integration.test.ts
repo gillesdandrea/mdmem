@@ -16,121 +16,216 @@ import { agentsAdapter } from "../src/adapters/agents.ts";
 import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import { cursorAdapter } from "../src/adapters/cursor.ts";
-import type { AdapterContext } from "../src/adapters/index.ts";
+import type { Adapter, AdapterContext } from "../src/adapters/index.ts";
 import { reindex } from "../src/core/check.ts";
 import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
+import { claudeProjectDir } from "../src/core/import.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import {
   getConsolidatePrompt,
   getMemoryProtocol,
 } from "../src/core/protocol.ts";
+import { RefusalError } from "../src/core/refusal.ts";
 import { MemoryStore } from "../src/core/store.ts";
 import { git, gitRepo } from "./git-fixture.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
-const CLAUDE_SETTINGS = ".claude/settings.local.json";
+const CLAUDE_SETTINGS = ".claude/settings.json";
+const MCP_CONFIG = ".mcp.json";
 
+/** A project with an empty store, and a context whose Claude Code config directory is a temp dir, never the real ~/.claude. */
 async function tempProject(): Promise<{
   root: string;
   ctx: AdapterContext;
   store: MemoryStore;
 }> {
-  const root = await mkdtemp(join(tmpdir(), "mdmem-int-"));
-  const storeDir = join(root, ".memory");
-  const store = new MemoryStore(storeDir);
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-int-")));
+  const store = new MemoryStore(join(root, ".memory"));
   // creates .memory + empty index
   await reindex(store);
-  return { root, ctx: { projectRoot: root, storeDir }, store };
+  const env = { CLAUDE_CONFIG_DIR: join(root, "claude-config") };
+  const home = join(root, "home");
+  return { root, ctx: { projectRoot: root, store, env, home }, store };
 }
 
-async function autoMemoryDir(root: string): Promise<string | undefined> {
-  const path = join(root, CLAUDE_SETTINGS);
-  if (!existsSync(path)) {
-    return undefined;
-  }
-  const parsed: unknown = JSON.parse(await readFile(path, "utf-8"));
-  return (parsed as { autoMemoryDirectory?: string }).autoMemoryDirectory;
+function memoryText(name: string, body: string): string {
+  return serializeMemory({
+    frontmatter: {
+      name,
+      description: `About ${name}`,
+      metadata: { type: "project" },
+    },
+    body,
+  });
 }
 
-describe("tracer bullet: shared memory across agents", () => {
-  test("a memory saved once is reachable through both agents' wiring", async () => {
+/** Put a memory in Claude Code's memory directory for the project at `root`. */
+async function claudeMemory(
+  ctx: AdapterContext,
+  root: string,
+  file: string,
+  content: string
+): Promise<void> {
+  const dir = join(claudeProjectDir(root, ctx), "memory");
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, file), content, "utf-8");
+}
+
+async function wired(adapter: Adapter, ctx: AdapterContext): Promise<boolean> {
+  const status = await adapter.status(ctx);
+  return status.wired;
+}
+
+async function readText(path: string): Promise<string | undefined> {
+  return existsSync(path) ? await readFile(path, "utf-8") : undefined;
+}
+
+const HOOK_MATCHER = "startup|clear|compact";
+const mdmemHook = (part: string) => ({
+  matcher: HOOK_MATCHER,
+  hooks: [{ type: "command", command: `mdmem hook claude-code ${part}` }],
+});
+const MDMEM_SERVER = { type: "stdio", command: "mdmem", args: ["mcp"] };
+
+describe("claude-code wiring", () => {
+  test("enable merges mdmem's entries into existing files, keeping the rest byte for byte, and disable takes exactly them out", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      const otherHook = {
+        matcher: "startup",
+        hooks: [{ type: "command", command: "echo hi" }],
+      };
+      const settings = {
+        model: "opus",
+        hooks: {
+          PreToolUse: [
+            { matcher: "Bash", hooks: [{ type: "command", command: "lint" }] },
+          ],
+          SessionStart: [otherHook],
+        },
+        permissions: { allow: ["Bash(ls:*)"], deny: ["Read(.env)"] },
+      };
+      const mcp = { mcpServers: { other: { command: "other-server" } } };
+      const settingsText = `${JSON.stringify(settings, null, 2)}\n`;
+      const mcpText = `${JSON.stringify(mcp, null, 2)}\n`;
+      await mkdir(join(root, ".claude"));
+      await writeFile(join(root, CLAUDE_SETTINGS), settingsText, "utf-8");
+      await writeFile(join(root, MCP_CONFIG), mcpText, "utf-8");
+
+      const enabled = await claudeCodeAdapter.enable(ctx, {});
+      expect(enabled.actions).toContain(
+        `added in ${CLAUDE_SETTINGS}: autoMemoryEnabled: false, SessionStart hook "mdmem hook claude-code protocol", SessionStart hook "mdmem hook claude-code index", permissions.allow "mcp__mdmem"`
+      );
+      const wiredSettings = {
+        model: "opus",
+        hooks: {
+          PreToolUse: settings.hooks.PreToolUse,
+          SessionStart: [otherHook, mdmemHook("protocol"), mdmemHook("index")],
+        },
+        permissions: {
+          allow: ["Bash(ls:*)", "mcp__mdmem"],
+          deny: ["Read(.env)"],
+        },
+        autoMemoryEnabled: false,
+      };
+      const wiredMcp = {
+        mcpServers: { other: mcp.mcpServers.other, mdmem: MDMEM_SERVER },
+      };
+      expect(await readText(join(root, CLAUDE_SETTINGS))).toBe(
+        `${JSON.stringify(wiredSettings, null, 2)}\n`
+      );
+      expect(await readText(join(root, MCP_CONFIG))).toBe(
+        `${JSON.stringify(wiredMcp, null, 2)}\n`
+      );
+      const status = await claudeCodeAdapter.status(ctx);
+      expect(status.wired).toBe(true);
+      expect(status.entries).toHaveLength(5);
+
+      // a second run changes nothing
+      const again = await claudeCodeAdapter.enable(ctx, {});
+      expect(again.actions).toContain(
+        `${CLAUDE_SETTINGS} already holds mdmem's entries`
+      );
+      expect(await readText(join(root, CLAUDE_SETTINGS))).toBe(
+        `${JSON.stringify(wiredSettings, null, 2)}\n`
+      );
+
+      await claudeCodeAdapter.disable(ctx, {});
+      expect(await readText(join(root, CLAUDE_SETTINGS))).toBe(settingsText);
+      expect(await readText(join(root, MCP_CONFIG))).toBe(mcpText);
+      const after = await claudeCodeAdapter.status(ctx);
+      expect(after.wired).toBe(false);
+      expect(after.entries.some(({ present }) => present)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an import refusal leaves every file unwritten", async () => {
     const { root, ctx, store } = await tempProject();
     try {
-      await claudeCodeAdapter.link(ctx);
-      await agentsAdapter.link(ctx);
+      const ours = memoryText("a", "Ours.");
+      await store.create("a.md", ours);
+      await claudeMemory(ctx, root, "a.md", memoryText("a", "Claude's."));
 
-      // Claude: its native memory is pointed at the shared store (absolute path).
-      expect(await autoMemoryDir(root)).toBe(ctx.storeDir);
-
-      // AGENTS.md: protocol block merged in at the repo root.
-      const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
-      expect(agents).toContain("mdmem:start");
-      expect(agents).toContain("Memory protocol");
-
-      // One agent saves a memory; the shared index reflects it.
-      await store.create(
-        "prefers-bun.md",
-        serializeMemory({
-          frontmatter: {
-            name: "prefers-bun",
-            description: "Uses bun",
-            metadata: { type: "feedback" },
-          },
-          body: "Use bun.\n\n**Why:** standardized. **How to apply:** run scripts with bun.",
-        })
+      await expect(claudeCodeAdapter.enable(ctx, {})).rejects.toBeInstanceOf(
+        RefusalError
       );
-      await reindex(store);
-      const index = await readFile(join(root, ".memory/MEMORY.md"), "utf-8");
-      expect(index).toContain("[prefers-bun](prefers-bun.md)");
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
+      expect(existsSync(join(root, MCP_CONFIG))).toBe(false);
+      expect(await store.view("a.md")).toBe(ours);
 
-      const claudeStatus = await claudeCodeAdapter.status(ctx);
-      const agentsStatus = await agentsAdapter.status(ctx);
-      expect(claudeStatus.linked).toBe(true);
-      expect(agentsStatus.linked).toBe(true);
+      // --prefer settles it, and enable goes on to wire Claude Code
+      await claudeCodeAdapter.enable(ctx, { prefer: "mdmem" });
+      expect(await wired(claudeCodeAdapter, ctx)).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("linking twice is idempotent", async () => {
-    const { root, ctx } = await tempProject();
+  test("the import runs once: a later enable neither refuses again nor brings back a deleted memory", async () => {
+    const { root, ctx, store } = await tempProject();
     try {
-      await claudeCodeAdapter.link(ctx);
-      await claudeCodeAdapter.link(ctx);
-      await agentsAdapter.link(ctx);
-      await agentsAdapter.link(ctx);
+      await claudeMemory(ctx, root, "b.md", memoryText("b", "From Claude."));
+      await claudeMemory(ctx, root, "c.md", memoryText("c", "Claude's."));
+      await store.create("c.md", memoryText("c", "Ours."));
+      await claudeCodeAdapter.enable(ctx, { prefer: "mdmem" });
+      expect(existsSync(join(store.root, "b.md"))).toBe(true);
 
-      expect(await autoMemoryDir(root)).toBe(ctx.storeDir);
-      const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
-      // exactly one marker
-      expect(agents.split("mdmem:start")).toHaveLength(2);
+      await rm(join(store.root, "b.md"));
+      const again = await claudeCodeAdapter.enable(ctx, {});
+      expect(again.actions[0]).toStartWith(
+        "Claude Code's memories were already imported"
+      );
+      expect(existsSync(join(store.root, "b.md"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("unlink removes all wiring cleanly", async () => {
-    const { root, ctx } = await tempProject();
+  test("disable deletes a file that held only mdmem's entries, and leaves the imported memories", async () => {
+    const { root, ctx, store } = await tempProject();
     try {
-      await claudeCodeAdapter.link(ctx);
-      await agentsAdapter.link(ctx);
-      await claudeCodeAdapter.unlink(ctx);
-      await agentsAdapter.unlink(ctx);
+      await claudeMemory(ctx, root, "b.md", memoryText("b", "From Claude."));
+      await claudeCodeAdapter.enable(ctx, {});
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(true);
+      expect(existsSync(join(root, MCP_CONFIG))).toBe(true);
 
-      expect(await autoMemoryDir(root)).toBeUndefined();
-      // was only our block
-      expect(existsSync(join(root, "AGENTS.md"))).toBe(false);
-
-      const claudeStatus = await claudeCodeAdapter.status(ctx);
-      const agentsStatus = await agentsAdapter.status(ctx);
-      expect(claudeStatus.linked).toBe(false);
-      expect(agentsStatus.linked).toBe(false);
+      const disabled = await claudeCodeAdapter.disable(ctx, {});
+      expect(disabled.actions).toContain(
+        `deleted ${MCP_CONFIG}: it held only mdmem's entries`
+      );
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
+      expect(existsSync(join(root, MCP_CONFIG))).toBe(false);
+      expect(existsSync(join(store.root, "b.md"))).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
+});
 
-  test("unlink preserves unrelated AGENTS.md content", async () => {
+describe("rule-file adapters", () => {
+  test("AGENTS.md: enabling twice installs one block, and disable removes it, leaving other content", async () => {
     const { root, ctx } = await tempProject();
     try {
       await writeFile(
@@ -138,33 +233,30 @@ describe("tracer bullet: shared memory across agents", () => {
         "# Project\n\nExisting guidance.\n",
         "utf-8"
       );
-      await agentsAdapter.link(ctx);
-      await agentsAdapter.unlink(ctx);
+      await agentsAdapter.enable(ctx, {});
+      await agentsAdapter.enable(ctx, {});
       const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
-      expect(agents).toContain("Existing guidance.");
-      expect(agents).not.toContain("mdmem:start");
+      expect(agents).toContain("Memory protocol");
+      // exactly one marker
+      expect(agents.split("mdmem:start")).toHaveLength(2);
+      expect(await wired(agentsAdapter, ctx)).toBe(true);
+
+      await agentsAdapter.disable(ctx, {});
+      const after = await readFile(join(root, "AGENTS.md"), "utf-8");
+      expect(after).toContain("Existing guidance.");
+      expect(after).not.toContain("mdmem:start");
+      expect(await wired(agentsAdapter, ctx)).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("claude unlink leaves other settings untouched", async () => {
+  test("AGENTS.md holding only the block is removed on disable", async () => {
     const { root, ctx } = await tempProject();
     try {
-      const path = join(root, CLAUDE_SETTINGS);
-      await claudeCodeAdapter.link(ctx);
-      // simulate a pre-existing personal setting alongside ours
-      const withExtra: unknown = {
-        ...(JSON.parse(await readFile(path, "utf-8")) as object),
-        theme: "dark",
-      };
-      await writeFile(path, JSON.stringify(withExtra), "utf-8");
-      await claudeCodeAdapter.unlink(ctx);
-      const after: unknown = JSON.parse(await readFile(path, "utf-8"));
-      expect((after as { theme?: string }).theme).toBe("dark");
-      expect(
-        (after as { autoMemoryDirectory?: string }).autoMemoryDirectory
-      ).toBeUndefined();
+      await agentsAdapter.enable(ctx, {});
+      await agentsAdapter.disable(ctx, {});
+      expect(existsSync(join(root, "AGENTS.md"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -173,16 +265,14 @@ describe("tracer bullet: shared memory across agents", () => {
   test("bob adapter installs and removes .bob/rules/memory.md", async () => {
     const { root, ctx } = await tempProject();
     try {
-      await bobAdapter.link(ctx);
+      await bobAdapter.enable(ctx, {});
       const rule = await readFile(join(root, ".bob/rules/memory.md"), "utf-8");
       expect(rule).toContain("Memory protocol");
-      const linkedStatus = await bobAdapter.status(ctx);
-      expect(linkedStatus.linked).toBe(true);
+      expect(await wired(bobAdapter, ctx)).toBe(true);
 
-      await bobAdapter.unlink(ctx);
+      await bobAdapter.disable(ctx, {});
       expect(existsSync(join(root, ".bob/rules/memory.md"))).toBe(false);
-      const unlinkedStatus = await bobAdapter.status(ctx);
-      expect(unlinkedStatus.linked).toBe(false);
+      expect(await wired(bobAdapter, ctx)).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -191,17 +281,16 @@ describe("tracer bullet: shared memory across agents", () => {
   test("cursor adapter installs .cursor/rules/memory.mdc with always-apply frontmatter", async () => {
     const { root, ctx } = await tempProject();
     try {
-      await cursorAdapter.link(ctx);
+      await cursorAdapter.enable(ctx, {});
       const rule = await readFile(
         join(root, ".cursor/rules/memory.mdc"),
         "utf-8"
       );
       expect(rule).toContain("alwaysApply: true");
       expect(rule).toContain("Memory protocol");
-      const linkedStatus = await cursorAdapter.status(ctx);
-      expect(linkedStatus.linked).toBe(true);
+      expect(await wired(cursorAdapter, ctx)).toBe(true);
 
-      await cursorAdapter.unlink(ctx);
+      await cursorAdapter.disable(ctx, {});
       expect(existsSync(join(root, ".cursor/rules/memory.mdc"))).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -341,8 +430,13 @@ describe("cli", () => {
       const run = (...args: string[]) => {
         const proc = Bun.spawnSync(["bun", CLI, ...args], {
           cwd: root,
-          // no-op editor
-          env: { ...process.env, EDITOR: "true", VISUAL: "true" },
+          // no-op editor, and a Claude Code config directory that is not the real ~/.claude
+          env: {
+            ...process.env,
+            EDITOR: "true",
+            VISUAL: "true",
+            CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+          },
         });
         return {
           code: proc.exitCode,
@@ -387,8 +481,14 @@ describe("cli", () => {
 
       const claude = run("enable", "claude-code");
       expect(claude.code).toBe(0);
-      // absolute path to the store (spawned cwd may resolve /var → /private/var)
-      expect(await autoMemoryDir(root)).toMatch(/[/\\]\.memory$/u);
+      expect(claude.out).toContain(
+        "No Claude Code memories for this project: nothing to import."
+      );
+      const settings: unknown = JSON.parse(
+        await readFile(join(root, CLAUDE_SETTINGS), "utf-8")
+      );
+      expect(settings).toMatchObject({ autoMemoryEnabled: false });
+      expect(run("status").out).toContain("✓ Claude Code\n");
 
       // add refuses to clobber an existing name without --force
       const dup = run(
@@ -551,6 +651,27 @@ describe("cli", () => {
       expect(consolidate.out).toBe(getConsolidatePrompt(storeDir));
       expect(consolidate.out).toContain(`Memory store: \`${storeDir}\``);
       expect(consolidate.out).toContain("## Phase 5 — Reconcile");
+    });
+  });
+
+  test("an option given to the wrong one of enable and disable gets mdmem's own refusal", async () => {
+    await withCliProject((root) => {
+      const disable = runCli(
+        root,
+        "disable",
+        "claude-code",
+        "--prefer",
+        "mdmem"
+      );
+      expect(disable.code).toBe(1);
+      expect(disable.err).toBe(
+        "mdmem: --prefer applies to `mdmem enable` only\n"
+      );
+      const enable = runCli(root, "enable", "claude-code", "--global");
+      expect(enable.code).toBe(1);
+      expect(enable.err).toBe(
+        "mdmem: --global applies to `mdmem disable` only\n"
+      );
     });
   });
 });

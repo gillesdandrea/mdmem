@@ -7,7 +7,7 @@ import type {
   Adapter,
   AdapterContext,
   AgentStatus,
-  LinkResult,
+  WiringResult,
 } from "./adapter.ts";
 
 interface RulesFileConfig {
@@ -33,7 +33,7 @@ export function rulesFileAdapter(config: RulesFileConfig): Adapter {
     id,
     title,
 
-    async link(ctx: AdapterContext): Promise<LinkResult> {
+    async enable(ctx: AdapterContext): Promise<WiringResult> {
       const path = join(ctx.projectRoot, rulePath);
       const existed = existsSync(path);
       await mkdir(dirname(path), { recursive: true });
@@ -41,24 +41,26 @@ export function rulesFileAdapter(config: RulesFileConfig): Adapter {
       return {
         title,
         actions: [`${existed ? "updated" : "wrote"} ${rulePath}`],
+        warnings: [],
       };
     },
 
-    async unlink(ctx: AdapterContext): Promise<LinkResult> {
+    async disable(ctx: AdapterContext): Promise<WiringResult> {
       const path = join(ctx.projectRoot, rulePath);
       if (!existsSync(path)) {
-        return { title, actions: ["nothing to remove"] };
+        return { title, actions: ["nothing to remove"], warnings: [] };
       }
       await rm(path);
-      return { title, actions: [`removed ${rulePath}`] };
+      return { title, actions: [`removed ${rulePath}`], warnings: [] };
     },
 
     status(ctx: AdapterContext): Promise<AgentStatus> {
-      const linked = existsSync(join(ctx.projectRoot, rulePath));
+      const present = existsSync(join(ctx.projectRoot, rulePath));
       return Promise.resolve({
         title,
-        linked,
-        details: [linked ? `protocol present (${rulePath})` : "not installed"],
+        wired: present,
+        entries: [{ label: "memory protocol", file: rulePath, present }],
+        warnings: [],
       });
     },
   };
