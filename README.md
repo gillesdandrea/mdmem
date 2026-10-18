@@ -41,6 +41,10 @@ any agent is visible to all of them.
   - **IBM Bob** (`bob`): wires it through session-start hooks and the mdmem
     MCP server, in workspace files meant to be committed. See [IBM Bob](#ibm-bob)
     below.
+  - **Codex CLI** (`codex`): wires it through a session-start hook in your own
+    `~/.codex/hooks.json`, shared by every project, and the mdmem MCP server in
+    the project's `.codex/config.toml`, meant to be committed. See
+    [Codex CLI](#codex-cli) below.
   - **Cursor** (`cursor`) — writes `.cursor/rules/memory.mdc` (Cursor requires the
     `.mdc` extension and `alwaysApply: true` frontmatter to load a rule every session).
 - **Two surfaces, one core:** a CLI for humans/scripts and setup, and an MCP
@@ -54,9 +58,9 @@ bun link          # puts `mdmem` on your PATH
 ```
 
 Run `mdmem` from inside your project. The hooks and MCP server that
-`mdmem enable claude-code` and `mdmem enable bob` write (see
-[Claude Code](#claude-code) and [IBM Bob](#ibm-bob)) also expect `mdmem` on
-your PATH.
+`mdmem enable claude-code`, `mdmem enable bob` and `mdmem enable codex` write
+(see [Claude Code](#claude-code), [IBM Bob](#ibm-bob) and
+[Codex CLI](#codex-cli)) also expect `mdmem` on your PATH.
 
 ## Quickstart
 
@@ -87,13 +91,13 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
 | `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer), index over 9,500 characters, the size a session-start hook can inject |
 | `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--prefer` settles a Claude Code import conflict. |
-| `mdmem disable <agent…> \| --all` | Remove exactly mdmem's entries from an agent's files (leaves the store) |
+| `mdmem disable <agent…> \| --all [--global]` | Remove exactly mdmem's entries from an agent's files (leaves the store). Codex's hook in `~/.codex/hooks.json` stays unless `--global`. |
 | `mdmem status` | Show the store and each agent's wiring, entry by entry (present or missing) |
 | `mdmem path` | Print the store directory |
 | `mdmem mcp` | Run the MCP server over stdio |
 | `mdmem hook <agent> <part>` | Run by an agent's session-start hook, not typed by hand (see below) |
 
-Agents: `claude-code`, `agents`, `bob`, `cursor`. Memory types: `user`, `feedback`, `project`, `reference`.
+Agents: `claude-code`, `agents`, `bob`, `codex`, `cursor`. Memory types: `user`, `feedback`, `project`, `reference`.
 
 `mdmem hook` is what the agents' session-start hooks run: `<agent>` is
 `claude-code`, `bob` or `codex`, and `<part>` is `protocol` (the memory protocol)
@@ -191,6 +195,57 @@ hooks) and `.bob/mcp.json` only from its workspace, the folder it was launched
 in: launched at a checkout's root it gets the protocol, the index and the mdmem
 tools; launched in a subdirectory it has no memory wiring at all.
 
+## Codex CLI
+
+`mdmem enable codex` merges two entries, leaving the files' other content as it
+was:
+
+- in `~/.codex/hooks.json` (`$CODEX_HOME/hooks.json` when `CODEX_HOME` is set),
+  one `SessionStart` hook group with no matcher, holding two command handlers,
+  `mdmem hook codex protocol` and `mdmem hook codex index`, each with a
+  10-second timeout and `"additionalContextLimit": 0`. Without that limit,
+  Codex replaces a hook context over about 2,500 tokens with a preview and the
+  path of a temporary file. `mdmem hook` skips a resumed session itself.
+- in the project's `.codex/config.toml`, the mdmem server:
+
+  ```toml
+  [mcp_servers.mdmem]
+  command = "mdmem"
+  args = ["mcp"]
+  ```
+
+  mdmem appends this table at the end of the file, so the rest of the file is
+  kept byte for byte. When that would not be valid TOML (the file defines
+  `mcp_servers` as an inline table, or already holds a different `mdmem`
+  server), mdmem rewrites the value in place instead.
+
+The hook is global because Codex ties a hook's approval to the absolute path of
+the file that declares it: a hook in each worktree's `.codex/hooks.json` would
+need approving in every worktree. Codex asks you to review the new hook once, at
+its next start or in `/hooks`. Codex also ties the approval to the group's
+position in `hooks.SessionStart` and to its content, so adding or removing a
+`SessionStart` group before mdmem's in that file, or editing mdmem's, makes
+Codex ask again.
+Once trusted, it runs in every project and
+worktree, and prints nothing outside a project with a store. Running
+`mdmem enable codex` in another project finds the hook already there and adds
+only that project's server.
+
+Commit `.codex/config.toml`: it registers the server for everyone working in
+the repository, and everyone then needs `mdmem` on PATH. Codex reads a
+project's `.codex/config.toml` only in a folder you have trusted; in an
+untrusted one the mdmem tools are missing and agents fall back to writing files
+directly.
+
+`mdmem disable codex` removes the project's server, deleting
+`.codex/config.toml` when nothing else is left in it, and keeps the global hook.
+`mdmem disable codex --global` also removes mdmem's handlers from
+`~/.codex/hooks.json`, deleting the file when it held nothing else. Removing the
+server also drops the comment lines written directly above mdmem's table, inside
+it or after it, and those directly above the table that follows it, with the
+blank lines around them. `mdmem status` lists the project's server and the
+global hook, each present or missing.
+
 ## Memory format
 
 One file, one fact — `.memory/<name>.md`:
@@ -249,11 +304,8 @@ The server also serves one prompt, `consolidate` (see below).
 Claude Code: `mdmem enable claude-code` registers it in `.mcp.json` (see
 [Claude Code](#claude-code)).
 
-Codex CLI:
-
-```bash
-codex mcp add mdmem -- mdmem mcp
-```
+Codex CLI: `mdmem enable codex` registers it in `.codex/config.toml` (see
+[Codex CLI](#codex-cli)).
 
 ## Consolidation
 
@@ -286,7 +338,7 @@ driving `oxlint` + `oxfmt`.
 ## Not yet included
 
 A global cross-project store and semantic recall. Agents that need more than
-`AGENTS.md` get their own adapter, as Claude Code, IBM Bob and Cursor do; the
+`AGENTS.md` get their own adapter, as Claude Code, IBM Bob, Codex CLI and Cursor do; the
 `Adapter` interface (`src/adapters/adapter.ts`) is the extension point for new ones.
 
 ## License

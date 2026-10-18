@@ -437,8 +437,13 @@ Usage: mdmem <command> [options]
                             (claude-code: import Claude's memories once, turn its auto memory off,
                             add its session-start hooks and the mdmem MCP server; --prefer settles
                             an import conflict by keeping Claude's file or the store's; bob: add its
-                            session-start hooks and the mdmem MCP server)
-  disable <agent…> | --all  Remove exactly mdmem's entries from an agent's files (leaves the store)
+                            session-start hooks and the mdmem MCP server; codex: add its session-start
+                            hooks to ~/.codex/hooks.json ($CODEX_HOME when set), once per user, and the
+                            mdmem MCP server to .codex/config.toml)
+  disable <agent…> | --all [--global]
+                            Remove exactly mdmem's entries from an agent's files (leaves the store);
+                            codex keeps its global hook, silent outside a project with a store, unless
+                            --global, which also removes it from ~/.codex/hooks.json
   status                    Show the store and each agent's wiring, entry by entry
   path                      Print the store directory
   mcp                       Run the MCP server over stdio (for agent tool-calls)
