@@ -1441,15 +1441,17 @@ describe("cli", () => {
   });
 });
 
-/** Run `mdmem hook <agent> <part>` in `cwd` with `payload` on stdin, capturing its exit code and output. */
+/** Run `mdmem hook <agent> <part>` in `cwd` with `payload` on stdin and `env` over the environment, capturing its exit code and output. */
 function runHookCli(
   cwd: string,
   part: string,
   payload: unknown,
-  agent = "claude-code"
+  agent = "claude-code",
+  env: Record<string, string> = {}
 ) {
   const proc = Bun.spawnSync(["bun", CLI, "hook", agent, part], {
     cwd,
+    env: { ...process.env, ...env },
     stdin: Buffer.from(
       typeof payload === "string" ? payload : JSON.stringify(payload)
     ),
@@ -1519,13 +1521,16 @@ describe("hook", () => {
   });
 
   test("it prints nothing without a store, on resume, or for another event", async () => {
-    const bare = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
-      expect(runHookCli(bare, "index", startPayload(bare))).toEqual({
-        code: 0,
-        out: "",
-        err: "",
-      });
+      // a temp home stops the walk for a store, whatever holds a .memory/ above the temp dir
+      const bare = join(tmp, "project");
+      await mkdir(bare);
+      expect(
+        runHookCli(bare, "index", startPayload(bare), "claude-code", {
+          HOME: tmp,
+        })
+      ).toEqual({ code: 0, out: "", err: "" });
       await withCliProject((root) => {
         for (const payload of [
           { ...startPayload(root), source: "resume" },
@@ -1539,18 +1544,58 @@ describe("hook", () => {
         }
       });
     } finally {
-      await rm(bare, { recursive: true, force: true });
+      await rm(tmp, { recursive: true, force: true });
     }
   });
 
+  test("a session started by clear or compact gets both parts, as one started by startup does", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1);
+      const storeDir = join(root, ".memory");
+      const index = await readFile(join(storeDir, "MEMORY.md"), "utf-8");
+      for (const source of ["clear", "compact"]) {
+        const payload = { ...startPayload(root), source };
+        expect(injected(runHookCli(root, "protocol", payload).out)).toBe(
+          getMemoryProtocol()
+        );
+        expect(injected(runHookCli(root, "index", payload).out)).toBe(
+          `Memory store: ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
+        );
+      }
+    });
+  });
+
+  test("Bob's and Codex's hooks inject both parts through the CLI, Codex's in a project whose .codex/config.toml registers the server", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1);
+      // Codex's hook speaks only where .codex/config.toml registers the server
+      await mkdir(join(root, ".codex"));
+      await writeFile(join(root, CODEX_CONFIG), CODEX_SECTION, "utf-8");
+      const storeDir = join(root, ".memory");
+      const index = await readFile(join(storeDir, "MEMORY.md"), "utf-8");
+      for (const agent of ["bob", "codex"]) {
+        const payload = startPayload(root);
+        const protocol = runHookCli(root, "protocol", payload, agent);
+        expect(protocol.code).toBe(0);
+        expect(injected(protocol.out)).toBe(getMemoryProtocol());
+        const hook = runHookCli(root, "index", payload, agent);
+        expect(hook.code).toBe(0);
+        expect(injected(hook.out)).toBe(
+          `Memory store: ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
+        );
+      }
+    });
+  });
+
   test("a payload that does not parse prints nothing outside a project, and in a project not wired for Codex", async () => {
-    const bare = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
-      expect(runHookCli(bare, "index", "[]")).toEqual({
-        code: 0,
-        out: "",
-        err: "",
-      });
+      // a temp home stops the walk for a store, whatever holds a .memory/ above the temp dir
+      const bare = join(tmp, "project");
+      await mkdir(bare);
+      expect(
+        runHookCli(bare, "index", "[]", "claude-code", { HOME: tmp })
+      ).toEqual({ code: 0, out: "", err: "" });
       await withCliProject((root) => {
         expect(runHookCli(root, "index", "[]", "codex")).toEqual({
           code: 0,
@@ -1559,7 +1604,7 @@ describe("hook", () => {
         });
       });
     } finally {
-      await rm(bare, { recursive: true, force: true });
+      await rm(tmp, { recursive: true, force: true });
     }
   });
 
@@ -1921,6 +1966,61 @@ describe("status and check", () => {
         // the superproject itself gets no such warning
         const atRoot = await projectStatus(ctx);
         expect(atRoot.warnings).toEqual([]);
+      } finally {
+        await rm(library, { recursive: true, force: true });
+      }
+    });
+  });
+
+  test("enable in a submodule of a wired project wires the submodule's work tree, with the superproject's store", async () => {
+    await withWiredRepo(async ({ root, ctx, store }) => {
+      const library = await realpath(
+        await mkdtemp(join(tmpdir(), "mdmem-lib-"))
+      );
+      try {
+        await gitRepo(library);
+        git(root, "submodule", "add", "-q", library, "lib");
+        const sub = join(root, "lib");
+        const files = [
+          CLAUDE_SETTINGS,
+          MCP_CONFIG,
+          ".bob/settings.json",
+          ".bob/mcp.json",
+          CODEX_CONFIG,
+        ];
+        const before = await Promise.all(
+          files.map((file) => readText(join(root, file)))
+        );
+
+        const enable = runCliWith(
+          sub,
+          ["enable", "claude-code", "bob", "codex"],
+          {
+            HOME: ctx.home,
+            CLAUDE_CONFIG_DIR: join(ctx.home, ".claude"),
+            CODEX_HOME: join(ctx.home, ".codex"),
+          }
+        );
+        expect(enable.err).toBe("");
+        expect(enable.code).toBe(0);
+        for (const file of files) {
+          expect(existsSync(join(sub, file))).toBe(true);
+        }
+        expect(
+          await Promise.all(files.map((file) => readText(join(root, file))))
+        ).toEqual(before);
+
+        // wired there too, the submodule gets no warning, and its sessions load the superproject's store
+        const inSubmodule = adapterContext(sub, store, ctx.env, ctx.home);
+        const status = await projectStatus(inSubmodule);
+        expect(status.warnings).toEqual([]);
+        expect(status.agents.map((agent) => agent.wired)).toEqual([
+          true,
+          true,
+          true,
+        ]);
+        const hook = runHookCli(sub, "index", startPayload(sub));
+        expect(injected(hook.out)).toStartWith(`Memory store: ${store.root}\n`);
       } finally {
         await rm(library, { recursive: true, force: true });
       }

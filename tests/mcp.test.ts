@@ -29,10 +29,22 @@ interface Session {
   storeId: string;
 }
 
+/** A server environment whose home and agent config directories are temp folders under `dir`. */
+function tempHomeEnv(dir: string): Record<string, string> {
+  const home = join(dir, "home");
+  return {
+    HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    CODEX_HOME: join(home, ".codex"),
+  };
+}
+
 /**
  * Run `fn` against an mdmem MCP server started in a fresh project with an empty
- * store, by a client named `clientName`, with `env` as the server's environment
- * when given (else the SDK's default one).
+ * store, by a client named `clientName`, with `env` over the SDK's default
+ * environment (else `tempHomeEnv`, so the server never reads the real ~/.claude,
+ * ~/.bob or ~/.codex). An `env` replaces `tempHomeEnv` whole, and the SDK's
+ * default environment carries the real HOME, so an `env` must set HOME itself.
  */
 async function withServer(
   fn: (session: Session) => Promise<void>,
@@ -49,7 +61,7 @@ async function withServer(
     command: "bun",
     args: [CLI, "mcp"],
     cwd: dir,
-    env: env?.(dir),
+    env: (env ?? tempHomeEnv)(dir),
   });
   const client = new Client({ name: clientName, version: "1.0.0" });
   try {
