@@ -60,6 +60,10 @@ export interface AgentStatus {
 export interface Adapter {
   readonly id: string;
   readonly title: string;
+  /** The agent's command: on PATH, it counts the agent as found on this machine for `--all`. */
+  readonly command: string;
+  /** The agent's config directory, relative to the home directory: when it exists, the agent counts as found too. */
+  readonly configDir: string;
   /**
    * Add the entries that are missing, merging into the agent's files and leaving
    * their other content as it was; running it again changes nothing. A refusal

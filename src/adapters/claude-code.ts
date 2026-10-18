@@ -101,6 +101,8 @@ async function importOnce(
 
 export const claudeCodeAdapter: Adapter = {
   id: "claude-code",
+  command: "claude",
+  configDir: ".claude",
   title: TITLE,
 
   async enable(

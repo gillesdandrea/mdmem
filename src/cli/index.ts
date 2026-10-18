@@ -5,7 +5,12 @@ import { basename, dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { AdapterContext } from "../adapters/index.ts";
-import { adapterIds, getAdapter, listAdapters } from "../adapters/index.ts";
+import {
+  adapterIds,
+  findAdapters,
+  getAdapter,
+  listAdapters,
+} from "../adapters/index.ts";
 import {
   checkStore,
   formatCheck,
@@ -299,17 +304,38 @@ async function cmdSearch(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * The agents to wire: those named, or with `--all` the supported agents found on
+ * this machine, printing the ones skipped as not found.
+ */
 function resolveTargets(
   values: { all?: boolean },
-  positionals: string[]
+  positionals: string[],
+  ctx: AdapterContext,
+  mode: "enable" | "disable"
 ): string[] {
-  if (values.all) {
-    return adapterIds();
+  if (!values.all) {
+    if (positionals.length === 0) {
+      die(`specify agent(s) or --all. Known: ${adapterIds().join(", ")}`);
+    }
+    return positionals;
   }
-  if (positionals.length === 0) {
-    die(`specify agent(s) or --all. Known: ${adapterIds().join(", ")}`);
+  if (positionals.length > 0) {
+    die("give agent names or --all, not both");
   }
-  return positionals;
+  const { found, notFound } = findAdapters(ctx);
+  const ids = notFound.map(({ id }) => id);
+  const nameOne = `Name an agent to ${mode} it anyway, as in \`mdmem ${mode} ${ids[0]}\`.`;
+  if (found.length === 0) {
+    print(
+      `No supported agent found on this machine (no command on PATH, no config directory). ${nameOne}`
+    );
+  } else if (notFound.length > 0) {
+    print(
+      `Skipped, not found on this machine (no command on PATH, no config directory): ${ids.join(", ")}. ${nameOne}`
+    );
+  }
+  return found.map(({ id }) => id);
 }
 
 async function cmdWiring(
@@ -335,7 +361,7 @@ async function cmdWiring(
   const prefer = preferOption(values.prefer);
   const resolved = resolveStore();
   const ctx = context(resolved);
-  for (const id of resolveTargets(values, positionals)) {
+  for (const id of resolveTargets(values, positionals, ctx, mode)) {
     const adapter = getAdapter(id);
     if (!adapter) {
       die(`unknown agent "${id}". Known: ${adapterIds().join(", ")}`);
@@ -433,7 +459,9 @@ Usage: mdmem <command> [options]
   doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
                             long pointers, dangling links, stale index, index over its size limit)
   enable <agent…> | --all [--prefer claude|mdmem]
-                            Wire an agent to the shared store, in files meant to be committed
+                            Wire an agent to the shared store, in files meant to be committed;
+                            --all wires the agents found on this machine, by their command on
+                            PATH (claude, bob, codex) or config directory (~/.claude, ~/.bob, ~/.codex)
                             (claude-code: import Claude's memories once, turn its auto memory off,
                             add its session-start hooks and the mdmem MCP server; --prefer settles
                             an import conflict by keeping Claude's file or the store's; bob: add its
@@ -442,6 +470,7 @@ Usage: mdmem <command> [options]
                             mdmem MCP server to .codex/config.toml)
   disable <agent…> | --all [--global]
                             Remove exactly mdmem's entries from an agent's files (leaves the store);
+                            --all takes the agents found on this machine;
                             codex keeps its global hook, silent outside a project with a store, unless
                             --global, which also removes it from ~/.codex/hooks.json
   status                    Show the store and each agent's wiring, entry by entry
@@ -451,7 +480,7 @@ Usage: mdmem <command> [options]
                             memory protocol or the index as context to inject (agent: ${HOOK_AGENTS.join(", ")};
                             part: ${HOOK_PARTS.join(", ")}); prints nothing outside a project with a store
 
-Agents: ${adapterIds().join(", ")}
+Agents: ${adapterIds().join(", ")} (only agents with session-start hooks are supported)
 Memory types: ${MEMORY_TYPES.join(", ")}`);
 }
 

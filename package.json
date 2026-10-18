@@ -3,12 +3,10 @@
   "version": "0.1.0",
   "description": "Shared, Claude-style file-based memory for any coding agent",
   "keywords": [
-    "agents-md",
     "bun",
     "claude-code",
     "cli",
     "coding-agent",
-    "cursor",
     "mcp",
     "memory"
   ],

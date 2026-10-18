@@ -64,6 +64,8 @@ const FILES: readonly JsonConfigFile[] = [
 
 export const bobAdapter: Adapter = {
   id: "bob",
+  command: "bob",
+  configDir: ".bob",
   title: TITLE,
 
   async enable(ctx: AdapterContext): Promise<WiringResult> {

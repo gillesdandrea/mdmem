@@ -27,17 +27,13 @@ any agent is visible to all of them.
   changed. Every other line (a title, headings, prose, a pointer's own title) is
   kept, so an index written by hand or by Claude Code survives. An empty store has
   an empty index.
-- **Each agent is wired to the store in its own native way** (`mdmem enable`):
+- **Each agent is wired to the store in its own native way** (`mdmem enable`),
+  through session-start hooks that inject the memory protocol and the index,
+  and the mdmem MCP server. mdmem supports these agents, all of which have
+  session-start hooks; agents without them are not supported:
   - **Claude Code** (`claude-code`): turns Claude's own auto memory off and
     wires it through session-start hooks and the mdmem MCP server, in files
     meant to be committed. See [Claude Code](#claude-code) below.
-  - **AGENTS.md** (`agents`) — a memory-protocol block in the repo-root
-    `AGENTS.md`, the instruction file read by Codex, Cursor, Gemini CLI, Aider, and
-    others. The protocol adapts Claude Code's own memory instructions to the shared
-    store: the memory types, when to save and what not to, checking a recalled memory
-    before acting on it, and saving through the MCP tools (writing files directly only
-    when an agent lacks them). Its text lives in `templates/memory-protocol.md` and is
-    easy to edit.
   - **IBM Bob** (`bob`): wires it through session-start hooks and the mdmem
     MCP server, in workspace files meant to be committed. See [IBM Bob](#ibm-bob)
     below.
@@ -45,8 +41,12 @@ any agent is visible to all of them.
     `~/.codex/hooks.json`, shared by every project, and the mdmem MCP server in
     the project's `.codex/config.toml`, meant to be committed. See
     [Codex CLI](#codex-cli) below.
-  - **Cursor** (`cursor`) — writes `.cursor/rules/memory.mdc` (Cursor requires the
-    `.mdc` extension and `alwaysApply: true` frontmatter to load a rule every session).
+
+  The memory protocol adapts Claude Code's own memory instructions to the shared
+  store: the memory types, when to save and what not to, checking a recalled
+  memory before acting on it, and saving through the MCP tools (writing files
+  directly only when an agent lacks them). Its text lives in
+  `templates/memory-protocol.md` and is easy to edit.
 - **Two surfaces, one core:** a CLI for humans/scripts and setup, and an MCP
   server for agents that prefer tool calls.
 
@@ -66,7 +66,7 @@ Run `mdmem` from inside your project. The hooks and MCP server that
 
 ```bash
 mdmem init                  # create .memory/ at the project's root
-mdmem enable --all          # wire up Claude Code + the AGENTS.md agents
+mdmem enable --all          # wire up the agents found on this machine
 mdmem add --type feedback --name uses-bun \
   --description "This project uses bun, not node" \
   --body "Use bun for scripts and tests."
@@ -90,14 +90,21 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
 | `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer), index over 9,500 characters, the size a session-start hook can inject |
-| `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--prefer` settles a Claude Code import conflict. |
-| `mdmem disable <agent…> \| --all [--global]` | Remove exactly mdmem's entries from an agent's files (leaves the store). Codex's hook in `~/.codex/hooks.json` stays unless `--global`. |
+| `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--all` wires the agents found on this machine (see below). `--prefer` settles a Claude Code import conflict. |
+| `mdmem disable <agent…> \| --all [--global]` | Remove exactly mdmem's entries from an agent's files (leaves the store); `--all` takes the agents found on this machine. Codex's hook in `~/.codex/hooks.json` stays unless `--global`. |
 | `mdmem status` | Show the store and each agent's wiring, entry by entry (present or missing) |
 | `mdmem path` | Print the store directory |
 | `mdmem mcp` | Run the MCP server over stdio |
 | `mdmem hook <agent> <part>` | Run by an agent's session-start hook, not typed by hand (see below) |
 
-Agents: `claude-code`, `agents`, `bob`, `codex`, `cursor`. Memory types: `user`, `feedback`, `project`, `reference`.
+Agents: `claude-code`, `bob`, `codex`. Memory types: `user`, `feedback`, `project`, `reference`.
+
+`--all` counts an agent as found on this machine when its command is on PATH
+(`claude`, `bob`, `codex`) or its config directory exists (`~/.claude`,
+`~/.bob`, `~/.codex`), and prints the agents it skipped. Naming an agent wires
+it whether it is found or not. `disable --all` likewise acts only on the agents
+found, so wiring committed for an agent not on this machine stays until you name
+it. `--all` and agent names do not combine.
 
 `mdmem hook` is what the agents' session-start hooks run: `<agent>` is
 `claude-code`, `bob` or `codex`, and `<part>` is `protocol` (the memory protocol)
@@ -337,9 +344,7 @@ driving `oxlint` + `oxfmt`.
 
 ## Not yet included
 
-A global cross-project store and semantic recall. Agents that need more than
-`AGENTS.md` get their own adapter, as Claude Code, IBM Bob, Codex CLI and Cursor do; the
-`Adapter` interface (`src/adapters/adapter.ts`) is the extension point for new ones.
+A global cross-project store and semantic recall.
 
 ## License
 

@@ -7,8 +7,7 @@ import { INDEX_MAX_CHARS, POINTER_MAX_CHARS } from "./check.ts";
  * can be tuned without touching code:
  *
  * - `memory-protocol.md`, the memory protocol: `mdmem hook <agent> protocol` injects
- *   it at session start, and the AGENTS.md and Cursor adapters install it (re-run
- *   `mdmem enable` after editing it for those).
+ *   it at session start.
  * - `consolidate.md`, the consolidation prompt served by `mdmem consolidate` and the
  *   MCP prompt `consolidate`.
  *

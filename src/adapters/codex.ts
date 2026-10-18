@@ -77,6 +77,8 @@ function hooksFile(ctx: AdapterContext): JsonConfigFile {
 
 export const codexAdapter: Adapter = {
   id: "codex",
+  command: "codex",
+  configDir: ".codex",
   title: TITLE,
 
   async enable(ctx: AdapterContext): Promise<WiringResult> {

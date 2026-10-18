@@ -7,6 +7,7 @@ import {
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,11 +15,9 @@ import { dirname, join } from "node:path";
 
 import { z } from "zod";
 
-import { agentsAdapter } from "../src/adapters/agents.ts";
 import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
-import { cursorAdapter } from "../src/adapters/cursor.ts";
 import type { Adapter, AdapterContext } from "../src/adapters/index.ts";
 import { reindex } from "../src/core/check.ts";
 import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
@@ -661,67 +660,10 @@ describe("codex wiring", () => {
   });
 });
 
-describe("rule-file adapters", () => {
-  test("AGENTS.md: enabling twice installs one block, and disable removes it, leaving other content", async () => {
-    const { root, ctx } = await tempProject();
-    try {
-      await writeFile(
-        join(root, "AGENTS.md"),
-        "# Project\n\nExisting guidance.\n",
-        "utf-8"
-      );
-      await agentsAdapter.enable(ctx, {});
-      await agentsAdapter.enable(ctx, {});
-      const agents = await readFile(join(root, "AGENTS.md"), "utf-8");
-      expect(agents).toContain("Memory protocol");
-      // exactly one marker
-      expect(agents.split("mdmem:start")).toHaveLength(2);
-      expect(await wired(agentsAdapter, ctx)).toBe(true);
-
-      await agentsAdapter.disable(ctx, {});
-      const after = await readFile(join(root, "AGENTS.md"), "utf-8");
-      expect(after).toContain("Existing guidance.");
-      expect(after).not.toContain("mdmem:start");
-      expect(await wired(agentsAdapter, ctx)).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test("AGENTS.md holding only the block is removed on disable", async () => {
-    const { root, ctx } = await tempProject();
-    try {
-      await agentsAdapter.enable(ctx, {});
-      await agentsAdapter.disable(ctx, {});
-      expect(existsSync(join(root, "AGENTS.md"))).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test("cursor adapter installs .cursor/rules/memory.mdc with always-apply frontmatter", async () => {
-    const { root, ctx } = await tempProject();
-    try {
-      await cursorAdapter.enable(ctx, {});
-      const rule = await readFile(
-        join(root, ".cursor/rules/memory.mdc"),
-        "utf-8"
-      );
-      expect(rule).toContain("alwaysApply: true");
-      expect(rule).toContain("Memory protocol");
-      expect(await wired(cursorAdapter, ctx)).toBe(true);
-
-      await cursorAdapter.disable(ctx, {});
-      expect(existsSync(join(root, ".cursor/rules/memory.mdc"))).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-});
-
 /** Run the CLI in `root` with `args` and `env` added to this process's environment, capturing its exit code and output. */
 function runCliWith(root: string, args: string[], env: Record<string, string>) {
-  const proc = Bun.spawnSync(["bun", CLI, ...args], {
+  // bun by its own path, so a test can replace PATH
+  const proc = Bun.spawnSync([process.execPath, CLI, ...args], {
     cwd: root,
     // a Codex home that is not the real ~/.codex, read by status
     env: { ...process.env, CODEX_HOME: join(root, "codex-home"), ...env },
@@ -819,9 +761,9 @@ describe("cli", () => {
       );
 
       // enable wires the worktree it runs in, not the main checkout holding the store
-      expect(runCli(worktree, "enable", "agents").code).toBe(0);
-      expect(existsSync(join(worktree, "AGENTS.md"))).toBe(true);
-      expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
+      expect(runCli(worktree, "enable", "bob").code).toBe(0);
+      expect(existsSync(join(worktree, ".bob/settings.json"))).toBe(true);
+      expect(existsSync(join(repo, ".bob"))).toBe(false);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -897,10 +839,6 @@ describe("cli", () => {
       const status = run("status");
       expect(status.code).toBe(0);
       expect(status.out).toContain("Memories: 1");
-
-      const enable = run("enable", "agents");
-      expect(enable.code).toBe(0);
-      expect(existsSync(join(root, "AGENTS.md"))).toBe(true);
 
       const claude = run("enable", "claude-code");
       expect(claude.code).toBe(0);
@@ -1074,6 +1012,95 @@ describe("cli", () => {
       expect(consolidate.out).toBe(getConsolidatePrompt(storeDir));
       expect(consolidate.out).toContain(`Memory store: \`${storeDir}\``);
       expect(consolidate.out).toContain("## Phase 5 — Reconcile");
+    });
+  });
+
+  test("enable --all wires only the agents found on this machine, and naming an agent wires it anyway", async () => {
+    await withCliProject(async (root) => {
+      // bob is on PATH (with git, which the CLI runs), ~/.codex exists, Claude Code is nowhere
+      const bin = join(root, "bin");
+      await mkdir(bin);
+      const gitPath = Bun.which("git");
+      if (gitPath === null) {
+        throw new Error("this test needs git on PATH");
+      }
+      await symlink(gitPath, join(bin, "git"));
+      await writeFile(join(bin, "bob"), "#!/bin/sh\n", "utf-8");
+      await chmod(join(bin, "bob"), 0o755);
+      const home = join(root, "home");
+      await mkdir(join(home, ".codex"), { recursive: true });
+      const env = {
+        PATH: bin,
+        HOME: home,
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+      };
+
+      const all = runCliWith(root, ["enable", "--all"], env);
+      expect(all.code).toBe(0);
+      expect(all.out).toStartWith(
+        "Skipped, not found on this machine (no command on PATH, no config directory): claude-code. Name an agent to enable it anyway, as in `mdmem enable claude-code`.\nIBM Bob:\n"
+      );
+      expect(all.out).toContain("\nCodex CLI:\n");
+      expect(existsSync(join(root, ".bob/settings.json"))).toBe(true);
+      expect(existsSync(join(root, ".codex/config.toml"))).toBe(true);
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
+
+      const named = runCliWith(root, ["enable", "claude-code"], env);
+      expect(named.code).toBe(0);
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(true);
+
+      // disable --all likewise leaves the wiring of an agent not found
+      const off = runCliWith(root, ["disable", "--all"], env);
+      expect(off.code).toBe(0);
+      expect(existsSync(join(root, ".bob/settings.json"))).toBe(false);
+      expect(existsSync(join(root, ".codex/config.toml"))).toBe(false);
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(true);
+    });
+  });
+
+  test("enable --all with no agent found says so once and wires nothing", async () => {
+    await withCliProject(async (root) => {
+      const bin = join(root, "bin");
+      await mkdir(bin);
+      const gitPath = Bun.which("git");
+      if (gitPath === null) {
+        throw new Error("this test needs git on PATH");
+      }
+      await symlink(gitPath, join(bin, "git"));
+      const env = {
+        PATH: bin,
+        HOME: join(root, "home"),
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+      };
+
+      const all = runCliWith(root, ["enable", "--all"], env);
+      expect(all.code).toBe(0);
+      expect(all.out).toBe(
+        "No supported agent found on this machine (no command on PATH, no config directory). Name an agent to enable it anyway, as in `mdmem enable claude-code`.\n"
+      );
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
+      expect(existsSync(join(root, ".bob"))).toBe(false);
+      expect(existsSync(join(root, ".codex"))).toBe(false);
+    });
+  });
+
+  test("enable --all refuses agent names given with it", async () => {
+    await withCliProject((root) => {
+      const enable = runCli(root, "enable", "--all", "cursor");
+      expect(enable.code).toBe(1);
+      expect(enable.err).toBe("mdmem: give agent names or --all, not both\n");
+    });
+  });
+
+  test("`enable agents` and `enable cursor` fail as unknown agents", async () => {
+    await withCliProject((root) => {
+      for (const id of ["agents", "cursor"]) {
+        const enable = runCli(root, "enable", id);
+        expect(enable.code).toBe(1);
+        expect(enable.err).toBe(
+          `mdmem: unknown agent "${id}". Known: claude-code, bob, codex\n`
+        );
+      }
     });
   });
 
