@@ -45,6 +45,18 @@ function superprojectWorkingTree(dir: string): string | null {
   return gitOutput(dir, ["rev-parse", "--show-superproject-working-tree"]);
 }
 
+/** The working tree of the outermost superproject when `dir` is in a submodule (nested ones included), else null. */
+export function outermostSuperproject(dir: string): string | null {
+  let outermost: string | null = null;
+  for (;;) {
+    const superproject = superprojectWorkingTree(outermost ?? dir);
+    if (superproject === null) {
+      return outermost;
+    }
+    outermost = superproject;
+  }
+}
+
 /** The top of the work tree holding `dir` (a linked worktree or submodule is its own), else null (a bare repository, or outside git). */
 export function workTreeRoot(dir: string): string | null {
   return gitOutput(dir, ["rev-parse", "--show-toplevel"]);
@@ -57,15 +69,7 @@ export function workTreeRoot(dir: string): string | null {
  * bare repository at `<dir>/.git`), else the common dir itself (a bare `x.git`).
  */
 export function repositoryRoot(dir: string): string | null {
-  let top = dir;
-  for (;;) {
-    const superproject = superprojectWorkingTree(top);
-    if (superproject === null) {
-      break;
-    }
-    top = superproject;
-  }
-  const commonDir = gitCommonDir(top);
+  const commonDir = gitCommonDir(outermostSuperproject(dir) ?? dir);
   if (commonDir === null) {
     return null;
   }

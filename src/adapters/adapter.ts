@@ -21,6 +21,13 @@ export interface AdapterContext {
   home: string;
   /** The directory mdmem runs in: an agent launched there reads only the files it finds from there. */
   cwd: string;
+  /**
+   * Variables the agents may read from their own environment that `env` cannot
+   * show: the agent that started this process passed it only some of its own
+   * (Codex starts the MCP server without `CODEX_HOME`). A state read through one
+   * of them cannot be known, so the check does not report it.
+   */
+  unknownEnv?: readonly string[];
 }
 
 export interface EnableOptions {
@@ -127,8 +134,8 @@ export interface Adapter {
   readonly title: string;
   /** The agent's command: on PATH, it counts the agent as found on this machine for `--all`. */
   readonly command: string;
-  /** The agent's config directory, relative to the home directory: when it exists, the agent counts as found too. */
-  readonly configDir: string;
+  /** The agent's config directory, as the agent resolves it from the environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`): when it exists, the agent counts as found too. */
+  readonly configDir: (ctx: Pick<AdapterContext, "env" | "home">) => string;
   /**
    * Plan adding the entries that are missing, merging into the agent's files and
    * leaving their other content as it was; running it again changes nothing. A

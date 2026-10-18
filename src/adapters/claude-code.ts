@@ -133,12 +133,17 @@ async function planImportOnce(
   };
 }
 
+/** Claude Code's config directory: CLAUDE_CONFIG_DIR when set, else ~/.claude. */
+function claudeConfigDir({
+  env,
+  home,
+}: Pick<AdapterContext, "env" | "home">): string {
+  return env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+}
+
 /** Claude Code's user settings file, in its config directory. */
 function userSettings(ctx: AdapterContext): string {
-  return join(
-    ctx.env.CLAUDE_CONFIG_DIR || join(ctx.home, ".claude"),
-    "settings.json"
-  );
+  return join(claudeConfigDir(ctx), "settings.json");
 }
 
 /**
@@ -204,7 +209,7 @@ async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
 export const claudeCodeAdapter: Adapter = {
   id: ID,
   command: "claude",
-  configDir: ".claude",
+  configDir: claudeConfigDir,
   title: TITLE,
 
   async enable(

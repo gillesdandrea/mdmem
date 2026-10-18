@@ -5,6 +5,7 @@ import { checkStore } from "../core/check.ts";
 import type { Check } from "../core/check.ts";
 import {
   isIgnoredByGit,
+  outermostSuperproject,
   repositoryRoot,
   workTreeRoot,
   worktreePaths,
@@ -13,6 +14,7 @@ import { openStore } from "../core/operations.ts";
 import { RefusalError } from "../core/refusal.ts";
 import { locateStore, MemoryStore, STORE_DIR } from "../core/store.ts";
 import type { AdapterContext, AgentStatus } from "./adapter.ts";
+import { claudeCodeAdapter } from "./claude-code.ts";
 import { listAdapters } from "./index.ts";
 
 /**
@@ -22,7 +24,8 @@ import { listAdapters } from "./index.ts";
  * check problem: an agent's hook missing or switched off, Claude Code's auto memory
  * still on, mdmem not on PATH. A state that is the user's choice, depends on where
  * status runs, or that mdmem does not read is a status line only: the store not
- * ignored by git, Bob launched below the checkout's root, folder trust.
+ * ignored by git, Bob launched below the checkout's root, a submodule of a wired
+ * project, folder trust.
  */
 
 /**
@@ -88,6 +91,52 @@ function agentStatuses(ctx: AdapterContext): Promise<AgentStatus[]> {
   return Promise.all(listAdapters().map((adapter) => adapter.status(ctx)));
 }
 
+/** The outermost superproject's root and agent statuses when status runs in a submodule, else null. */
+async function superprojectStatuses(
+  ctx: AdapterContext
+): Promise<{ root: string; agents: AgentStatus[] } | null> {
+  const root = outermostSuperproject(ctx.cwd);
+  if (root === null) {
+    return null;
+  }
+  return {
+    root,
+    agents: await agentStatuses({ ...ctx, projectRoot: root, cwd: root }),
+  };
+}
+
+/**
+ * Run in a submodule, whose own work tree an agent started here reads, not the
+ * superproject's: a warning naming the agents the superproject is wired for and
+ * the submodule is not, whose sessions here get none of that wiring.
+ */
+function submoduleWarnings(
+  superproject: { root: string; agents: readonly AgentStatus[] } | null,
+  submoduleAgents: readonly AgentStatus[]
+): string[] {
+  if (superproject === null) {
+    return [];
+  }
+  const unwiredHere = superproject.agents
+    .filter(
+      ({ enabled, title }) =>
+        enabled &&
+        !submoduleAgents.some(
+          (status) => status.title === title && status.enabled
+        )
+    )
+    .map(({ title }) => title);
+  if (unwiredHere.length === 0) {
+    return [];
+  }
+  const claudeClause = unwiredHere.includes(claudeCodeAdapter.title)
+    ? `; ${claudeCodeAdapter.title} applies the submodule's settings, not the superproject's, so mdmem's setting that turns its auto memory off does not apply`
+    : "";
+  return [
+    `This is a submodule of ${superproject.root}, which is wired for ${unwiredHere.join(", ")}: an agent started here reads the submodule's own files, not the superproject's, so its sessions get no memory protocol, no index and no mdmem tools${claudeClause}. Start agents at ${superproject.root}.`,
+  ];
+}
+
 /** mdmem missing from PATH while an agent is enabled: its hooks and MCP server all run `mdmem`. */
 function pathProblem(
   ctx: AdapterContext,
@@ -142,14 +191,17 @@ export interface ProjectStatus {
   /** Whether git ignores the store; undefined when git cannot tell. */
   ignored: boolean | undefined;
   agents: AgentStatus[];
+  /** Status only, as warnings, about the project rather than one agent: status run in a submodule of a wired project. */
+  warnings: string[];
 }
 
 export async function projectStatus(
   ctx: AdapterContext
 ): Promise<ProjectStatus> {
-  const [check, agents] = await Promise.all([
+  const [check, agents, superproject] = await Promise.all([
     checkStore(ctx.store),
     agentStatuses(ctx),
+    superprojectStatuses(ctx),
   ]);
   const wiring = wiringProblems(ctx, agents);
   return {
@@ -159,5 +211,6 @@ export async function projectStatus(
     wiringProblems: wiring,
     ignored: isIgnoredByGit(dirname(ctx.store.root), STORE_DIR),
     agents,
+    warnings: submoduleWarnings(superproject, agents),
   };
 }

@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -22,8 +29,18 @@ interface Session {
   storeId: string;
 }
 
-/** Run `fn` against an mdmem MCP server started in a fresh project with an empty store. */
-async function withServer(fn: (session: Session) => Promise<void>) {
+/**
+ * Run `fn` against an mdmem MCP server started in a fresh project with an empty
+ * store, by a client named `clientName`, with `env` as the server's environment
+ * when given (else the SDK's default one).
+ */
+async function withServer(
+  fn: (session: Session) => Promise<void>,
+  {
+    clientName = "test",
+    env,
+  }: { clientName?: string; env?: (dir: string) => Record<string, string> } = {}
+) {
   const dir = await mkdtemp(join(tmpdir(), "mdmem-mcp-"));
   const store = new MemoryStore(join(dir, ".memory"));
   // an empty store for the server to open
@@ -32,8 +49,9 @@ async function withServer(fn: (session: Session) => Promise<void>) {
     command: "bun",
     args: [CLI, "mcp"],
     cwd: dir,
+    env: env?.(dir),
   });
-  const client = new Client({ name: "test", version: "1.0.0" });
+  const client = new Client({ name: clientName, version: "1.0.0" });
   try {
     await client.connect(transport);
     await fn({ client, store, storeId: basename(dir) });
@@ -47,6 +65,25 @@ function textOf(result: { content?: unknown }): string {
   return (result.content as { type: string; text?: string }[])
     .map((block) => block.text ?? "")
     .join("\n");
+}
+
+/** A server environment with a temp home holding no ~/.codex/hooks.json, and no CODEX_HOME. */
+const codexlessEnv = (dir: string) => ({
+  PATH: process.env.PATH ?? "",
+  HOME: join(dir, "home"),
+});
+
+/** Register the mdmem server for Codex in the session's project, then whether memory_check reports Codex's global hook missing. */
+async function codexHookProblem({ client, store }: Session): Promise<boolean> {
+  const project = dirname(store.root);
+  await mkdir(join(project, ".codex"));
+  await writeFile(
+    join(project, ".codex/config.toml"),
+    '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\n',
+    "utf-8"
+  );
+  const result = await client.callTool({ name: "memory_check", arguments: {} });
+  return textOf(result).includes("Codex CLI: missing SessionStart hooks");
 }
 
 /** A valid memory file's content for `name`. */
@@ -592,6 +629,34 @@ describe("mcp server", () => {
         "Found 1 problem(s):\n  - uses-bun.md: dangling [[gone]]"
       );
     });
+  });
+
+  test("memory_check under Codex, which does not pass CODEX_HOME, leaves out Codex's global hook unless CODEX_HOME reaches the server", async () => {
+    await withServer(
+      async (session) => {
+        expect(await codexHookProblem(session)).toBe(true);
+      },
+      { env: codexlessEnv }
+    );
+    await withServer(
+      async (session) => {
+        expect(await codexHookProblem(session)).toBe(false);
+      },
+      { clientName: "codex-mcp-client", env: codexlessEnv }
+    );
+    // CODEX_HOME passed to the server, as env_vars can: the hook is checked there
+    await withServer(
+      async (session) => {
+        expect(await codexHookProblem(session)).toBe(true);
+      },
+      {
+        clientName: "codex-mcp-client",
+        env: (dir) => ({
+          ...codexlessEnv(dir),
+          CODEX_HOME: join(dir, "codex"),
+        }),
+      }
+    );
   });
 
   test("the prompt consolidate is listed and returns the consolidation prompt for the store", async () => {

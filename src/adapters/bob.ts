@@ -1,4 +1,5 @@
 import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
 import { missingHooksProblem, outsideProjectPlan } from "./adapter.ts";
@@ -105,7 +106,7 @@ async function belowRootWarning(ctx: AdapterContext): Promise<string[]> {
 export const bobAdapter: Adapter = {
   id: ID,
   command: "bob",
-  configDir: ".bob",
+  configDir: ({ home }) => join(home, ".bob"),
   title: TITLE,
 
   async enable(ctx: AdapterContext): Promise<WiringPlan> {

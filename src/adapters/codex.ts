@@ -61,10 +61,13 @@ const SERVER_ENTRY: TomlTableEntry = {
 };
 
 /** Codex's home: CODEX_HOME when set, else ~/.codex. */
-function codexHome(ctx: AdapterContext): string {
-  const fromEnv = ctx.env.CODEX_HOME;
+function codexHome({
+  env,
+  home,
+}: Pick<AdapterContext, "env" | "home">): string {
+  const fromEnv = env.CODEX_HOME;
   return fromEnv === undefined || fromEnv === ""
-    ? join(ctx.home, ".codex")
+    ? join(home, ".codex")
     : resolve(fromEnv);
 }
 
@@ -85,7 +88,7 @@ function hooksFile(ctx: AdapterContext): JsonConfigFile {
 export const codexAdapter: Adapter = {
   id: ID,
   command: "codex",
-  configDir: ".codex",
+  configDir: codexHome,
   title: TITLE,
 
   async enable(ctx: AdapterContext): Promise<WiringPlan> {
@@ -182,18 +185,21 @@ export const codexAdapter: Adapter = {
     ];
     // The global hook alone does not wire this project: it is shared by every project.
     const enabled = server.present;
+    // Without CODEX_HOME, the hooks file read may not be the one Codex reads.
+    const hooksKnown = !ctx.unknownEnv?.includes("CODEX_HOME");
     return {
       title: TITLE,
       wired: entries.every(({ present }) => present),
       enabled,
       entries,
-      problems: enabled
-        ? missingHooksProblem(
-            { id: ID, title: TITLE },
-            hooks.entries,
-            () => HOOK_PARTS.length
-          )
-        : [],
+      problems:
+        enabled && hooksKnown
+          ? missingHooksProblem(
+              { id: ID, title: TITLE },
+              hooks.entries,
+              () => HOOK_PARTS.length
+            )
+          : [],
       notes: enabled
         ? [
             `${TITLE} reads ${MCP_CONFIG} only in a trusted folder, and runs the global hook only once you have reviewed it: mdmem does not check either.`,

@@ -183,6 +183,23 @@ async function withStore(
   }
 }
 
+/** The name Codex CLI gives its MCP client (codex-rs/codex-mcp, rust-v0.160.0). */
+const CODEX_CLIENT = "codex-mcp-client";
+
+/**
+ * The variables of the agents' environment this server cannot see, by the client
+ * that started it. Codex starts a stdio server with a cleared environment holding
+ * only HOME, PATH and a few more (codex-rs/rmcp-client DEFAULT_ENV_VARS,
+ * rust-v0.160.0), so without CODEX_HOME here its own CODEX_HOME is unknown.
+ */
+function unknownEnv(client: string | undefined): string[] {
+  const codexHome = process.env.CODEX_HOME;
+  return client === CODEX_CLIENT &&
+    (codexHome === undefined || codexHome === "")
+    ? ["CODEX_HOME"]
+    : [];
+}
+
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer({ name: "mdmem", version: "0.1.0" });
 
@@ -244,13 +261,18 @@ export async function startMcpServer(): Promise<void> {
     "memory_check",
     {
       title: "Check a memory store and the agents' wiring",
-      description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a metadata.type and a type that disagree, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a dangling [[link]], a stale index (a memory without a pointer, a pointer to a missing file, or a duplicate pointer), or an index over the size a session-start hook can inject; and with the agents' wiring of the project: an agent's session-start hook missing or switched off, Claude Code's auto memory still on, or mdmem not on PATH. Returns the problems one per line, or a line with the memory count saying there are none. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also brings a stale index up to date; tell the user about a wiring problem, which the line says how to fix.`,
+      description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a metadata.type and a type that disagree, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a dangling [[link]], a stale index (a memory without a pointer, a pointer to a missing file, or a duplicate pointer), or an index over the size a session-start hook can inject; and with the agents' wiring of the project: an agent's session-start hook missing or switched off (Codex's global hook only when CODEX_HOME reaches this server, which Codex does not pass by default), Claude Code's auto memory still on, or mdmem not on PATH. Returns the problems one per line, or a line with the memory count saying there are none. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also brings a stale index up to date; tell the user about a wiring problem, which the line says how to fix.`,
       inputSchema: z.object({ store: storeParam }),
     },
     ({ store: id }) =>
       withStore(id, async (store) =>
         text(
-          formatCheck(await checkProject(adapterContext(process.cwd(), store)))
+          formatCheck(
+            await checkProject({
+              ...adapterContext(process.cwd(), store),
+              unknownEnv: unknownEnv(server.server.getClientVersion()?.name),
+            })
+          )
         )
       )
   );

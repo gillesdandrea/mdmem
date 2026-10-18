@@ -1073,6 +1073,8 @@ describe("cli", () => {
         PATH: bin,
         HOME: home,
         CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+        // empty, so Codex's home is ~/.codex
+        CODEX_HOME: "",
       };
 
       const all = runCliWith(root, ["enable", "--all"], env);
@@ -1095,6 +1097,38 @@ describe("cli", () => {
       expect(existsSync(join(root, ".bob/settings.json"))).toBe(false);
       expect(existsSync(join(root, ".codex/config.toml"))).toBe(false);
       expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(true);
+    });
+  });
+
+  test("enable --all finds Claude Code and Codex by the config directories CLAUDE_CONFIG_DIR and CODEX_HOME name", async () => {
+    await withCliProject(async (root) => {
+      // neither on PATH, no ~/.claude or ~/.codex: only the directories the environment names exist
+      const bin = join(root, "bin");
+      await mkdir(bin);
+      const gitPath = Bun.which("git");
+      if (gitPath === null) {
+        throw new Error("this test needs git on PATH");
+      }
+      await symlink(gitPath, join(bin, "git"));
+      await mkdir(join(root, "claude-config"));
+      await mkdir(join(root, "codex-home"));
+      const env = {
+        PATH: bin,
+        HOME: join(root, "home"),
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+        CODEX_HOME: join(root, "codex-home"),
+      };
+
+      const all = runCliWith(root, ["enable", "--all"], env);
+      expect(all.code).toBe(0);
+      expect(all.out).toStartWith(
+        "Skipped, not found on this machine (no command on PATH, no config directory): bob. Name an agent to enable it anyway, as in `mdmem enable bob`.\nClaude Code:\n"
+      );
+      expect(all.out).toContain("\nCodex CLI:\n");
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(true);
+      expect(existsSync(join(root, ".codex/config.toml"))).toBe(true);
+      expect(existsSync(join(root, "codex-home/hooks.json"))).toBe(true);
+      expect(existsSync(join(root, ".bob"))).toBe(false);
     });
   });
 
@@ -1807,6 +1841,39 @@ describe("status and check", () => {
       ]);
       // where status runs is not a problem with the project
       expect(await checkProject(below)).toMatchObject({ problems: [] });
+    });
+  });
+
+  test("status warns, in a submodule of a wired project, that agents started there get none of its wiring", async () => {
+    await withWiredRepo(async ({ root, ctx, store }) => {
+      const library = await realpath(
+        await mkdtemp(join(tmpdir(), "mdmem-lib-"))
+      );
+      try {
+        await gitRepo(library);
+        git(root, "submodule", "add", "-q", library, "lib");
+        const sub = join(root, "lib");
+        const inSubmodule = adapterContext(sub, store, ctx.env, ctx.home);
+        const status = await projectStatus(inSubmodule);
+        expect(status.warnings).toEqual([
+          `This is a submodule of ${root}, which is wired for Claude Code, IBM Bob, Codex CLI: an agent started here reads the submodule's own files, not the superproject's, so its sessions get no memory protocol, no index and no mdmem tools; Claude Code applies the submodule's settings, not the superproject's, so mdmem's setting that turns its auto memory off does not apply. Start agents at ${root}.`,
+        ]);
+        // where status runs is not a problem with the project
+        expect(await checkProject(inSubmodule)).toMatchObject({ problems: [] });
+        // an agent the submodule is wired for too is not named
+        await wire(bobAdapter.enable(inSubmodule, {}));
+        const partly = await projectStatus(inSubmodule);
+        expect(partly.warnings).toEqual([
+          expect.stringContaining(
+            `, which is wired for Claude Code, Codex CLI: `
+          ),
+        ]);
+        // the superproject itself gets no such warning
+        const atRoot = await projectStatus(ctx);
+        expect(atRoot.warnings).toEqual([]);
+      } finally {
+        await rm(library, { recursive: true, force: true });
+      }
     });
   });
 

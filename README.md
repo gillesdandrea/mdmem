@@ -104,8 +104,9 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 Agents: `claude-code`, `bob`, `codex`. Memory types: `user`, `feedback`, `project`, `reference`.
 
 `--all` counts an agent as found on this machine when its command is on PATH
-(`claude`, `bob`, `codex`) or its config directory exists (`~/.claude`,
-`~/.bob`, `~/.codex`), and prints the agents it skipped. Naming an agent wires
+(`claude`, `bob`, `codex`) or its config directory exists (`~/.claude`, or
+`$CLAUDE_CONFIG_DIR` when set; `~/.bob`; `~/.codex`, or `$CODEX_HOME` when
+set), and prints the agents it skipped. Naming an agent wires
 it whether it is found or not. `disable --all` likewise acts only on the agents
 found, so wiring committed for an agent not on this machine stays until you name
 it. `--all` and agent names do not combine.
@@ -159,6 +160,12 @@ lists it and exits 1, and `status` prints it as a warning.
 
 - A session-start hook missing for an agent the project is wired for, including
   Codex's global hook when `.codex/config.toml` registers the server.
+  `memory_check` called from Codex leaves the global hook out unless `CODEX_HOME`
+  reaches the server: Codex starts MCP servers with only a few environment
+  variables (`HOME`, `PATH` and the like, not `CODEX_HOME`), so the server
+  cannot tell where Codex's hooks file is. Listing it in the server's table, as
+  `env_vars = ["CODEX_HOME"]` under `[mcp_servers.mdmem]`, brings the check back.
+  `mdmem doctor` and `mdmem status` always check it.
 - Bob's workspace hooks switched off: `disableWorkspaceHooks: true` in
   `.bob/settings.json`.
 - Claude Code's hooks switched off: `disableAllHooks: true` where Claude Code
@@ -180,6 +187,12 @@ The rest are `status` lines only, because they are your choice, depend on where
 - A warning when `status` runs below the checkout's root of a project wired for
   Bob: a Bob launched there reads neither `.bob/settings.json` nor
   `.bob/mcp.json`, so it gets no protocol, no index and no mdmem tools.
+- A warning when `status` runs in a submodule of a project wired for an agent
+  the submodule is not wired for. The submodule shares the project's store, but
+  an agent started there reads the submodule's own files, so it gets no
+  protocol, no index and no mdmem tools, and Claude Code applies the
+  submodule's settings, not the project's, so mdmem's setting that turns its
+  auto memory off does not apply there.
 - A note under each wired agent on folder trust, which decides whether its
   project files run, and for Codex on its one-time review of the global hook:
   mdmem checks neither.

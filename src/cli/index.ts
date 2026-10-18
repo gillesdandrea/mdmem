@@ -445,7 +445,10 @@ async function cmdStatus(): Promise<void> {
   for (const agent of status.agents) {
     printAgent(agent);
   }
-  for (const warning of status.agents.flatMap(({ warnings }) => warnings)) {
+  for (const warning of [
+    ...status.agents.flatMap(({ warnings }) => warnings),
+    ...status.warnings,
+  ]) {
     warn(warning);
   }
   for (const problem of status.wiringProblems) {
@@ -515,7 +518,8 @@ Usage: mdmem <command> [options]
   enable <agent…> | --all [--prefer claude|mdmem]
                             Wire an agent to the shared store, in files meant to be committed;
                             --all wires the agents found on this machine, by their command on
-                            PATH (claude, bob, codex) or config directory (~/.claude, ~/.bob, ~/.codex)
+                            PATH (claude, bob, codex) or config directory ($CLAUDE_CONFIG_DIR or
+                            ~/.claude, ~/.bob, $CODEX_HOME or ~/.codex)
                             (claude-code: import Claude's memories once, turn its auto memory off,
                             add its session-start hooks and the mdmem MCP server; --prefer settles
                             an import conflict by keeping Claude's file or the store's, and needs
@@ -533,7 +537,9 @@ Usage: mdmem <command> [options]
                             change disable makes outside a project)
   status                    Show the store, the check in one line, whether git ignores .memory/, and
                             each agent's wiring, entry by entry, with what mdmem cannot check (folder
-                            trust) and a warning when Bob would be launched below the checkout's root
+                            trust), a warning when Bob would be launched below the checkout's root,
+                            and one in a submodule of a wired project, whose wiring agents started
+                            in the submodule do not get
   path                      Print the store directory
   mcp                       Run the MCP server over stdio (for agent tool-calls)
   hook <agent> <part>       Run by an agent's session-start hook, not typed by hand: print the
