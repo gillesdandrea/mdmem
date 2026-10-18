@@ -8,9 +8,11 @@ import type { WiringEntry } from "./adapter.ts";
 /**
  * mdmem's entries in an agent's JSON config files, merged in and taken out without
  * touching the rest. A file is parsed, changed and written back with the indent
- * it had (two spaces for a new file), its key order, and its final newline kept or
- * left out as it was; a hand-formatted file comes back in that indent, and
- * JSON.stringify normalizes escapes and number forms such as 1.0. A file that is not a JSON object is refused before anything is written.
+ * it had (two spaces for a new file), its key order, its line ending (LF, or CRLF
+ * when it holds one), and its final newline kept or left out as it was; a
+ * hand-formatted file comes back in that indent, and JSON.stringify normalizes
+ * escapes and number forms such as 1.0. A file that is not a JSON object is
+ * refused before anything is written.
  */
 
 export type JsonObject = Record<string, unknown>;
@@ -192,11 +194,14 @@ async function readConfig(root: string, file: string): Promise<ReadConfig> {
   return { path, raw, doc: parsed };
 }
 
-/** `doc` as JSON, with `raw`'s indent and final newline, or a new file's. */
+/** `doc` as JSON, with `raw`'s indent, line ending and final newline, or a new file's. */
 function serialize(doc: JsonObject, raw: string | undefined): string {
   const indent = raw?.match(FIRST_INDENT)?.groups?.indent ?? DEFAULT_INDENT;
   const newline = raw === undefined || raw.length === 0 || raw.endsWith("\n");
-  return `${JSON.stringify(doc, null, indent)}${newline ? "\n" : ""}`;
+  // JSON.stringify escapes the line breaks inside strings, so every one left is the layout's.
+  const eol = raw?.includes("\r\n") ? "\r\n" : "\n";
+  const text = JSON.stringify(doc, null, indent).replaceAll("\n", eol);
+  return `${text}${newline ? eol : ""}`;
 }
 
 function changeEntries(

@@ -83,6 +83,11 @@ const FILES: readonly JsonConfigFile[] = [
   },
 ];
 
+/** How to import again past the marker, worded alike wherever mdmem names it. */
+function reimportAdvice(marker: string): string {
+  return `To import again, delete ${marker} and run \`mdmem enable ${ID}\` again.`;
+}
+
 /** The import's report and warnings, once written, and the marker to record when it imported something. */
 interface ImportOutcome {
   lines: string[];
@@ -112,7 +117,7 @@ async function planImportOnce(
         : `, so --prefer ${options.prefer} was not used`;
     const outcome: ImportOutcome = {
       lines: [
-        `Claude Code's memories were already imported${when}: skipped the import${prefer}. To import again, delete ${marker} and run \`mdmem enable ${ID}\` again.`,
+        `Claude Code's memories were already imported${when}: skipped the import${prefer}. ${reimportAdvice(marker)}`,
       ],
       warnings: [],
     };
@@ -253,6 +258,17 @@ export const claudeCodeAdapter: Adapter = {
       return outsideProjectPlan(TITLE);
     }
     const plan = await planConfigs(ctx.projectRoot, FILES, "remove");
+    const marker = await importMarker(ctx.store, {
+      env: ctx.env,
+      home: ctx.home,
+    });
+    // Auto memory is back on, so Claude may save memories that a later enable,
+    // skipping the import, would leave out.
+    const markerLine = existsSync(marker)
+      ? [
+          `The import marker stays, so a later \`mdmem enable ${ID}\` skips the import and leaves out the memories Claude Code saves meanwhile. ${reimportAdvice(marker)}`,
+        ]
+      : [];
     return {
       write: async () => {
         await writeConfigs(plan);
@@ -261,6 +277,7 @@ export const claudeCodeAdapter: Adapter = {
           actions: [
             ...describePlan(plan, "remove"),
             "The memories imported from Claude Code stay in the store.",
+            ...markerLine,
           ],
           warnings: [],
         };

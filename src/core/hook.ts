@@ -14,7 +14,9 @@ import { locateStore, MemoryStore } from "./store.ts";
  * A hook never fails a session (ADR 0002): outside a project with a store, in a
  * work tree not wired for an agent whose hook is user-wide (Codex), on a resumed
  * session or another event it prints nothing, and any error becomes a one-line
- * context saying why the memory could not be loaded.
+ * context saying why the memory could not be loaded. A payload that does not parse
+ * is reported only where the process's working directory holds a store wired for the
+ * agent; elsewhere the hook prints nothing.
  */
 
 export const HOOK_AGENTS = ["claude-code", "bob", "codex"] as const;
@@ -214,7 +216,7 @@ export interface HookRequest {
   part: string;
   /** Reads the hook payload, the JSON the agent sends on stdin. */
   readPayload: () => Promise<string>;
-  /** Where to resolve the store when the payload names no cwd. */
+  /** Where to resolve the store when the payload names no cwd or does not parse. */
   cwd: string;
   /**
    * Whether the session's work tree (else the store's project directory) is wired
@@ -233,34 +235,58 @@ interface HookContext {
   context: string;
 }
 
+/** The store a session in `cwd` uses, and the agent, or undefined when there is none or the project is not wired for the agent. */
+async function wiredStore(
+  request: HookRequest,
+  cwd: string
+): Promise<{ agent: HookAgent; dir: string } | undefined> {
+  const location = locateStore(cwd);
+  if (!location.exists) {
+    return undefined;
+  }
+  const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
+  // The work tree as `mdmem enable` wires it: the session's own, else the project's directory.
+  const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
+  if (!(await request.projectWired(agent, projectRoot))) {
+    return undefined;
+  }
+  return { agent, dir: location.dir };
+}
+
 /** The context to inject, or undefined when the hook stays silent. */
 async function hookContext(
   request: HookRequest
 ): Promise<HookContext | undefined> {
-  const payload = parsePayload(await request.readPayload());
+  const text = await request.readPayload();
+  let payload: HookPayload;
+  try {
+    payload = parsePayload(text);
+  } catch (error) {
+    // With no payload to name the session's directory, the process's stands in: the error is reported only where the hook would have spoken.
+    if ((await wiredStore(request, request.cwd)) === undefined) {
+      return undefined;
+    }
+    throw error;
+  }
   if (
     payload.hookEventName !== SESSION_START ||
     payload.source === RESUME_SOURCE
   ) {
     return undefined;
   }
-  const cwd = resolve(request.cwd, payload.cwd ?? ".");
-  const location = locateStore(cwd);
-  if (!location.exists) {
+  const wired = await wiredStore(
+    request,
+    resolve(request.cwd, payload.cwd ?? ".")
+  );
+  if (wired === undefined) {
     return undefined;
   }
-  const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
   const part = oneOf(request.part, HOOK_PARTS, "part");
-  // The work tree as `mdmem enable` wires it: the session's own, else the project's directory.
-  const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
-  if (!(await request.projectWired(agent, projectRoot))) {
-    return undefined;
-  }
   const context =
     part === "protocol"
       ? getMemoryProtocol()
-      : await indexContext(new MemoryStore(location.dir));
-  return { agent, context };
+      : await indexContext(new MemoryStore(wired.dir));
+  return { agent: wired.agent, context };
 }
 
 /**

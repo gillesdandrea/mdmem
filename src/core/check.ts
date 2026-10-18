@@ -56,6 +56,14 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** A line break, which no pointer's link can hold: a file name with one never gets a pointer. */
+const NAME_LINE_BREAK_RE = /[\r\n]/u;
+
+/** `file` as a problem names it: quoted when it holds a line break, so the line break shows as \n and the problem stays on one line. */
+function shownFile(file: string): string {
+  return NAME_LINE_BREAK_RE.test(file) ? JSON.stringify(file) : file;
+}
+
 async function loadOne(
   store: MemoryStore,
   file: string
@@ -65,6 +73,14 @@ async function loadOne(
     raw = await store.view(file);
   } catch (error) {
     return { file, problem: messageOf(error) };
+  }
+  if (NAME_LINE_BREAK_RE.test(file)) {
+    // Read all the same, so the check still scans it for secrets.
+    return {
+      file,
+      raw,
+      problem: `${shownFile(file)}: its file name holds a line break, so mdmem skips it and it has no pointer in ${INDEX_FILE} — rename it`,
+    };
   }
   try {
     return { file, raw, memory: parseMemoryFile(file, raw) };
@@ -394,6 +410,9 @@ function brokenWarning(
   { file, problem }: BrokenMemory,
   pointed: ReadonlySet<string>
 ): string {
+  if (NAME_LINE_BREAK_RE.test(file)) {
+    return problem;
+  }
   return pointed.has(file)
     ? `${problem} (it keeps its pointer in ${INDEX_FILE})`
     : `${problem} (it has no pointer in ${INDEX_FILE} until it parses)`;
@@ -481,7 +500,7 @@ function fileProblems(entry: LoadedMemory | BrokenMemory): string[] {
   const secrets = entry.raw === undefined ? [] : findSecrets(entry.raw);
   if (secrets.length > 0) {
     problems.push(
-      `${entry.file}: looks like it holds a secret at ${describeSecrets(secrets)}`
+      `${shownFile(entry.file)}: looks like it holds a secret at ${describeSecrets(secrets)}`
     );
   }
   if (!("memory" in entry)) {

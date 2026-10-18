@@ -50,11 +50,26 @@ function has(doc: TomlObject, entry: TomlTableEntry): boolean {
   return Bun.deepEquals(valueAt(doc, entry.path), entry.value);
 }
 
+const LINE_BREAK_RE = /\r?\n/u;
+
+/**
+ * toml-patch's parse error on one line, so a refusal prints as one (ADR 0002): its
+ * message is the position, a caret diagram of the offending line, then the reason,
+ * and only the position and the reason are kept.
+ */
+function parseErrorLine(message: string): string {
+  const lines = message.split(LINE_BREAK_RE);
+  const [first = ""] = lines;
+  return lines.length > 1 ? `${first} ${lines.at(-1)}` : first;
+}
+
 function parseToml(file: string, raw: string): TomlObject {
   try {
     return parse(raw) as TomlObject;
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
+    const reason = parseErrorLine(
+      error instanceof Error ? error.message : String(error)
+    );
     throw new RefusalError(
       `${file} is not valid TOML (${reason}): fix it, then run the command again`,
       { cause: error }

@@ -131,10 +131,12 @@ part as SessionStart context, each under 10,000 characters: warnings past that a
 counted instead of listed, and an index over its limit is cut short with a note to
 `memory_read` the rest and run a consolidation. It prints nothing outside a
 project with a store, for `codex` in a work tree whose `.codex/config.toml` does
-not register the mdmem server, on a resumed session, or for any event but SessionStart; empty
-stdin counts as an empty payload, so run by hand it prints nothing. It never fails a
-session: an error becomes a one-line context saying why the memory
-could not be loaded, and it exits 0.
+not register the mdmem server, on a resumed session, or for any event but
+SessionStart; empty stdin counts as an empty payload, so run by hand it prints
+nothing. A payload that is not a JSON object is reported only where the working
+directory holds a store wired for the agent; elsewhere the hook prints nothing.
+It never fails a session: an error becomes a one-line context saying why the
+memory could not be loaded, and it exits 0.
 
 `mdmem edit` saves the copy back the way `add` saves a memory, so an edit that is
 not a valid memory, holds a secret, or races another change to the memory is
@@ -206,10 +208,14 @@ The rest are `status` lines only, because they are your choice, depend on where
    repository's worktrees) into `.memory/`, backing the store up first. A file
    that exists on both sides with different content stops the command before
    anything is written; it lists each conflict, and `--prefer claude` or
-   `--prefer mdmem` settles them. The import runs once per user and repository:
-   mdmem records it in `~/.claude/projects/<key>/mdmem-imported`, so a later
-   `enable` skips it, neither refusing again over files settled with `--prefer`
-   nor bringing back a memory you have deleted since. The skip line names the
+   `--prefer mdmem` settles them. To keep both sides, have an agent merge
+   Claude's versions into `.memory/` (`mdmem consolidate`, pointed at Claude's
+   directories), then run `enable` again with `--prefer mdmem`: Claude's
+   directories never change, so their files still differ from the merged ones.
+   The import runs once per user and repository: mdmem records it in
+   `~/.claude/projects/<key>/mdmem-imported`, so a later `enable` skips it,
+   neither refusing again over files settled with `--prefer` nor bringing back
+   a memory you have deleted since. The skip line names the
    marker: delete it to import again. A `--prefer` given then is not used, and
    the line says so.
 2. It merges these entries into `.claude/settings.json`, leaving its other
@@ -227,8 +233,11 @@ Commit both files: they wire Claude Code for everyone working in the
 repository, and everyone then needs `mdmem` on PATH. `mdmem disable claude-code`
 removes exactly these entries, along with an object or array they leave empty
 (an empty `"permissions": {}` you had before goes too), and deletes a file that
-held nothing else; the imported memories stay in `.memory/`. `mdmem status` lists each entry as present
-or missing.
+held nothing else; the imported memories stay in `.memory/`. The import marker
+stays too, so a later `enable` skips the import and leaves out the memories
+Claude saved while its auto memory was back on: `disable` names the marker, and
+deleting it makes the next `enable` import again. `mdmem status` lists each
+entry as present or missing.
 
 Claude Code ignores the `permissions.allow` entry in `.claude/settings.json`
 until you accept the folder's trust dialog once.

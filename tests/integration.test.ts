@@ -226,7 +226,7 @@ describe("claude-code wiring", () => {
     }
   });
 
-  test("disable deletes a file that held only mdmem's entries, and leaves the imported memories", async () => {
+  test("disable deletes a file that held only mdmem's entries, leaves the imported memories, and names the import marker it keeps", async () => {
     const { root, ctx, store } = await tempProject();
     try {
       await claudeMemory(ctx, root, "b.md", memoryText("b", "From Claude."));
@@ -241,6 +241,10 @@ describe("claude-code wiring", () => {
       expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
       expect(existsSync(join(root, MCP_CONFIG))).toBe(false);
       expect(existsSync(join(store.root, "b.md"))).toBe(true);
+      const marker = await importMarker(store, ctx);
+      expect(disabled.actions.at(-1)).toBe(
+        `The import marker stays, so a later \`mdmem enable claude-code\` skips the import and leaves out the memories Claude Code saves meanwhile. To import again, delete ${marker} and run \`mdmem enable claude-code\` again.`
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -368,6 +372,26 @@ describe("bob wiring", () => {
       );
       expect(existsSync(join(root, BOB_SETTINGS))).toBe(false);
       expect(existsSync(join(root, BOB_MCP))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("enable and disable keep a CRLF .bob/settings.json in CRLF", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      const settings = join(root, BOB_SETTINGS);
+      await mkdir(dirname(settings));
+      const before = '{\r\n  "theme": "dark"\r\n}\r\n';
+      await writeFile(settings, before, "utf-8");
+
+      await wire(bobAdapter.enable(ctx, {}));
+      const enabled = (await readText(settings)) ?? "";
+      expect(enabled).toContain('"hooks"');
+      expect(enabled.replaceAll("\r\n", "")).not.toContain("\n");
+
+      await wire(bobAdapter.disable(ctx, {}));
+      expect(await readText(settings)).toBe(before);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -594,7 +618,12 @@ describe("codex wiring", () => {
       toml: "model = \n",
     });
     try {
-      await expect(codexAdapter.enable(ctx, {})).rejects.toThrow(RefusalError);
+      const refused = codexAdapter.enable(ctx, {});
+      await expect(refused).rejects.toThrow(RefusalError);
+      // One line, as the CLI prints a refusal: toml-patch's caret diagram is left out.
+      await expect(refused).rejects.toThrow(
+        `${CODEX_CONFIG} is not valid TOML (Error parsing TOML (1, 1): Expected value, reached EOF): fix it, then run the command again`
+      );
       expect(existsSync(hooksPath)).toBe(false);
       expect(await readText(join(root, CODEX_CONFIG))).toBe("model = \n");
     } finally {
@@ -667,6 +696,7 @@ describe("codex wiring", () => {
       expect(status.wired).toBe(false);
       expect(status.warnings).toHaveLength(2);
       expect(status.warnings[0]).toContain(CODEX_CONFIG);
+      expect(status.warnings[0]).not.toContain("\n");
       expect(status.warnings[1]).toContain("hooks.json");
 
       await writeFile(join(root, CODEX_CONFIG), 'model = "x"\n', "utf-8");
@@ -1507,6 +1537,26 @@ describe("hook", () => {
             err: "",
           });
         }
+      });
+    } finally {
+      await rm(bare, { recursive: true, force: true });
+    }
+  });
+
+  test("a payload that does not parse prints nothing outside a project, and in a project not wired for Codex", async () => {
+    const bare = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
+    try {
+      expect(runHookCli(bare, "index", "[]")).toEqual({
+        code: 0,
+        out: "",
+        err: "",
+      });
+      await withCliProject((root) => {
+        expect(runHookCli(root, "index", "[]", "codex")).toEqual({
+          code: 0,
+          out: "",
+          err: "",
+        });
       });
     } finally {
       await rm(bare, { recursive: true, force: true });

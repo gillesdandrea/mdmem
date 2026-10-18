@@ -286,7 +286,7 @@ function resolveFile(
       kind: "conflict",
       problem:
         stored === undefined
-          ? `${file}: Claude's directories hold different versions (${where}); no --prefer settles it`
+          ? `${file}: Claude's directories hold different versions (${where}); no --prefer settles it until the store holds its own ${file}`
           : `${file}: Claude's directories hold different versions (${where}), not all matching ${storePath(store, file)}; only --prefer mdmem settles it, keeping the store's file`,
     };
   }
@@ -312,7 +312,8 @@ function refusal(
       `Refused to import Claude Code's memories: ${conflicts.length} file(s) conflict, and nothing was changed.`,
       ...conflicts.map((conflict) => `  - ${conflict}`),
       "Ways past it:",
-      `  - have an agent resolve them: run \`mdmem consolidate\` and point it at ${[store.root, ...sources].join(", ")}`,
+      // Claude's directories are never changed, so only --prefer mdmem gets past a conflict an agent merged.
+      `  - have an agent merge Claude's versions into the store: run \`mdmem consolidate\` and point it at ${sources.join(", ")}; then run \`mdmem enable claude-code --prefer mdmem\` to keep the merged files`,
       "  - or pass the --prefer a conflict names: --prefer claude takes Claude's file, --prefer mdmem keeps the store's, on every conflict it settles",
     ].join("\n")
   );
