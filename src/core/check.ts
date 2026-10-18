@@ -390,6 +390,12 @@ export async function refreshIndex(
 export interface Check {
   memoryCount: number;
   problems: string[];
+  /** Of the problems, how many memories do not parse. */
+  unparseable: number;
+  /** Of the problems, whether the index is stale against the memory files. */
+  staleIndex: boolean;
+  /** Of the problems, whether the index is over its limit. */
+  indexOverLimit: boolean;
 }
 
 const LINK_RE = /\[\[(?<name>[a-z0-9_-]+)\]\]/gu;
@@ -477,37 +483,33 @@ function staleIndexProblems(
   );
 }
 
-/** Problems with the index: stale against the memory files, or over its limit. */
-async function indexProblems(
-  store: MemoryStore,
-  files: ReadonlySet<string>,
-  memories: readonly LoadedMemory[]
-): Promise<string[]> {
-  const current = await currentIndex(store);
-  const problems = staleIndexProblems(current, files, memories);
-  const capacity = indexCapacity(current);
-  if (capacity?.over) {
-    problems.push(capacity.message);
-  }
-  return problems;
-}
-
 /** Run a Check over the store: every problem with its memories and its index. It never writes. */
 export async function checkStore(store: MemoryStore): Promise<Check> {
   const entries = await loadFiles(store);
-  const { memories } = splitLoad(entries);
+  const { memories, broken } = splitLoad(entries);
   const files = new Set(entries.map(({ file }) => file));
   // A link resolves to a memory's name or to a memory file's name without .md.
   const known = new Set([
     ...memories.map(({ memory }) => memory.frontmatter.name),
     ...[...files].map((file) => file.slice(0, -".md".length)),
   ]);
+  const current = await currentIndex(store);
+  const stale = staleIndexProblems(current, files, memories);
+  const capacity = indexCapacity(current);
+  const indexOverLimit = capacity?.over ?? false;
   const problems = [
     ...entries.flatMap(fileProblems),
     ...memories.flatMap((loaded) => memoryProblems(loaded, known)),
-    ...(await indexProblems(store, files, memories)),
+    ...stale,
+    ...(indexOverLimit && capacity ? [capacity.message] : []),
   ];
-  return { memoryCount: entries.length, problems };
+  return {
+    memoryCount: entries.length,
+    problems,
+    unparseable: broken.length,
+    staleIndex: stale.length > 0,
+    indexOverLimit,
+  };
 }
 
 /** The index as a session starts with it, and what the session needs warning of. */
@@ -538,6 +540,39 @@ export async function sessionIndex(store: MemoryStore): Promise<SessionIndex> {
 
 function countMemories(count: number): string {
   return count === 1 ? "1 memory" : `${count} memories`;
+}
+
+/**
+ * A Check in one line, as `mdmem status` prints it: no problems, or how many, naming
+ * the ones that break sharing (unparseable memories, a stale index, an index over
+ * its limit), and where to see them all.
+ */
+export function checkSummary({
+  problems,
+  unparseable,
+  staleIndex,
+  indexOverLimit,
+}: Check): string {
+  if (problems.length === 0) {
+    return "✓ no problems";
+  }
+  const kinds = [
+    ...(unparseable > 0
+      ? [
+          unparseable === 1
+            ? "1 unparseable memory"
+            : `${unparseable} unparseable memories`,
+        ]
+      : []),
+    ...(staleIndex ? [`a stale ${INDEX_FILE}`] : []),
+    ...(indexOverLimit
+      ? [
+          `${INDEX_FILE} over its ${INDEX_MAX_CHARS.toLocaleString("en-US")}-character limit`,
+        ]
+      : []),
+  ];
+  const among = kinds.length === 0 ? "" : `, among them ${kinds.join(", ")}`;
+  return `${problems.length} problem(s)${among} — \`mdmem doctor\` lists them`;
 }
 
 /** A Check as both surfaces print it: the problems one per line, or the memory count and no problems. */

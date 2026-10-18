@@ -1,4 +1,7 @@
+import { realpath } from "node:fs/promises";
+
 import { HOOK_PARTS } from "../core/hook.ts";
+import { missingHooksProblem } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -8,6 +11,7 @@ import type {
 import {
   arrayItemEntry,
   configStatus,
+  configValue,
   describePlan,
   planConfigs,
   valueEntry,
@@ -15,6 +19,7 @@ import {
 } from "./json-config.ts";
 import type { JsonConfigFile } from "./json-config.ts";
 
+const ID = "bob";
 const TITLE = "IBM Bob";
 
 // IBM Bob is wired through workspace files committed with the repository (ADR 0003):
@@ -45,16 +50,16 @@ const HOOK_GROUP = {
   })),
 };
 
+const HOOK_ENTRY = arrayItemEntry(
+  `SessionStart hooks ${commands.map((command) => `"${command}"`).join(", ")}`,
+  ["hooks", "SessionStart"],
+  HOOK_GROUP
+);
+
 const FILES: readonly JsonConfigFile[] = [
   {
     file: SETTINGS,
-    entries: [
-      arrayItemEntry(
-        `SessionStart hooks ${commands.map((command) => `"${command}"`).join(", ")}`,
-        ["hooks", "SessionStart"],
-        HOOK_GROUP
-      ),
-    ],
+    entries: [HOOK_ENTRY],
   },
   {
     file: MCP_CONFIG,
@@ -62,8 +67,42 @@ const FILES: readonly JsonConfigFile[] = [
   },
 ];
 
+/** `disableWorkspaceHooks: true` in the workspace settings drops every workspace hook, mdmem's included. */
+async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
+  const disabled = await configValue(ctx.projectRoot, SETTINGS, [
+    "disableWorkspaceHooks",
+  ]);
+  return disabled === true
+    ? [
+        `${TITLE}: ${SETTINGS} sets disableWorkspaceHooks to true, so Bob runs none of the workspace's hooks and its sessions start without the memory protocol and the index — remove it`,
+      ]
+    : [];
+}
+
+/** The real path of `path`, or `path` itself when it cannot be resolved. */
+async function realOr(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch {
+    return path;
+  }
+}
+
+/** Run below the checkout's root, where a Bob launched here reads none of the workspace files. */
+async function belowRootWarning(ctx: AdapterContext): Promise<string[]> {
+  const [cwd, root] = await Promise.all([
+    realOr(ctx.cwd),
+    realOr(ctx.projectRoot),
+  ]);
+  return cwd === root
+    ? []
+    : [
+        `${TITLE} reads ${SETTINGS} (the session-start hooks) and ${MCP_CONFIG} (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets no memory protocol, no index and no mdmem tools. Launch Bob at ${root}.`,
+      ];
+}
+
 export const bobAdapter: Adapter = {
-  id: "bob",
+  id: ID,
   command: "bob",
   configDir: ".bob",
   title: TITLE,
@@ -93,11 +132,39 @@ export const bobAdapter: Adapter = {
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const { entries, warnings } = await configStatus(ctx.projectRoot, FILES);
+    const enabled = entries.some(({ present }) => present);
+    if (!enabled) {
+      return {
+        title: TITLE,
+        wired: false,
+        enabled,
+        entries,
+        problems: [],
+        warnings,
+        notes: [],
+      };
+    }
+    const [disabledHooks, belowRoot] = await Promise.all([
+      disabledHooksProblem(ctx),
+      belowRootWarning(ctx),
+    ]);
     return {
       title: TITLE,
       wired: entries.every(({ present }) => present),
+      enabled,
       entries,
-      warnings,
+      problems: [
+        ...missingHooksProblem(
+          { id: ID, title: TITLE },
+          entries,
+          ({ label }) => (label === HOOK_ENTRY.label ? HOOK_PARTS.length : 0)
+        ),
+        ...disabledHooks,
+      ],
+      warnings: [...warnings, ...belowRoot],
+      notes: [
+        `${TITLE} runs workspace hooks and MCP servers only in a trusted folder: mdmem does not check whether this one is.`,
+      ],
     };
   },
 };

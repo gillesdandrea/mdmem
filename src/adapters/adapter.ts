@@ -19,6 +19,8 @@ export interface AdapterContext {
   env: Record<string, string | undefined>;
   /** The home directory agents keep their user-wide files under. */
   home: string;
+  /** The directory mdmem runs in: an agent launched there reads only the files it finds from there. */
+  cwd: string;
 }
 
 export interface EnableOptions {
@@ -52,9 +54,41 @@ export interface AgentStatus {
   title: string;
   /** Every entry is present. */
   wired: boolean;
+  /** The project is wired for the agent, wholly or in part: some of mdmem's own entries for the project are present. */
+  enabled: boolean;
   entries: WiringEntry[];
-  /** A file that could not be read, so its entries count as missing. */
+  /** What keeps the wiring of an enabled agent from working, as far as mdmem can see: the check reports each one. */
+  problems: string[];
+  /** Status only, as warnings: a file that could not be read, so its entries count as missing, or a state that depends on where status runs. */
   warnings: string[];
+  /** Status only, under the agent: what the agent decides that mdmem cannot read, such as folder trust. */
+  notes: string[];
+}
+
+/**
+ * The problem of an enabled agent whose session-start hooks are missing: its
+ * sessions start without the protocol, the index or both. `hooksIn` says how many
+ * hooks an entry holds, 0 for an entry that is not a hook.
+ */
+export function missingHooksProblem(
+  adapter: Pick<Adapter, "id" | "title">,
+  entries: readonly WiringEntry[],
+  hooksIn: (entry: WiringEntry) => number
+): string[] {
+  const missing = entries.filter(
+    (entry) => hooksIn(entry) > 0 && !entry.present
+  );
+  if (missing.length === 0) {
+    return [];
+  }
+  const where = missing.map(({ label, file }) => `${label} (${file})`);
+  const injected =
+    missing.reduce((count, entry) => count + hooksIn(entry), 0) === 1
+      ? "what that hook injects"
+      : "what those hooks inject";
+  return [
+    `${adapter.title}: missing ${where.join(", ")}, so its sessions start without ${injected} — run \`mdmem enable ${adapter.id}\``,
+  ];
 }
 
 export interface Adapter {

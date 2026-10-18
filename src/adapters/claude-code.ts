@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookPart } from "../core/hook.ts";
@@ -9,6 +9,7 @@ import {
   importClaudeMemories,
   importMarker,
 } from "../core/import.ts";
+import { missingHooksProblem } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -19,6 +20,7 @@ import type {
 import {
   arrayItemEntry,
   configStatus,
+  configValue,
   describePlan,
   planConfigs,
   valueEntry,
@@ -26,17 +28,28 @@ import {
 } from "./json-config.ts";
 import type { JsonConfigFile } from "./json-config.ts";
 
+const ID = "claude-code";
 const TITLE = "Claude Code";
 
 // Claude Code is wired through files committed with the repository (ADR 0003): its
 // auto memory off, two session-start hooks injecting the protocol and the index, and
 // the mdmem MCP server with permission for its tools.
 const SETTINGS = ".claude/settings.json";
+// The user's own project settings, which override the committed ones.
+const SETTINGS_LOCAL = ".claude/settings.local.json";
 const MCP_CONFIG = ".mcp.json";
 // A new session, /clear and compaction; never a resume, which already holds the injection.
 const HOOK_MATCHER = "startup|clear|compact";
 const SERVER = { type: "stdio", command: "mdmem", args: ["mcp"] };
 const TOOLS_PERMISSION = "mcp__mdmem";
+const AUTO_MEMORY_KEY = "autoMemoryEnabled";
+const AUTO_MEMORY_LABEL = `${AUTO_MEMORY_KEY}: false`;
+// A true value turns auto memory off whatever the settings say, a false one forces it
+// on; Claude Code reads the value trimmed, ignoring case (verified in Claude Code 2.1.302).
+const AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY";
+const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
+const ENV_FALSE = new Set(["0", "false", "no", "off"]);
+const DISABLE_HOOKS_KEY = "disableAllHooks";
 
 function hookEntry(part: HookPart) {
   const command = `mdmem hook claude-code ${part}`;
@@ -47,12 +60,15 @@ function hookEntry(part: HookPart) {
   );
 }
 
+const HOOK_ENTRIES = HOOK_PARTS.map(hookEntry);
+const HOOK_LABELS = new Set(HOOK_ENTRIES.map(({ label }) => label));
+
 const FILES: readonly JsonConfigFile[] = [
   {
     file: SETTINGS,
     entries: [
-      valueEntry("autoMemoryEnabled: false", ["autoMemoryEnabled"], false),
-      ...HOOK_PARTS.map(hookEntry),
+      valueEntry(AUTO_MEMORY_LABEL, [AUTO_MEMORY_KEY], false),
+      ...HOOK_ENTRIES,
       arrayItemEntry(
         `permissions.allow "${TOOLS_PERMISSION}"`,
         ["permissions", "allow"],
@@ -99,8 +115,76 @@ async function importOnce(
   };
 }
 
+/** Claude Code's user settings file, in its config directory. */
+function userSettings(ctx: AdapterContext): string {
+  return join(
+    ctx.env.CLAUDE_CONFIG_DIR || join(ctx.home, ".claude"),
+    "settings.json"
+  );
+}
+
+/**
+ * A setting as Claude Code reads it first: in the local project settings, then the
+ * committed ones, then the user's, with the file that sets it; undefined when none
+ * does. Managed settings and --settings are not read.
+ */
+async function claudeSetting(
+  ctx: AdapterContext,
+  key: string
+): Promise<{ file: string; value: unknown } | undefined> {
+  const files = [SETTINGS_LOCAL, SETTINGS, userSettings(ctx)];
+  const values = await Promise.all(
+    files.map((file) => configValue(ctx.projectRoot, file, [key]))
+  );
+  const first = values.findIndex((value) => value !== undefined);
+  const file = files[first];
+  return file === undefined ? undefined : { file, value: values[first] };
+}
+
+/**
+ * Claude Code's auto memory still on, which makes Claude save to its own directory
+ * beside the store: forced on by the environment, or autoMemoryEnabled not false
+ * where Claude Code reads it first.
+ */
+async function autoMemoryProblem(ctx: AdapterContext): Promise<string[]> {
+  const on = "Claude Code's auto memory is on";
+  const consequence =
+    "so Claude also saves memories to its own directory, which no other agent reads";
+  const forced = ctx.env[AUTO_MEMORY_ENV]?.trim().toLowerCase();
+  if (forced !== undefined && ENV_FALSE.has(forced)) {
+    return [
+      `${on}: ${AUTO_MEMORY_ENV}=${ctx.env[AUTO_MEMORY_ENV]} in the environment forces it on, ${consequence} — unset it`,
+    ];
+  }
+  if (forced !== undefined && ENV_TRUE.has(forced)) {
+    return [];
+  }
+  const setting = await claudeSetting(ctx, AUTO_MEMORY_KEY);
+  if (setting?.value === false) {
+    return [];
+  }
+  if (setting?.file === SETTINGS_LOCAL) {
+    return [
+      `${on}: ${SETTINGS_LOCAL} sets ${AUTO_MEMORY_KEY} to ${JSON.stringify(setting.value)}, overriding ${SETTINGS}, ${consequence} — remove it from ${SETTINGS_LOCAL}`,
+    ];
+  }
+  return [
+    `${on}: ${AUTO_MEMORY_KEY} is not false in ${SETTINGS}, ${consequence} — run \`mdmem enable claude-code\``,
+  ];
+}
+
+/** `disableAllHooks: true` where Claude Code reads it first drops every hook, mdmem's included. */
+async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
+  const setting = await claudeSetting(ctx, DISABLE_HOOKS_KEY);
+  return setting?.value === true
+    ? [
+        `${TITLE}: ${setting.file} sets ${DISABLE_HOOKS_KEY} to true, so Claude Code runs no hooks and its sessions start without the memory protocol and the index — remove it`,
+      ]
+    : [];
+}
+
 export const claudeCodeAdapter: Adapter = {
-  id: "claude-code",
+  id: ID,
   command: "claude",
   configDir: ".claude",
   title: TITLE,
@@ -148,11 +232,33 @@ export const claudeCodeAdapter: Adapter = {
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const { entries, warnings } = await configStatus(ctx.projectRoot, FILES);
+    // autoMemoryEnabled: false alone may be the user's own choice, not mdmem's wiring.
+    const enabled = entries.some(
+      ({ label, present }) => present && label !== AUTO_MEMORY_LABEL
+    );
+    const problems = enabled
+      ? [
+          ...missingHooksProblem(
+            { id: ID, title: TITLE },
+            entries,
+            ({ label }) => (HOOK_LABELS.has(label) ? 1 : 0)
+          ),
+          ...(await disabledHooksProblem(ctx)),
+          ...(await autoMemoryProblem(ctx)),
+        ]
+      : [];
     return {
       title: TITLE,
       wired: entries.every(({ present }) => present),
+      enabled,
       entries,
+      problems,
       warnings,
+      notes: enabled
+        ? [
+            `Claude Code runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,
+          ]
+        : [],
     };
   },
 };

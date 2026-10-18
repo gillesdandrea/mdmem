@@ -325,3 +325,17 @@ export async function configStatus(
   );
   return { entries, warnings };
 }
+
+/** The value at `path` in a JSON config file; undefined when the file or the key is missing, or the file cannot be read as a JSON object. */
+export async function configValue(
+  root: string,
+  file: string,
+  path: readonly string[]
+): Promise<unknown> {
+  try {
+    const { doc } = await readConfig(root, file);
+    return valueAt(doc, path);
+  } catch {
+    return undefined;
+  }
+}

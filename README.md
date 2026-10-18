@@ -89,10 +89,10 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
-| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer), index over 9,500 characters, the size a session-start hook can inject |
+| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring (see [What status and the check report](#what-status-and-the-check-report)) |
 | `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--all` wires the agents found on this machine (see below). `--prefer` settles a Claude Code import conflict. |
 | `mdmem disable <agent…> \| --all [--global]` | Remove exactly mdmem's entries from an agent's files (leaves the store); `--all` takes the agents found on this machine. Codex's hook in `~/.codex/hooks.json` stays unless `--global`. |
-| `mdmem status` | Show the store and each agent's wiring, entry by entry (present or missing) |
+| `mdmem status` | Show the store, the check in one line, and each agent's wiring, entry by entry (present or missing), with the warnings and notes below |
 | `mdmem path` | Print the store directory |
 | `mdmem mcp` | Run the MCP server over stdio |
 | `mdmem hook <agent> <part>` | Run by an agent's session-start hook, not typed by hand (see below) |
@@ -127,11 +127,47 @@ kept so the edit is not lost. With no `$VISUAL`/`$EDITOR` set, `mdmem edit`
 prints the memory's path instead of opening it — edit it by hand, then run
 `mdmem reindex`.
 
-A memory that does not parse locks no one out. `search` and `status` answer
-from the memories that do and warn about the broken one on stderr. `reindex` and
+A memory that does not parse locks no one out. `search` answers from the
+memories that do and warns about the broken one on stderr; `status` counts the
+memories that do and counts the broken ones in its `Check:` line. `reindex` and
 every save or delete update the index anyway: the broken memory keeps the pointer
 it has, gets none if it has none, and each one is named in a warning. `doctor`
 reports it with the store's other problems.
+
+## What status and the check report
+
+Hooks that do not run leave an agent without the protocol and the index, and
+mdmem has no fallback, so `mdmem status` and the check (`mdmem doctor`,
+`memory_check`) report the states that silently break sharing. A state that
+breaks saving or injection and that you can fix is a check problem: `doctor`
+lists it and exits 1, and `status` prints it as a warning.
+
+- A session-start hook missing for an agent the project is wired for, including
+  Codex's global hook when `.codex/config.toml` registers the server.
+- Bob's workspace hooks switched off: `disableWorkspaceHooks: true` in
+  `.bob/settings.json`.
+- Claude Code's hooks switched off: `disableAllHooks: true` where Claude Code
+  reads it first, as below.
+- Claude Code's auto memory still on in a project wired for Claude:
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY` set to `0`, `false`, `no` or `off` in the
+  environment, or `autoMemoryEnabled`
+  not `false` where Claude Code reads it first (`.claude/settings.local.json`,
+  then `.claude/settings.json`, then your user settings). Managed settings are
+  not read.
+- `mdmem` not on PATH while an agent is wired: its hooks and MCP server run it.
+
+The rest are `status` lines only, because they are your choice, depend on where
+`status` runs, or are something mdmem does not read:
+
+- `Check:`, the check in one line: no problems, or how many, naming unparseable
+  memories, a stale `MEMORY.md` and a `MEMORY.md` over its limit.
+- A note when git does not ignore `.memory/`. mdmem never edits `.gitignore`.
+- A warning when `status` runs below the checkout's root of a project wired for
+  Bob: a Bob launched there reads neither `.bob/settings.json` nor
+  `.bob/mcp.json`, so it gets no protocol, no index and no mdmem tools.
+- A note under each wired agent on folder trust, which decides whether its
+  project files run, and for Codex on its one-time review of the global hook:
+  mdmem checks neither.
 
 ## Claude Code
 
@@ -295,7 +331,7 @@ server with the same memory-store tools as Claude Code, plus three of its own:
 | `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` is refused. |
 | `memory_search` | List the memories containing a query, by path with their description. A memory that does not parse is skipped and named in a warning. |
-| `memory_check` | Check the store as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems. |
+| `memory_check` | Check the store and the agents' wiring as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems. |
 
 `store` is optional everywhere: leave it out to use the project's store. An
 unknown store id is an error that names the valid one. `memory_write` and

@@ -1,23 +1,17 @@
 #!/usr/bin/env bun
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 
-import type { AdapterContext } from "../adapters/index.ts";
+import type { AdapterContext, AgentStatus } from "../adapters/index.ts";
+import { adapterIds, findAdapters, getAdapter } from "../adapters/index.ts";
 import {
-  adapterIds,
-  findAdapters,
-  getAdapter,
-  listAdapters,
-} from "../adapters/index.ts";
-import {
-  checkStore,
-  formatCheck,
-  loadMemories,
-  reindex,
-} from "../core/check.ts";
-import { workTreeRoot } from "../core/git.ts";
+  adapterContext,
+  checkProject,
+  projectStatus,
+} from "../adapters/report.ts";
+import { checkSummary, formatCheck, reindex } from "../core/check.ts";
 import { HOOK_AGENTS, HOOK_PARTS, runHook } from "../core/hook.ts";
 import { IMPORT_PREFERENCES } from "../core/import.ts";
 import type { ImportPreference } from "../core/import.ts";
@@ -76,17 +70,8 @@ function resolveStore(): Resolved {
   return { store, storeDir: store.root };
 }
 
-/**
- * The adapters wire the working directory's own work tree (a linked worktree or
- * submodule, not the checkout holding the store), else the store's project directory.
- */
 function context(resolved: Resolved): AdapterContext {
-  return {
-    projectRoot: workTreeRoot(process.cwd()) ?? dirname(resolved.storeDir),
-    store: resolved.store,
-    env: process.env,
-    home: homedir(),
-  };
+  return adapterContext(process.cwd(), resolved.store);
 }
 
 /** `enable --prefer`'s value, which settles an import conflict. */
@@ -380,34 +365,42 @@ async function cmdWiring(
   }
 }
 
+function printAgent(status: AgentStatus): void {
+  print(`  ${status.wired ? "✓" : "·"} ${status.title}`);
+  for (const { label, file, present } of status.entries) {
+    print(`      ${present ? "✓" : "· missing:"} ${label} (${file})`);
+  }
+  for (const note of status.notes) {
+    print(`      ${note}`);
+  }
+}
+
 async function cmdStatus(): Promise<void> {
   const resolved = resolveStore();
+  const status = await projectStatus(context(resolved));
   print(`Store: ${resolved.storeDir}`);
-  // Counts the memories that parse; each broken one is a warning.
-  const { memories, broken } = await loadMemories(resolved.store);
-  print(`Memories: ${memories.length}`);
-  print("Agents:");
-  const ctx = context(resolved);
-  const statuses = await Promise.all(
-    listAdapters().map((adapter) => adapter.status(ctx))
-  );
-  for (const status of statuses) {
-    print(`  ${status.wired ? "✓" : "·"} ${status.title}`);
-    for (const { label, file, present } of status.entries) {
-      print(`      ${present ? "✓" : "· missing:"} ${label} (${file})`);
-    }
+  // Counts the memories that parse; the check's line counts the broken ones.
+  print(`Memories: ${status.memoryCount}`);
+  print(`Check: ${checkSummary(status.check)}`);
+  if (status.ignored === false) {
+    print(
+      `Note: git does not ignore ${STORE_DIR}/; ignoring or committing it is your choice.`
+    );
   }
-  for (const warning of statuses.flatMap(({ warnings }) => warnings)) {
+  print("Agents:");
+  for (const agent of status.agents) {
+    printAgent(agent);
+  }
+  for (const warning of status.agents.flatMap(({ warnings }) => warnings)) {
     warn(warning);
   }
-  for (const { problem } of broken) {
+  for (const problem of status.wiringProblems) {
     warn(problem);
   }
 }
 
 async function cmdDoctor(): Promise<void> {
-  const { store } = resolveStore();
-  const check = await checkStore(store);
+  const check = await checkProject(context(resolveStore()));
   print(formatCheck(check));
   if (check.problems.length > 0) {
     process.exit(1);
@@ -458,6 +451,8 @@ Usage: mdmem <command> [options]
   consolidate               Print a prompt that has an agent consolidate the store
   doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
                             long pointers, dangling links, stale index, index over its size limit)
+                            and the agents' wiring (a session-start hook missing or switched off,
+                            Claude Code's auto memory still on, mdmem not on PATH)
   enable <agent…> | --all [--prefer claude|mdmem]
                             Wire an agent to the shared store, in files meant to be committed;
                             --all wires the agents found on this machine, by their command on
@@ -473,7 +468,9 @@ Usage: mdmem <command> [options]
                             --all takes the agents found on this machine;
                             codex keeps its global hook, silent outside a project with a store, unless
                             --global, which also removes it from ~/.codex/hooks.json
-  status                    Show the store and each agent's wiring, entry by entry
+  status                    Show the store, the check in one line, whether git ignores .memory/, and
+                            each agent's wiring, entry by entry, with what mdmem cannot check (folder
+                            trust) and a warning when Bob would be launched below the checkout's root
   path                      Print the store directory
   mcp                       Run the MCP server over stdio (for agent tool-calls)
   hook <agent> <part>       Run by an agent's session-start hook, not typed by hand: print the

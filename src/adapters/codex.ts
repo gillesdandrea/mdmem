@@ -1,6 +1,7 @@
 import { join, resolve } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
+import { missingHooksProblem } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -19,6 +20,7 @@ import type { JsonConfigFile } from "./json-config.ts";
 import { planTomlTable, tomlTableStatus } from "./toml-config.ts";
 import type { TomlTableEntry } from "./toml-config.ts";
 
+const ID = "codex";
 const TITLE = "Codex CLI";
 
 // Codex CLI's session-start hook is global (ADR 0003): Codex pins a hook's approval
@@ -76,7 +78,7 @@ function hooksFile(ctx: AdapterContext): JsonConfigFile {
 }
 
 export const codexAdapter: Adapter = {
-  id: "codex",
+  id: ID,
   command: "codex",
   configDir: ".codex",
   title: TITLE,
@@ -143,10 +145,25 @@ export const codexAdapter: Adapter = {
       { label: SERVER_ENTRY.label, file: MCP_CONFIG, present: server.present },
       ...hooks.entries,
     ];
+    // The global hook alone does not wire this project: it is shared by every project.
+    const enabled = server.present;
     return {
       title: TITLE,
       wired: entries.every(({ present }) => present),
+      enabled,
       entries,
+      problems: enabled
+        ? missingHooksProblem(
+            { id: ID, title: TITLE },
+            hooks.entries,
+            () => HOOK_PARTS.length
+          )
+        : [],
+      notes: enabled
+        ? [
+            `${TITLE} reads ${MCP_CONFIG} only in a trusted folder, and runs the global hook only once you have reviewed it: mdmem does not check either.`,
+          ]
+        : [],
       warnings: [
         ...(server.warning === undefined ? [] : [server.warning]),
         ...hooks.warnings,

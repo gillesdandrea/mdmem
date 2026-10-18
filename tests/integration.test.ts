@@ -19,7 +19,12 @@ import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
 import type { Adapter, AdapterContext } from "../src/adapters/index.ts";
-import { reindex } from "../src/core/check.ts";
+import {
+  adapterContext,
+  checkProject,
+  projectStatus,
+} from "../src/adapters/report.ts";
+import { checkSummary, reindex } from "../src/core/check.ts";
 import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
 import { claudeProjectDir } from "../src/core/import.ts";
 import { serializeMemory } from "../src/core/memory.ts";
@@ -47,7 +52,11 @@ async function tempProject(): Promise<{
   await reindex(store);
   const env = { CLAUDE_CONFIG_DIR: join(root, "claude-config") };
   const home = join(root, "home");
-  return { root, ctx: { projectRoot: root, store, env, home }, store };
+  return {
+    root,
+    ctx: { projectRoot: root, store, env, home, cwd: root },
+    store,
+  };
 }
 
 function memoryText(name: string, body: string): string {
@@ -791,6 +800,11 @@ describe("cli", () => {
   test("init, add, status, enable run end-to-end", async () => {
     const root = await mkdtemp(join(tmpdir(), "mdmem-cli-"));
     try {
+      // mdmem on PATH, so the check does not depend on whether this machine linked it
+      const bin = join(root, "bin");
+      await mkdir(bin);
+      await writeFile(join(bin, "mdmem"), "#!/bin/sh\n", "utf-8");
+      await chmod(join(bin, "mdmem"), 0o755);
       const run = (...args: string[]) => {
         const proc = Bun.spawnSync(["bun", CLI, ...args], {
           cwd: root,
@@ -801,6 +815,8 @@ describe("cli", () => {
             VISUAL: "true",
             CLAUDE_CONFIG_DIR: join(root, "claude-config"),
             CODEX_HOME: join(root, "codex-home"),
+            PATH: `${bin}:${process.env.PATH ?? ""}`,
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "",
           },
         });
         return {
@@ -838,7 +854,7 @@ describe("cli", () => {
 
       const status = run("status");
       expect(status.code).toBe(0);
-      expect(status.out).toContain("Memories: 1");
+      expect(status.out).toContain("Memories: 1\nCheck: ✓ no problems\n");
 
       const claude = run("enable", "claude-code");
       expect(claude.code).toBe(0);
@@ -849,7 +865,12 @@ describe("cli", () => {
         await readFile(join(root, CLAUDE_SETTINGS), "utf-8")
       );
       expect(settings).toMatchObject({ autoMemoryEnabled: false });
-      expect(run("status").out).toContain("✓ Claude Code\n");
+      const enabled = run("status");
+      expect(enabled.out).toContain("✓ Claude Code\n");
+      expect(enabled.out).toContain(
+        "      Claude Code runs the project's hooks only in a folder whose trust dialog you accepted"
+      );
+      expect(enabled.err).toBe("");
 
       // add refuses to clobber an existing name without --force
       const dup = run(
@@ -1350,6 +1371,229 @@ describe("hook", () => {
       expect(context).toStartWith("mdmem could not load the memory: ");
       expect(context).not.toContain("\n");
       expect(context).not.toContain("    at ");
+    });
+  });
+});
+
+/**
+ * A git repository whose store git ignores, with Claude Code, Bob and Codex all
+ * enabled from its root, mdmem on PATH and every agent directory under a temp home.
+ */
+async function wiredRepo(): Promise<{
+  root: string;
+  ctx: AdapterContext;
+  store: MemoryStore;
+}> {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-status-")));
+  await gitRepo(root);
+  // the user's global excludes must not decide whether git ignores .memory/
+  git(root, "config", "core.excludesFile", "/dev/null");
+  await writeFile(join(root, ".gitignore"), ".memory/\n", "utf-8");
+  const store = new MemoryStore(join(root, ".memory"));
+  await reindex(store);
+  const bin = join(root, "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "mdmem"), "#!/bin/sh\n", "utf-8");
+  await chmod(join(bin, "mdmem"), 0o755);
+  const home = join(root, "home");
+  const env = {
+    PATH: bin,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    CODEX_HOME: join(home, ".codex"),
+  };
+  const ctx = adapterContext(root, store, env, home);
+  for (const adapter of [claudeCodeAdapter, bobAdapter, codexAdapter]) {
+    // oxlint-disable-next-line no-await-in-loop -- one adapter at a time, as the CLI wires them
+    await adapter.enable(ctx, {});
+  }
+  return { root, ctx, store };
+}
+
+/** `fn` on a fresh `wiredRepo`, removed after. */
+async function withWiredRepo(
+  fn: (repo: Awaited<ReturnType<typeof wiredRepo>>) => Promise<void>
+): Promise<void> {
+  const repo = await wiredRepo();
+  try {
+    await fn(repo);
+  } finally {
+    await rm(repo.root, { recursive: true, force: true });
+  }
+}
+
+/** The check's problems for the project of `ctx`. */
+async function projectProblems(ctx: AdapterContext): Promise<string[]> {
+  const check = await checkProject(ctx);
+  return check.problems;
+}
+
+const AUTO_MEMORY_CONSEQUENCE =
+  "so Claude also saves memories to its own directory, which no other agent reads";
+
+describe("status and check", () => {
+  test("a fully wired project with an ignored store has no problems and no warnings, only the trust notes", async () => {
+    await withWiredRepo(async ({ ctx }) => {
+      expect(await checkProject(ctx)).toMatchObject({ problems: [] });
+      const status = await projectStatus(ctx);
+      expect(status.ignored).toBe(true);
+      expect(status.wiringProblems).toEqual([]);
+      expect(
+        status.agents.map((agent) => [agent.wired, agent.enabled])
+      ).toEqual([
+        [true, true],
+        [true, true],
+        [true, true],
+      ]);
+      expect(status.agents.flatMap(({ warnings }) => warnings)).toEqual([]);
+      expect(status.agents.flatMap(({ notes }) => notes)).toEqual([
+        "Claude Code runs the project's hooks only in a folder whose trust dialog you accepted, and connects the .mcp.json server only once you approve it: mdmem does not check either.",
+        "IBM Bob runs workspace hooks and MCP servers only in a trusted folder: mdmem does not check whether this one is.",
+        "Codex CLI reads .codex/config.toml only in a trusted folder, and runs the global hook only once you have reviewed it: mdmem does not check either.",
+      ]);
+    });
+  });
+
+  test("status notes a store git does not ignore, and the check leaves it alone", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      await rm(join(root, ".gitignore"));
+      const status = await projectStatus(ctx);
+      expect(status.ignored).toBe(false);
+      expect(await checkProject(ctx)).toMatchObject({ problems: [] });
+      expect(existsSync(join(root, ".gitignore"))).toBe(false);
+    });
+  });
+
+  test("the check reports Claude Code's auto memory forced on by the environment or turned on in the local settings", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      const forced = {
+        ...ctx,
+        env: { ...ctx.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" },
+      };
+      expect(await projectProblems(forced)).toEqual([
+        `Claude Code's auto memory is on: CLAUDE_CODE_DISABLE_AUTO_MEMORY=0 in the environment forces it on, ${AUTO_MEMORY_CONSEQUENCE} — unset it`,
+      ]);
+      // Claude Code reads the value trimmed and ignoring case
+      const forcedFalse = {
+        ...ctx,
+        env: { ...ctx.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: " False" },
+      };
+      expect(await projectProblems(forcedFalse)).toEqual([
+        `Claude Code's auto memory is on: CLAUDE_CODE_DISABLE_AUTO_MEMORY= False in the environment forces it on, ${AUTO_MEMORY_CONSEQUENCE} — unset it`,
+      ]);
+      await writeFile(
+        join(root, ".claude/settings.local.json"),
+        '{ "autoMemoryEnabled": true }\n',
+        "utf-8"
+      );
+      expect(await projectProblems(ctx)).toEqual([
+        `Claude Code's auto memory is on: .claude/settings.local.json sets autoMemoryEnabled to true, overriding .claude/settings.json, ${AUTO_MEMORY_CONSEQUENCE} — remove it from .claude/settings.local.json`,
+      ]);
+      // CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 turns it off whatever the settings say
+      const off = {
+        ...ctx,
+        env: { ...ctx.env, CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" },
+      };
+      expect(await projectProblems(off)).toEqual([]);
+    });
+  });
+
+  test("the check reports Claude Code's auto memory not off in the committed settings, read after the user's settings", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      const settings = join(root, CLAUDE_SETTINGS);
+      const { autoMemoryEnabled: _, ...rest } = JSON.parse(
+        await readFile(settings, "utf-8")
+      ) as Record<string, unknown>;
+      await writeFile(settings, JSON.stringify(rest), "utf-8");
+      expect(await projectProblems(ctx)).toEqual([
+        `Claude Code's auto memory is on: autoMemoryEnabled is not false in .claude/settings.json, ${AUTO_MEMORY_CONSEQUENCE} — run \`mdmem enable claude-code\``,
+      ]);
+      // with the project silent, the user's settings in CLAUDE_CONFIG_DIR decide
+      const user = join(ctx.env.CLAUDE_CONFIG_DIR ?? "", "settings.json");
+      await mkdir(dirname(user), { recursive: true });
+      await writeFile(user, '{ "autoMemoryEnabled": false }\n', "utf-8");
+      expect(await projectProblems(ctx)).toEqual([]);
+    });
+  });
+
+  test("status warns, below the checkout's root, that a Bob launched there reads none of its workspace files", async () => {
+    await withWiredRepo(async ({ root, ctx, store }) => {
+      const sub = join(root, "src");
+      await mkdir(sub);
+      const below = adapterContext(sub, store, ctx.env, ctx.home);
+      const status = await projectStatus(below);
+      const bob = status.agents.find(({ title }) => title === "IBM Bob");
+      expect(bob?.warnings).toEqual([
+        `IBM Bob reads .bob/settings.json (the session-start hooks) and .bob/mcp.json (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets no memory protocol, no index and no mdmem tools. Launch Bob at ${root}.`,
+      ]);
+      // where status runs is not a problem with the project
+      expect(await checkProject(below)).toMatchObject({ problems: [] });
+    });
+  });
+
+  test("the check reports hooks that will not run: an entry missing, Claude Code's and Bob's hooks off, Codex's global hook missing", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      const settings = join(root, CLAUDE_SETTINGS);
+      const claude = JSON.parse(await readFile(settings, "utf-8")) as {
+        hooks: { SessionStart: unknown[] };
+      };
+      claude.hooks.SessionStart = claude.hooks.SessionStart.slice(1);
+      await writeFile(
+        settings,
+        JSON.stringify({ ...claude, disableAllHooks: true }),
+        "utf-8"
+      );
+      const bob = join(root, BOB_SETTINGS);
+      const bobSettings = JSON.parse(await readFile(bob, "utf-8")) as object;
+      await writeFile(
+        bob,
+        JSON.stringify({ ...bobSettings, disableWorkspaceHooks: true }),
+        "utf-8"
+      );
+      const hooksPath = join(ctx.env.CODEX_HOME ?? "", "hooks.json");
+      await rm(hooksPath);
+
+      expect(await projectProblems(ctx)).toEqual([
+        'Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (.claude/settings.json), so its sessions start without what that hook injects — run `mdmem enable claude-code`',
+        "Claude Code: .claude/settings.json sets disableAllHooks to true, so Claude Code runs no hooks and its sessions start without the memory protocol and the index — remove it",
+        "IBM Bob: .bob/settings.json sets disableWorkspaceHooks to true, so Bob runs none of the workspace's hooks and its sessions start without the memory protocol and the index — remove it",
+        `Codex CLI: missing SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index" (${hooksPath}), so its sessions start without what those hooks inject — run \`mdmem enable codex\``,
+      ]);
+    });
+  });
+
+  test("the check reports mdmem missing from PATH while an agent is enabled, and not once none is", async () => {
+    await withWiredRepo(async ({ ctx }) => {
+      const noMdmem = {
+        ...ctx,
+        env: { ...ctx.env, PATH: join(ctx.home, "empty") },
+      };
+      expect(await projectProblems(noMdmem)).toEqual([
+        "mdmem is not on PATH, so the session-start hooks and the MCP server wired for Claude Code, IBM Bob, Codex CLI, which run `mdmem`, fail — put it on PATH (`bun link` in mdmem's checkout)",
+      ]);
+      for (const adapter of [claudeCodeAdapter, bobAdapter, codexAdapter]) {
+        // oxlint-disable-next-line no-await-in-loop -- one adapter at a time, as the CLI unwires them
+        await adapter.disable(noMdmem, { global: true });
+      }
+      expect(await checkProject(noMdmem)).toMatchObject({ problems: [] });
+    });
+  });
+
+  test("status counts the check's problems in one line, wiring included, and doctor lists them", async () => {
+    await withWiredRepo(async ({ root, ctx, store }) => {
+      await store.create("broken.md", "no frontmatter\n");
+      // a memory written without a reindex has no pointer
+      await store.create("loose.md", memoryText("loose", "b"));
+      const noMdmem = {
+        ...ctx,
+        env: { ...ctx.env, PATH: join(ctx.home, "empty") },
+      };
+      const status = await projectStatus(noMdmem);
+      expect(status.wiringProblems).toHaveLength(1);
+      expect(checkSummary(status.check)).toBe(
+        "3 problem(s), among them 1 unparseable memory, a stale MEMORY.md — `mdmem doctor` lists them"
+      );
+      expect(await projectProblems(noMdmem)).toEqual(status.check.problems);
+      expect(existsSync(join(root, ".memory/broken.md"))).toBe(true);
     });
   });
 });

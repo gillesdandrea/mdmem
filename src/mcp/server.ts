@@ -6,7 +6,8 @@ import type {
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
-import { checkStore, formatCheck, POINTER_MAX_CHARS } from "../core/check.ts";
+import { adapterContext, checkProject } from "../adapters/report.ts";
+import { formatCheck, POINTER_MAX_CHARS } from "../core/check.ts";
 import {
   assertStoreId,
   deleteDocument,
@@ -242,12 +243,16 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_check",
     {
-      title: "Check a memory store",
-      description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a metadata.type and a type that disagree, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a dangling [[link]], a stale index (a memory without a pointer, a pointer to a missing file, or a duplicate pointer), or an index over the size a session-start hook can inject. Returns the problems one per line, or a line with the memory count saying there are none. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also brings a stale index up to date.`,
+      title: "Check a memory store and the agents' wiring",
+      description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a metadata.type and a type that disagree, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a dangling [[link]], a stale index (a memory without a pointer, a pointer to a missing file, or a duplicate pointer), or an index over the size a session-start hook can inject; and with the agents' wiring of the project: an agent's session-start hook missing or switched off, Claude Code's auto memory still on, or mdmem not on PATH. Returns the problems one per line, or a line with the memory count saying there are none. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also brings a stale index up to date; tell the user about a wiring problem, which the line says how to fix.`,
       inputSchema: z.object({ store: storeParam }),
     },
     ({ store: id }) =>
-      withStore(id, async (store) => text(formatCheck(await checkStore(store))))
+      withStore(id, async (store) =>
+        text(
+          formatCheck(await checkProject(adapterContext(process.cwd(), store)))
+        )
+      )
   );
 
   server.registerTool(
