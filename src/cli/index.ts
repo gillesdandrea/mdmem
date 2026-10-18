@@ -9,7 +9,7 @@ import type {
   AdapterContext,
   AgentStatus,
   WiringPlan,
-} from "../adapters/index.ts";
+} from "../adapters/adapter.ts";
 import { adapterIds, findAdapters, getAdapter } from "../adapters/index.ts";
 import {
   adapterContext,
@@ -40,6 +40,7 @@ import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
 import type { MemoryStore } from "../core/store.ts";
 import { STORE_DIR, VersionConflictError } from "../core/store.ts";
+import { messageOf } from "../core/text.ts";
 
 function print(msg = ""): void {
   process.stdout.write(`${msg}\n`);
@@ -62,23 +63,13 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-interface Resolved {
-  store: MemoryStore;
-  storeDir: string;
-}
-
 /** The project's store; without one, the refusal reaches `main`, which prints it. */
-function resolveStore(): Resolved {
-  const store = openStore(process.cwd());
-  return { store, storeDir: store.root };
+function resolveStore(): MemoryStore {
+  return openStore(process.cwd());
 }
 
-function context(resolved: Resolved): AdapterContext {
-  return adapterContext(process.cwd(), resolved.store);
+function context(store: MemoryStore): AdapterContext {
+  return adapterContext(process.cwd(), store);
 }
 
 /** `enable --prefer`'s value, which settles an import conflict. */
@@ -141,7 +132,7 @@ async function cmdAdd(args: string[]): Promise<void> {
     body = process.stdin.isTTY ? "" : await Bun.stdin.text();
   }
 
-  const { store } = resolveStore();
+  const store = resolveStore();
   const force = values.force ?? false;
   let result: WriteResult;
   try {
@@ -165,7 +156,7 @@ async function cmdAdd(args: string[]): Promise<void> {
 }
 
 async function cmdReindex(): Promise<void> {
-  const { store } = resolveStore();
+  const store = resolveStore();
   const warnings = await reindex(store);
   print("Updated MEMORY.md");
   for (const warning of warnings) {
@@ -174,7 +165,7 @@ async function cmdReindex(): Promise<void> {
 }
 
 async function cmdList(): Promise<void> {
-  const { store } = resolveStore();
+  const store = resolveStore();
   print(await readIndex(store));
 }
 
@@ -183,7 +174,7 @@ async function cmdRead(args: string[]): Promise<void> {
   if (!name) {
     die("usage: mdmem read <name>");
   }
-  const { store } = resolveStore();
+  const store = resolveStore();
   const { content } = await readDocument(store, memoryFileFor(name));
   print(content);
 }
@@ -210,7 +201,7 @@ async function cmdEdit(args: string[]): Promise<void> {
   if (!name) {
     die("usage: mdmem edit <name>");
   }
-  const { store, storeDir } = resolveStore();
+  const store = resolveStore();
   const file = memoryFileFor(name);
   // Refuse a path no edit could be saved to (such as the index) before opening an editor on it.
   assertMemoryPath(file);
@@ -218,7 +209,7 @@ async function cmdEdit(args: string[]): Promise<void> {
   const editor = process.env.VISUAL ?? process.env.EDITOR;
   if (!editor) {
     // no $EDITOR — print the path so it can be opened by hand
-    print(join(storeDir, file));
+    print(join(store.root, file));
     return;
   }
   // Edit a copy, named <file> so the editor stays in Markdown mode, then write it back under the version read.
@@ -258,7 +249,7 @@ async function cmdDelete(args: string[]): Promise<void> {
   if (!name) {
     die("usage: mdmem delete <name>");
   }
-  const { store } = resolveStore();
+  const store = resolveStore();
   let result: WriteResult | null;
   try {
     result = await removeMemory(store, name);
@@ -283,7 +274,7 @@ async function cmdSearch(args: string[]): Promise<void> {
   if (!query) {
     die("usage: mdmem search <query>");
   }
-  const { store } = resolveStore();
+  const store = resolveStore();
   const { hits, warnings } = await searchMemories(store, query);
   if (hits.length === 0) {
     print(`No memories matching "${query}".`);
@@ -430,9 +421,9 @@ function printAgent(status: AgentStatus): void {
 }
 
 async function cmdStatus(): Promise<void> {
-  const resolved = resolveStore();
-  const status = await projectStatus(context(resolved));
-  print(`Store: ${resolved.storeDir}`);
+  const store = resolveStore();
+  const status = await projectStatus(context(store));
+  print(`Store: ${store.root}`);
   // Counts the memories that parse; the check's line counts the broken ones.
   print(`Memories: ${status.memoryCount}`);
   print(`Check: ${checkSummary(status.check)}`);
@@ -465,7 +456,7 @@ async function cmdDoctor(): Promise<void> {
 }
 
 function cmdConsolidate(): void {
-  const { store } = resolveStore();
+  const store = resolveStore();
   process.stdout.write(getConsolidatePrompt(store.root));
 }
 
@@ -490,8 +481,8 @@ async function cmdHook(args: string[]): Promise<void> {
 }
 
 function cmdPath(): void {
-  const { storeDir } = resolveStore();
-  print(storeDir);
+  const store = resolveStore();
+  print(store.root);
 }
 
 function usage(): void {

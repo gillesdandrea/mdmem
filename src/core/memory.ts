@@ -1,6 +1,8 @@
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 
+import { messageOf } from "./text.ts";
+
 /**
  * A memory is one Markdown file holding one fact. The format reproduces
  * Claude Code's memory files — YAML frontmatter plus a Markdown body.
@@ -76,10 +78,9 @@ export function parseMemoryFile(file: string, raw: string): Memory {
   try {
     return parseMemory(raw);
   } catch (error) {
-    throw new Error(
-      `${file}: unparseable — ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error }
-    );
+    throw new Error(`${file}: unparseable — ${messageOf(error)}`, {
+      cause: error,
+    });
   }
 }
 

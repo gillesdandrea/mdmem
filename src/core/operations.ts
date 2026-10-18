@@ -23,6 +23,7 @@ import {
   versionOf,
 } from "./store.ts";
 import type { DocumentInfo } from "./store.ts";
+import { messageOf } from "./text.ts";
 
 /**
  * Memory-level operations shared by both surfaces (CLI and MCP). They compose the
@@ -287,12 +288,7 @@ function parseWrittenMemory(path: string, content: string): Memory {
   try {
     return parseMemoryFile(path, content);
   } catch (error) {
-    throw new RefusalError(
-      error instanceof Error ? error.message : String(error),
-      {
-        cause: error,
-      }
-    );
+    throw new RefusalError(messageOf(error), { cause: error });
   }
 }
 

@@ -2,8 +2,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
+import { isObject, valueAt } from "../core/object.ts";
+import type { PlainObject } from "../core/object.ts";
 import { RefusalError } from "../core/refusal.ts";
-import type { WiringEntry } from "./adapter.ts";
+import { lineEndingOf, messageOf } from "../core/text.ts";
+import type { WiringEntry, WiringMode } from "./adapter.ts";
 
 /**
  * mdmem's entries in an agent's JSON config files, merged in and taken out without
@@ -15,7 +18,7 @@ import type { WiringEntry } from "./adapter.ts";
  * refused before anything is written.
  */
 
-export type JsonObject = Record<string, unknown>;
+export type JsonObject = PlainObject;
 
 /** One mdmem entry in a JSON document: how to tell it is there, add it, and remove exactly it. */
 export interface JsonEntry {
@@ -45,26 +48,11 @@ export interface PlannedFile {
 const DEFAULT_INDENT = "  ";
 const FIRST_INDENT = /\n(?<indent>[ \t]+)\S/u;
 
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function isEmpty(value: unknown): boolean {
   if (Array.isArray(value)) {
     return value.length === 0;
   }
   return isObject(value) && Object.keys(value).length === 0;
-}
-
-function valueAt(doc: JsonObject, path: readonly string[]): unknown {
-  let current: unknown = doc;
-  for (const key of path) {
-    if (!isObject(current)) {
-      return undefined;
-    }
-    current = current[key];
-  }
-  return current;
 }
 
 /** The object at `path`, creating the missing ones; a value in the way that is not an object is an error. */
@@ -180,9 +168,8 @@ async function readConfig(root: string, file: string): Promise<ReadConfig> {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
     throw new RefusalError(
-      `${file} is not valid JSON (${reason}): fix it, then run the command again`,
+      `${file} is not valid JSON (${messageOf(error)}): fix it, then run the command again`,
       { cause: error }
     );
   }
@@ -199,7 +186,7 @@ function serialize(doc: JsonObject, raw: string | undefined): string {
   const indent = raw?.match(FIRST_INDENT)?.groups?.indent ?? DEFAULT_INDENT;
   const newline = raw === undefined || raw.length === 0 || raw.endsWith("\n");
   // JSON.stringify escapes the line breaks inside strings, so every one left is the layout's.
-  const eol = raw?.includes("\r\n") ? "\r\n" : "\n";
+  const eol = lineEndingOf(raw ?? "");
   const text = JSON.stringify(doc, null, indent).replaceAll("\n", eol);
   return `${text}${newline ? eol : ""}`;
 }
@@ -208,7 +195,7 @@ function changeEntries(
   file: string,
   doc: JsonObject,
   entries: readonly JsonEntry[],
-  mode: "add" | "remove"
+  mode: WiringMode
 ): string[] {
   const changed: string[] = [];
   for (const entry of entries) {
@@ -222,9 +209,8 @@ function changeEntries(
         entry.remove(doc);
       }
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
       throw new RefusalError(
-        `${file}: ${reason}, so mdmem cannot ${mode} its ${entry.label}: fix it, then run the command again`,
+        `${file}: ${messageOf(error)}, so mdmem cannot ${mode} its ${entry.label}: fix it, then run the command again`,
         { cause: error }
       );
     }
@@ -241,7 +227,7 @@ function changeEntries(
 export function planConfigs(
   root: string,
   files: readonly JsonConfigFile[],
-  mode: "add" | "remove"
+  mode: WiringMode
 ): Promise<PlannedFile[]> {
   return Promise.all(
     files.map(async ({ file, entries }) => {
@@ -285,7 +271,7 @@ export async function writeConfigs(
 /** One line per planned file, saying what enable ("add") or disable ("remove") did to it. */
 export function describePlan(
   plan: readonly PlannedFile[],
-  mode: "add" | "remove"
+  mode: WiringMode
 ): string[] {
   return plan.map(({ file, next, changed }) => {
     if (changed.length === 0) {
@@ -311,10 +297,7 @@ export async function configStatus(
         const { doc } = await readConfig(root, file);
         return { doc };
       } catch (error) {
-        return {
-          doc: {},
-          warning: error instanceof Error ? error.message : String(error),
-        };
+        return { doc: {}, warning: messageOf(error) };
       }
     })
   );

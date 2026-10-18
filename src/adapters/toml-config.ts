@@ -4,7 +4,11 @@ import { join } from "node:path";
 
 import { parse, patch, stringify } from "@decimalturn/toml-patch";
 
+import { isObject, valueAt } from "../core/object.ts";
+import type { PlainObject } from "../core/object.ts";
 import { RefusalError } from "../core/refusal.ts";
+import { LINE_BREAK_RE, lineEndingOf, messageOf } from "../core/text.ts";
+import type { WiringMode } from "./adapter.ts";
 import type { PlannedFile } from "./json-config.ts";
 
 /**
@@ -29,28 +33,11 @@ export interface TomlTableEntry {
   value: Record<string, unknown>;
 }
 
-type TomlObject = Record<string, unknown>;
-
-function isObject(value: unknown): value is TomlObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function valueAt(doc: TomlObject, path: readonly string[]): unknown {
-  let current: unknown = doc;
-  for (const key of path) {
-    if (!isObject(current)) {
-      return undefined;
-    }
-    current = current[key];
-  }
-  return current;
-}
+type TomlObject = PlainObject;
 
 function has(doc: TomlObject, entry: TomlTableEntry): boolean {
   return Bun.deepEquals(valueAt(doc, entry.path), entry.value);
 }
-
-const LINE_BREAK_RE = /\r?\n/u;
 
 /**
  * toml-patch's parse error on one line, so a refusal prints as one (ADR 0002): its
@@ -63,13 +50,20 @@ function parseErrorLine(message: string): string {
   return lines.length > 1 ? `${first} ${lines.at(-1)}` : first;
 }
 
+/** `raw` parsed: a TOML document is always a table, so anything else throws. */
+function parseTable(raw: string): TomlObject {
+  const doc: unknown = parse(raw);
+  if (!isObject(doc)) {
+    throw new TypeError("the document is not a table");
+  }
+  return doc;
+}
+
 function parseToml(file: string, raw: string): TomlObject {
   try {
-    return parse(raw) as TomlObject;
+    return parseTable(raw);
   } catch (error) {
-    const reason = parseErrorLine(
-      error instanceof Error ? error.message : String(error)
-    );
+    const reason = parseErrorLine(messageOf(error));
     throw new RefusalError(
       `${file} is not valid TOML (${reason}): fix it, then run the command again`,
       { cause: error }
@@ -101,7 +95,7 @@ function checkShape(doc: TomlObject, entry: TomlTableEntry): void {
 /** `raw` with the table appended as its own section, or null when that is not valid TOML (the parent is an inline table, say). */
 function appendSection(raw: string, entry: TomlTableEntry): string | null {
   // Match the file's line ending, so a CRLF file does not end up with mixed endings.
-  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+  const eol = lineEndingOf(raw);
   let separator = eol;
   if (raw.length === 0 || raw.endsWith(`${eol}${eol}`)) {
     separator = "";
@@ -115,7 +109,7 @@ function appendSection(raw: string, entry: TomlTableEntry): string | null {
     );
   const next = `${raw}${separator}${section}`;
   try {
-    return has(parse(next) as TomlObject, entry) ? next : null;
+    return has(parseTable(next), entry) ? next : null;
   } catch {
     return null;
   }
@@ -155,7 +149,7 @@ function setTable(doc: TomlObject, entry: TomlTableEntry): void {
 export async function planTomlTable(
   root: string,
   entry: TomlTableEntry,
-  mode: "add" | "remove"
+  mode: WiringMode
 ): Promise<PlannedFile> {
   const { path, raw, doc } = await readToml(root, entry.file);
   checkShape(doc, entry);
@@ -191,10 +185,7 @@ export async function tomlTableStatus(
     const { doc } = await readToml(root, entry.file);
     return { present: has(doc, entry) };
   } catch (error) {
-    return {
-      present: false,
-      warning: error instanceof Error ? error.message : String(error),
-    };
+    return { present: false, warning: messageOf(error) };
   }
 }
 

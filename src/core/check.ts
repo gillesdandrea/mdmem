@@ -2,6 +2,7 @@ import type { Frontmatter, Memory } from "./memory.ts";
 import { memoryFileName, parseMemoryFile } from "./memory.ts";
 import { describeSecrets, findSecrets } from "./secrets.ts";
 import type { MemoryStore } from "./store.ts";
+import { LINE_BREAK_RE, lineEndingOf, messageOf, oneLine } from "./text.ts";
 
 /**
  * The memory-level view of a store: it loads every memory once, runs the Check
@@ -50,10 +51,6 @@ export interface BrokenMemory {
 export interface MemoryLoad {
   memories: LoadedMemory[];
   broken: BrokenMemory[];
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** A line break, which no pointer's link can hold: a file name with one never gets a pointer. */
@@ -131,12 +128,6 @@ const BARE_TARGET_RE = /^[^\s()<>\\]+$/u;
 /** Characters a backslash escapes in a pointer's title (`[]\`) or angle-bracketed target (`<>\`). */
 const TITLE_ESCAPED_RE = /[[\]\\]/gu;
 const ANGLE_ESCAPED_RE = /[<>\\]/gu;
-const WHITESPACE_RE = /\s+/gu;
-
-/** `text` on one line, so a pointer never spans two: every run of whitespace becomes one space. */
-function oneLine(text: string): string {
-  return text.replaceAll(WHITESPACE_RE, " ").trim();
-}
 
 /** A link target for `file` that `matchPointer` reads back as `file`: bare, or in angle brackets. */
 function linkTarget(file: string): string {
@@ -300,13 +291,6 @@ interface Reconciled {
   content: string;
   pointed: ReadonlySet<string>;
   findings: IndexFindings;
-}
-
-const LINE_BREAK_RE = /\r?\n/u;
-
-/** The line ending `content` uses: CRLF when it holds one, else LF. */
-function lineEndingOf(content: string): string {
-  return content.includes("\r\n") ? "\r\n" : "\n";
 }
 
 /** The lines of `content`, without their endings or the empty one after a final line break. */

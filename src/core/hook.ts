@@ -2,8 +2,11 @@ import { resolve } from "node:path";
 
 import { INDEX_FILE, INDEX_MAX_CHARS, sessionIndex } from "./check.ts";
 import { workTreeRoot } from "./git.ts";
+import { isObject } from "./object.ts";
+import type { PlainObject } from "./object.ts";
 import { getMemoryProtocol } from "./protocol.ts";
 import { locateStore, MemoryStore } from "./store.ts";
+import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
 
 /**
  * What `mdmem hook <agent> <part>` prints. Each wired agent runs two session-start
@@ -19,6 +22,7 @@ import { locateStore, MemoryStore } from "./store.ts";
  * agent; elsewhere the hook prints nothing.
  */
 
+/** The supported agents, in the order mdmem lists them: only those with session-start hooks. The adapter registry is built from this list. */
 export const HOOK_AGENTS = ["claude-code", "bob", "codex"] as const;
 export type HookAgent = (typeof HOOK_AGENTS)[number];
 
@@ -39,26 +43,12 @@ interface HookPayload {
   source?: string;
 }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-const WHITESPACE_RE = /\s+/gu;
-
-/** `text` on one line: every run of whitespace becomes one space. */
-function oneLine(text: string): string {
-  return text.replaceAll(WHITESPACE_RE, " ").trim();
-}
-
 /** A text's length in code points, the measure check.ts holds the index limit to. */
 function charCount(text: string): number {
   return [...text].length;
 }
 
-function stringField(
-  object: Record<string, unknown>,
-  key: string
-): string | undefined {
+function stringField(object: PlainObject, key: string): string | undefined {
   const value = object[key];
   return typeof value === "string" ? value : undefined;
 }
@@ -76,14 +66,13 @@ function parsePayload(text: string): HookPayload {
       cause: error,
     });
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+  if (!isObject(parsed)) {
     throw new Error("the hook payload is not a JSON object");
   }
-  const object = parsed as Record<string, unknown>;
   return {
-    cwd: stringField(object, "cwd"),
-    hookEventName: stringField(object, "hook_event_name"),
-    source: stringField(object, "source"),
+    cwd: stringField(parsed, "cwd"),
+    hookEventName: stringField(parsed, "hook_event_name"),
+    source: stringField(parsed, "source"),
   };
 }
 
@@ -101,7 +90,7 @@ function oneOf<T extends string>(
   return found;
 }
 
-/** The SessionStart output every agent takes today. */
+/** The SessionStart output, in the form every supported agent takes. */
 function sessionStartOutput(context: string): string {
   return JSON.stringify({
     hookSpecificOutput: {
@@ -110,13 +99,6 @@ function sessionStartOutput(context: string): string {
     },
   });
 }
-
-/** Each agent's output form, so a difference can be handled per agent; today they all agree. */
-const OUTPUT_FORMATS: Record<HookAgent, (context: string) => string> = {
-  "claude-code": sessionStartOutput,
-  bob: sessionStartOutput,
-  codex: sessionStartOutput,
-};
 
 function warningLine(warning: string): string {
   return `Warning: ${oneLine(warning)}`;
@@ -127,8 +109,6 @@ function omittedLine(count: number): string {
     `${count} more warning${count === 1 ? "" : "s"} left out; memory_check lists them all.`
   );
 }
-
-const LINE_BREAK_RE = /\r?\n/u;
 
 /**
  * The heading of an index cut short to `kept` of its `total` lines, saying what to do
@@ -230,16 +210,11 @@ export interface HookRequest {
   ) => Promise<boolean>;
 }
 
-interface HookContext {
-  agent: HookAgent;
-  context: string;
-}
-
-/** The store a session in `cwd` uses, and the agent, or undefined when there is none or the project is not wired for the agent. */
+/** The directory of the store a session in `cwd` uses, or undefined when there is none or the project is not wired for the agent. */
 async function wiredStore(
   request: HookRequest,
   cwd: string
-): Promise<{ agent: HookAgent; dir: string } | undefined> {
+): Promise<string | undefined> {
   const location = locateStore(cwd);
   if (!location.exists) {
     return undefined;
@@ -250,13 +225,11 @@ async function wiredStore(
   if (!(await request.projectWired(agent, projectRoot))) {
     return undefined;
   }
-  return { agent, dir: location.dir };
+  return location.dir;
 }
 
 /** The context to inject, or undefined when the hook stays silent. */
-async function hookContext(
-  request: HookRequest
-): Promise<HookContext | undefined> {
+async function hookContext(request: HookRequest): Promise<string | undefined> {
   const text = await request.readPayload();
   let payload: HookPayload;
   try {
@@ -274,19 +247,17 @@ async function hookContext(
   ) {
     return undefined;
   }
-  const wired = await wiredStore(
+  const dir = await wiredStore(
     request,
     resolve(request.cwd, payload.cwd ?? ".")
   );
-  if (wired === undefined) {
+  if (dir === undefined) {
     return undefined;
   }
   const part = oneOf(request.part, HOOK_PARTS, "part");
-  const context =
-    part === "protocol"
-      ? getMemoryProtocol()
-      : await indexContext(new MemoryStore(wired.dir));
-  return { agent: wired.agent, context };
+  return part === "protocol"
+    ? getMemoryProtocol()
+    : await indexContext(new MemoryStore(dir));
 }
 
 /**
@@ -296,12 +267,9 @@ async function hookContext(
  */
 export async function runHook(request: HookRequest): Promise<string> {
   try {
-    const result = await hookContext(request);
-    return result === undefined
-      ? ""
-      : OUTPUT_FORMATS[result.agent](result.context);
+    const context = await hookContext(request);
+    return context === undefined ? "" : sessionStartOutput(context);
   } catch (error) {
-    // The agent may be the error itself, so the form every agent takes today stands in.
     return sessionStartOutput(
       `mdmem could not load the memory: ${oneLine(messageOf(error))}`
     );

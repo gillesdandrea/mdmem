@@ -1,11 +1,19 @@
-import { realpath } from "node:fs/promises";
 import { join } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import { missingHooksProblem, outsideProjectPlan } from "./adapter.ts";
+import { realDir } from "../core/store.ts";
+import {
+  agentStatus,
+  commitLine,
+  hookCommands,
+  hooksLabel,
+  MCP_SERVER,
+  missingHooksProblem,
+  outsideProjectPlan,
+} from "./adapter.ts";
 import type {
-  Adapter,
   AdapterContext,
+  AdapterFor,
   AgentStatus,
   DisableOptions,
   WiringPlan,
@@ -37,9 +45,8 @@ const MCP_CONFIG = ".bob/mcp.json";
 const HOOK_MATCHER = "^(startup|compact)$";
 // Bob's default, in seconds.
 const HOOK_TIMEOUT = 10;
-const SERVER = { command: "mdmem", args: ["mcp"] };
 
-const commands = HOOK_PARTS.map((part) => `mdmem hook bob ${part}`);
+const commands = hookCommands(ID);
 
 // Bob validates its hooks strictly: one unknown key voids the whole hooks block, so
 // the group holds only documented fields.
@@ -53,7 +60,7 @@ const HOOK_GROUP = {
 };
 
 const HOOK_ENTRY = arrayItemEntry(
-  `SessionStart hooks ${commands.map((command) => `"${command}"`).join(", ")}`,
+  hooksLabel(commands),
   ["hooks", "SessionStart"],
   HOOK_GROUP
 );
@@ -65,7 +72,9 @@ const FILES: readonly JsonConfigFile[] = [
   },
   {
     file: MCP_CONFIG,
-    entries: [valueEntry("mcpServers.mdmem", ["mcpServers", "mdmem"], SERVER)],
+    entries: [
+      valueEntry("mcpServers.mdmem", ["mcpServers", "mdmem"], MCP_SERVER),
+    ],
   },
 ];
 
@@ -81,21 +90,10 @@ async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
     : [];
 }
 
-/** The real path of `path`, or `path` itself when it cannot be resolved. */
-async function realOr(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
-}
-
 /** Run below the checkout's root, where a Bob launched here reads none of the workspace files. */
-async function belowRootWarning(ctx: AdapterContext): Promise<string[]> {
-  const [cwd, root] = await Promise.all([
-    realOr(ctx.cwd),
-    realOr(ctx.projectRoot),
-  ]);
+function belowRootWarning(ctx: AdapterContext): string[] {
+  const cwd = realDir(ctx.cwd);
+  const root = realDir(ctx.projectRoot);
   return cwd === root
     ? []
     : [
@@ -103,7 +101,7 @@ async function belowRootWarning(ctx: AdapterContext): Promise<string[]> {
       ];
 }
 
-export const bobAdapter: Adapter = {
+export const bobAdapter: AdapterFor<typeof ID> = {
   id: ID,
   command: "bob",
   configDir: ({ home }) => join(home, ".bob"),
@@ -118,7 +116,11 @@ export const bobAdapter: Adapter = {
           title: TITLE,
           actions: [
             ...describePlan(plan, "add"),
-            `Commit ${SETTINGS} and ${MCP_CONFIG}: they wire IBM Bob for everyone working in the repository, who then needs mdmem on PATH. Bob runs them only in a trusted folder, and reads them only when launched at the checkout's root: launched in a subdirectory it gets neither the hooks nor the mdmem tools.`,
+            commitLine(
+              [SETTINGS, MCP_CONFIG],
+              `they wire ${TITLE}`,
+              "Bob runs them only in a trusted folder, and reads them only when launched at the checkout's root: launched in a subdirectory it gets neither the hooks nor the mdmem tools."
+            ),
           ],
           warnings: [],
         };
@@ -149,38 +151,21 @@ export const bobAdapter: Adapter = {
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const { entries, warnings } = await configStatus(ctx.projectRoot, FILES);
     const enabled = entries.some(({ present }) => present);
-    if (!enabled) {
-      return {
-        title: TITLE,
-        wired: false,
-        enabled,
-        entries,
-        problems: [],
-        warnings,
-        notes: [],
-      };
-    }
-    const [disabledHooks, belowRoot] = await Promise.all([
-      disabledHooksProblem(ctx),
-      belowRootWarning(ctx),
-    ]);
-    return {
-      title: TITLE,
-      wired: entries.every(({ present }) => present),
-      enabled,
-      entries,
-      problems: [
-        ...missingHooksProblem(
-          { id: ID, title: TITLE },
-          entries,
-          ({ label }) => (label === HOOK_ENTRY.label ? HOOK_PARTS.length : 0)
-        ),
-        ...disabledHooks,
-      ],
-      warnings: [...warnings, ...belowRoot],
-      notes: [
-        `${TITLE} runs workspace hooks and MCP servers only in a trusted folder: mdmem does not check whether this one is.`,
-      ],
-    };
+    return agentStatus(
+      bobAdapter,
+      { entries, enabled, warnings },
+      async () => ({
+        problems: [
+          ...missingHooksProblem(bobAdapter, entries, ({ label }) =>
+            label === HOOK_ENTRY.label ? HOOK_PARTS.length : 0
+          ),
+          ...(await disabledHooksProblem(ctx)),
+        ],
+        warnings: belowRootWarning(ctx),
+        notes: [
+          `${TITLE} runs workspace hooks and MCP servers only in a trusted folder: mdmem does not check whether this one is.`,
+        ],
+      })
+    );
   },
 };

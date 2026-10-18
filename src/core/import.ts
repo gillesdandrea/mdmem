@@ -1,4 +1,12 @@
-import { cp, mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import {
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -9,7 +17,8 @@ import { parseMemory } from "./memory.ts";
 import { RefusalError } from "./refusal.ts";
 import { describeSecrets, findSecrets } from "./secrets.ts";
 import type { MemoryStore } from "./store.ts";
-import { STORE_DIR } from "./store.ts";
+import { realDir, STORE_DIR } from "./store.ts";
+import { LINE_BREAK_RE, lineEndingOf } from "./text.ts";
 
 /**
  * The one-time import of Claude Code's auto memory into a project's store (ADR 0003):
@@ -115,12 +124,17 @@ export function claudeProjectKey(path: string): string {
   return `${key.slice(0, KEY_MAX_LENGTH)}-${hash}`;
 }
 
-/** Claude Code's `projects/` directory: under `CLAUDE_CONFIG_DIR` when set, else `~/.claude`. */
-function claudeProjectsDir({
+/** Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`. */
+export function claudeConfigDir({
   env = process.env,
   home = homedir(),
 }: ClaudeEnvironment): string {
-  return join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"), "projects");
+  return env.CLAUDE_CONFIG_DIR || join(home, ".claude");
+}
+
+/** Claude Code's `projects/` directory, in its config directory. */
+function claudeProjectsDir(environment: ClaudeEnvironment): string {
+  return join(claudeConfigDir(environment), "projects");
 }
 
 /**
@@ -339,8 +353,6 @@ function descriptionOf(raw: string | undefined): string | undefined {
   }
 }
 
-const LINE_BREAK_RE = /\r?\n/u;
-
 /**
  * The pointer lines of the sources' indexes that the store's index lacks, in source
  * order, each memory file's first only, and only for files the store will hold.
@@ -372,7 +384,7 @@ function newPointerLines(
 
 /** `index` with `lines` appended, in its own line ending. */
 function appendLines(index: string, lines: readonly string[]): string {
-  const eol = index.includes("\r\n") ? "\r\n" : "\n";
+  const eol = lineEndingOf(index);
   const head = index === "" || index.endsWith("\n") ? index : `${index}${eol}`;
   return `${head}${lines.map((line) => `${line}${eol}`).join("")}`;
 }
@@ -535,15 +547,6 @@ function secretWarnings(writes: readonly Write[]): string[] {
   });
 }
 
-/** The project directory Claude Code keys: it keys the physical path, symlinks resolved. */
-async function realDirectory(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch {
-    return path;
-  }
-}
-
 /** The file, in Claude Code's project directory for the repository, that records an import ran there for this user. */
 const IMPORT_MARKER = "mdmem-imported";
 
@@ -551,12 +554,34 @@ const IMPORT_MARKER = "mdmem-imported";
  * Where the import of the repository whose store is `store` is recorded as done:
  * next to its backups, so per user and per repository, and outside the store.
  */
-export async function importMarker(
+export function importMarker(
   store: MemoryStore,
   environment: ClaudeEnvironment = {}
-): Promise<string> {
-  const projectRoot = await realDirectory(dirname(store.root));
+): string {
+  // Claude Code keys the physical path, symlinks resolved.
+  const projectRoot = realDir(dirname(store.root));
   return join(claudeProjectDir(projectRoot, environment), IMPORT_MARKER);
+}
+
+/** What the import marker at `marker` records, trimmed (when the import ran, and into which store); undefined when there is none. */
+export async function readImportMarker(
+  marker: string
+): Promise<string | undefined> {
+  if (!existsSync(marker)) {
+    return undefined;
+  }
+  const text = await readFile(marker, "utf-8");
+  return text.trim();
+}
+
+/** Record at `marker` that the import into `store` ran at `now`. */
+export async function writeImportMarker(
+  marker: string,
+  store: MemoryStore,
+  now: Date = new Date()
+): Promise<void> {
+  await mkdir(dirname(marker), { recursive: true });
+  await writeFile(marker, `${now.toISOString()} into ${store.root}\n`, "utf-8");
 }
 
 /** An import planned: Claude's directories and the store read, its conflicts refused, nothing written yet. */
@@ -571,7 +596,7 @@ export async function planClaudeImport(
   store: MemoryStore,
   options: ImportOptions = {}
 ): Promise<PlannedImport> {
-  const projectRoot = await realDirectory(dirname(store.root));
+  const projectRoot = realDir(dirname(store.root));
   const sources = await claudeSources(projectRoot, options);
   const { copiesByKey, skipped } = await readClaudeDirectories(sources);
   const stored = await storedMemories(store);

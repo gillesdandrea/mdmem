@@ -1,18 +1,27 @@
-import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookPart } from "../core/hook.ts";
 import {
+  claudeConfigDir,
   formatImport,
   importMarker,
   planClaudeImport,
+  readImportMarker,
+  writeImportMarker,
 } from "../core/import.ts";
-import { missingHooksProblem, outsideProjectPlan } from "./adapter.ts";
+import {
+  agentStatus,
+  commitLine,
+  hookCommand,
+  hooksLabel,
+  MCP_SERVER,
+  missingHooksProblem,
+  outsideProjectPlan,
+} from "./adapter.ts";
 import type {
-  Adapter,
   AdapterContext,
+  AdapterFor,
   AgentStatus,
   DisableOptions,
   EnableOptions,
@@ -27,7 +36,7 @@ import {
   valueEntry,
   writeConfigs,
 } from "./json-config.ts";
-import type { JsonConfigFile } from "./json-config.ts";
+import type { JsonConfigFile, JsonEntry } from "./json-config.ts";
 
 const ID = "claude-code";
 const TITLE = "Claude Code";
@@ -41,7 +50,7 @@ const SETTINGS_LOCAL = ".claude/settings.local.json";
 const MCP_CONFIG = ".mcp.json";
 // A new session, /clear and compaction; never a resume, which already holds the injection.
 const HOOK_MATCHER = "startup|clear|compact";
-const SERVER = { type: "stdio", command: "mdmem", args: ["mcp"] };
+const SERVER = { type: "stdio", ...MCP_SERVER };
 const TOOLS_PERMISSION = "mcp__mdmem";
 const AUTO_MEMORY_KEY = "autoMemoryEnabled";
 const AUTO_MEMORY_LABEL = `${AUTO_MEMORY_KEY}: false`;
@@ -52,13 +61,12 @@ const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
 const ENV_FALSE = new Set(["0", "false", "no", "off"]);
 const DISABLE_HOOKS_KEY = "disableAllHooks";
 
-function hookEntry(part: HookPart) {
-  const command = `mdmem hook claude-code ${part}`;
-  return arrayItemEntry(
-    `SessionStart hook "${command}"`,
-    ["hooks", "SessionStart"],
-    { matcher: HOOK_MATCHER, hooks: [{ type: "command", command }] }
-  );
+function hookEntry(part: HookPart): JsonEntry {
+  const command = hookCommand(ID, part);
+  return arrayItemEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
+    matcher: HOOK_MATCHER,
+    hooks: [{ type: "command", command }],
+  });
 }
 
 const HOOK_ENTRIES = HOOK_PARTS.map(hookEntry);
@@ -92,7 +100,8 @@ function reimportAdvice(marker: string): string {
 interface ImportOutcome {
   lines: string[];
   warnings: string[];
-  record?: string;
+  /** The path of the import marker to write; undefined when there is nothing to record. */
+  markerToWrite?: string;
 }
 
 /**
@@ -106,10 +115,9 @@ async function planImportOnce(
   options: EnableOptions
 ): Promise<() => Promise<ImportOutcome>> {
   const environment = { env: ctx.env, home: ctx.home };
-  const marker = await importMarker(ctx.store, environment);
-  if (existsSync(marker)) {
-    const text = await readFile(marker, "utf-8");
-    const recorded = text.trim();
+  const marker = importMarker(ctx.store, environment);
+  const recorded = await readImportMarker(marker);
+  if (recorded !== undefined) {
     const when = recorded === "" ? "" : ` (${recorded})`;
     const prefer =
       options.prefer === undefined
@@ -133,17 +141,9 @@ async function planImportOnce(
       lines: formatImport(result),
       warnings: result.warnings,
       // Nothing to remember when Claude held no memories for the repository.
-      record: result.sources.length > 0 ? marker : undefined,
+      markerToWrite: result.sources.length > 0 ? marker : undefined,
     };
   };
-}
-
-/** Claude Code's config directory: CLAUDE_CONFIG_DIR when set, else ~/.claude. */
-function claudeConfigDir({
-  env,
-  home,
-}: Pick<AdapterContext, "env" | "home">): string {
-  return env.CLAUDE_CONFIG_DIR || join(home, ".claude");
 }
 
 /** Claude Code's user settings file, in its config directory. */
@@ -197,7 +197,7 @@ async function autoMemoryProblem(ctx: AdapterContext): Promise<string[]> {
     ];
   }
   return [
-    `${on}: ${AUTO_MEMORY_KEY} is not false in ${SETTINGS}, ${consequence} — run \`mdmem enable claude-code\``,
+    `${on}: ${AUTO_MEMORY_KEY} is not false in ${SETTINGS}, ${consequence} — run \`mdmem enable ${ID}\``,
   ];
 }
 
@@ -211,7 +211,7 @@ async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
     : [];
 }
 
-export const claudeCodeAdapter: Adapter = {
+export const claudeCodeAdapter: AdapterFor<typeof ID> = {
   id: ID,
   command: "claude",
   configDir: claudeConfigDir,
@@ -228,13 +228,8 @@ export const claudeCodeAdapter: Adapter = {
       write: async () => {
         const imported = await importOnce();
         // Recorded before the config files, so a failed write leaves the import done once.
-        if (imported.record !== undefined) {
-          await mkdir(dirname(imported.record), { recursive: true });
-          await writeFile(
-            imported.record,
-            `${new Date().toISOString()} into ${ctx.store.root}\n`,
-            "utf-8"
-          );
+        if (imported.markerToWrite !== undefined) {
+          await writeImportMarker(imported.markerToWrite, ctx.store);
         }
         await writeConfigs(plan);
         return {
@@ -242,7 +237,7 @@ export const claudeCodeAdapter: Adapter = {
           actions: [
             ...imported.lines,
             ...describePlan(plan, "add"),
-            `Commit ${SETTINGS} and ${MCP_CONFIG}: they wire Claude Code for everyone working in the repository, who then needs mdmem on PATH.`,
+            commitLine([SETTINGS, MCP_CONFIG], `they wire ${TITLE}`),
           ],
           warnings: imported.warnings,
         };
@@ -258,17 +253,15 @@ export const claudeCodeAdapter: Adapter = {
       return outsideProjectPlan(TITLE);
     }
     const plan = await planConfigs(ctx.projectRoot, FILES, "remove");
-    const marker = await importMarker(ctx.store, {
-      env: ctx.env,
-      home: ctx.home,
-    });
+    const marker = importMarker(ctx.store, { env: ctx.env, home: ctx.home });
     // Auto memory is back on, so Claude may save memories that a later enable,
     // skipping the import, would leave out.
-    const markerLine = existsSync(marker)
-      ? [
-          `The import marker stays, so a later \`mdmem enable ${ID}\` skips the import and leaves out the memories Claude Code saves meanwhile. ${reimportAdvice(marker)}`,
-        ]
-      : [];
+    const markerLine =
+      (await readImportMarker(marker)) === undefined
+        ? []
+        : [
+            `The import marker stays, so a later \`mdmem enable ${ID}\` skips the import and leaves out the memories Claude Code saves meanwhile. ${reimportAdvice(marker)}`,
+          ];
     return {
       write: async () => {
         await writeConfigs(plan);
@@ -291,29 +284,23 @@ export const claudeCodeAdapter: Adapter = {
     const enabled = entries.some(
       ({ label, present }) => present && label !== AUTO_MEMORY_LABEL
     );
-    const problems = enabled
-      ? [
-          ...missingHooksProblem(
-            { id: ID, title: TITLE },
-            entries,
-            ({ label }) => (HOOK_LABELS.has(label) ? 1 : 0)
+    return agentStatus(
+      claudeCodeAdapter,
+      { entries, enabled, warnings },
+      async () => ({
+        problems: [
+          ...missingHooksProblem(claudeCodeAdapter, entries, ({ label }) =>
+            HOOK_LABELS.has(label) ? 1 : 0
           ),
           ...(await disabledHooksProblem(ctx)),
           ...(await autoMemoryProblem(ctx)),
-        ]
-      : [];
-    return {
-      title: TITLE,
-      wired: entries.every(({ present }) => present),
-      enabled,
-      entries,
-      problems,
-      warnings,
-      notes: enabled
-        ? [
-            `Claude Code runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,
-          ]
-        : [],
-    };
+        ],
+        notes: [
+          `${TITLE} runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,
+        ],
+      })
+    );
   },
+
+  submoduleClause: `${TITLE} applies the submodule's settings, not the superproject's, so mdmem's setting that turns its auto memory off does not apply`,
 };

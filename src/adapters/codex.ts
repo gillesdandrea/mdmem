@@ -1,10 +1,18 @@
 import { join, resolve } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import { missingHooksProblem, OUTSIDE_PROJECT_LINE } from "./adapter.ts";
+import {
+  agentStatus,
+  commitLine,
+  hookCommands,
+  hooksLabel,
+  MCP_SERVER,
+  missingHooksProblem,
+  OUTSIDE_PROJECT_LINE,
+} from "./adapter.ts";
 import type {
-  Adapter,
   AdapterContext,
+  AdapterFor,
   AgentStatus,
   DisableOptions,
   WiringPlan,
@@ -27,6 +35,9 @@ import type { TomlTableEntry } from "./toml-config.ts";
 const ID = "codex";
 const TITLE = "Codex CLI";
 
+/** The variable Codex reads its home from. */
+export const CODEX_HOME_ENV = "CODEX_HOME";
+
 // Codex CLI's session-start hook is global (ADR 0003): Codex pins a hook's approval
 // to the absolute path of the file declaring it, so a hook in each worktree's
 // .codex/hooks.json would need approving in every worktree, while one in
@@ -39,7 +50,7 @@ const MCP_CONFIG = ".codex/config.toml";
 // Seconds; Codex's default is 600.
 const HOOK_TIMEOUT = 10;
 
-const commands = HOOK_PARTS.map((part) => `mdmem hook codex ${part}`);
+const commands = hookCommands(ID);
 
 // No matcher: mdmem hook skips a resumed session itself. additionalContextLimit 0
 // lifts Codex's cap of about 2,500 tokens per context, past which it replaces the
@@ -57,7 +68,7 @@ const SERVER_ENTRY: TomlTableEntry = {
   label: "[mcp_servers.mdmem]",
   file: MCP_CONFIG,
   path: ["mcp_servers", "mdmem"],
-  value: { command: "mdmem", args: ["mcp"] },
+  value: MCP_SERVER,
 };
 
 /** Codex's home: CODEX_HOME when set, else ~/.codex. */
@@ -65,7 +76,7 @@ function codexHome({
   env,
   home,
 }: Pick<AdapterContext, "env" | "home">): string {
-  const fromEnv = env.CODEX_HOME;
+  const fromEnv = env[CODEX_HOME_ENV];
   return fromEnv === undefined || fromEnv === ""
     ? join(home, ".codex")
     : resolve(fromEnv);
@@ -77,7 +88,7 @@ function hooksFile(ctx: AdapterContext): JsonConfigFile {
     file: join(codexHome(ctx), "hooks.json"),
     entries: [
       arrayItemEntry(
-        `SessionStart hooks ${commands.map((command) => `"${command}"`).join(", ")}`,
+        hooksLabel(commands),
         ["hooks", "SessionStart"],
         HOOK_GROUP
       ),
@@ -85,7 +96,7 @@ function hooksFile(ctx: AdapterContext): JsonConfigFile {
   };
 }
 
-export const codexAdapter: Adapter = {
+export const codexAdapter: AdapterFor<typeof ID> = {
   id: ID,
   command: "codex",
   configDir: codexHome,
@@ -110,7 +121,11 @@ export const codexAdapter: Adapter = {
           actions: [
             ...describePlan(plan, "add"),
             ...review,
-            `Commit ${MCP_CONFIG}: it registers the mdmem MCP server for everyone working in the repository, who then needs mdmem on PATH. Codex reads it only in a trusted folder.`,
+            commitLine(
+              [MCP_CONFIG],
+              "it registers the mdmem MCP server",
+              "Codex reads it only in a trusted folder."
+            ),
           ],
           warnings: [],
         };
@@ -186,29 +201,22 @@ export const codexAdapter: Adapter = {
     // The global hook alone does not wire this project: it is shared by every project.
     const enabled = server.present;
     // Without CODEX_HOME, the hooks file read may not be the one Codex reads.
-    const hooksKnown = !ctx.unknownEnv?.includes("CODEX_HOME");
-    return {
-      title: TITLE,
-      wired: entries.every(({ present }) => present),
-      enabled,
-      entries,
-      problems:
-        enabled && hooksKnown
-          ? missingHooksProblem(
-              { id: ID, title: TITLE },
-              hooks.entries,
-              () => HOOK_PARTS.length
-            )
-          : [],
-      notes: enabled
-        ? [
-            `${TITLE} reads ${MCP_CONFIG} only in a trusted folder, and runs the global hook only once you have reviewed it: mdmem does not check either.`,
-          ]
+    const hooksKnown = !ctx.unknownEnv?.includes(CODEX_HOME_ENV);
+    const warnings = [
+      ...(server.warning === undefined ? [] : [server.warning]),
+      ...hooks.warnings,
+    ];
+    return agentStatus(codexAdapter, { entries, enabled, warnings }, () => ({
+      problems: hooksKnown
+        ? missingHooksProblem(
+            codexAdapter,
+            hooks.entries,
+            () => HOOK_PARTS.length
+          )
         : [],
-      warnings: [
-        ...(server.warning === undefined ? [] : [server.warning]),
-        ...hooks.warnings,
+      notes: [
+        `${TITLE} reads ${MCP_CONFIG} only in a trusted folder, and runs the global hook only once you have reviewed it: mdmem does not check either.`,
       ],
-    };
+    }));
   },
 };

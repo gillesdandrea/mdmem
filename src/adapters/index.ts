@@ -1,23 +1,29 @@
 import { existsSync } from "node:fs";
 
-import type { Adapter, AdapterContext } from "./adapter.ts";
+import { HOOK_AGENTS } from "../core/hook.ts";
+import type { HookAgent } from "../core/hook.ts";
+import type { Adapter, AdapterContext, AdapterFor } from "./adapter.ts";
 import { bobAdapter } from "./bob.ts";
 import { claudeCodeAdapter } from "./claude-code.ts";
 import { codexAdapter } from "./codex.ts";
 
-/** The supported agents: only those with session-start hooks (ADR 0003). */
-const REGISTRY: readonly Adapter[] = [
-  claudeCodeAdapter,
-  bobAdapter,
-  codexAdapter,
-];
+// Keyed by agent, each key checked against its adapter's id.
+const ADAPTERS: { readonly [K in HookAgent]: AdapterFor<K> } = {
+  "claude-code": claudeCodeAdapter,
+  bob: bobAdapter,
+  codex: codexAdapter,
+};
+
+/** The supported agents, in HOOK_AGENTS' order: only those with session-start hooks (ADR 0003). */
+const REGISTRY: readonly Adapter[] = HOOK_AGENTS.map((id) => ADAPTERS[id]);
 
 export function listAdapters(): readonly Adapter[] {
   return REGISTRY;
 }
 
 export function getAdapter(id: string): Adapter | undefined {
-  return REGISTRY.find((a) => a.id === id);
+  const agent = HOOK_AGENTS.find((known) => known === id);
+  return agent === undefined ? undefined : ADAPTERS[agent];
 }
 
 export function adapterIds(): string[] {
@@ -51,14 +57,3 @@ export function findAdapters(ctx: Pick<AdapterContext, "env" | "home">): {
   }
   return { found, notFound };
 }
-
-export type {
-  Adapter,
-  AdapterContext,
-  AgentStatus,
-  DisableOptions,
-  EnableOptions,
-  WiringEntry,
-  WiringPlan,
-  WiringResult,
-} from "./adapter.ts";

@@ -6,6 +6,7 @@ import type {
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
+import { CODEX_HOME_ENV } from "../adapters/codex.ts";
 import { adapterContext, checkProject } from "../adapters/report.ts";
 import { formatCheck, POINTER_MAX_CHARS } from "../core/check.ts";
 import {
@@ -27,6 +28,7 @@ import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
 import { versionOf, VersionConflictError } from "../core/store.ts";
 import type { MemoryStore } from "../core/store.ts";
+import { messageOf } from "../core/text.ts";
 
 /**
  * MCP surface over the shared `.memory/` store, for agents that would rather call
@@ -179,7 +181,7 @@ async function withStore(
       return errorText(error.message);
     }
     // Anything else, such as a file the store cannot read, is still a result, never a crash.
-    return errorText(error instanceof Error ? error.message : String(error));
+    return errorText(messageOf(error));
   }
 }
 
@@ -193,10 +195,10 @@ const CODEX_CLIENT = "codex-mcp-client";
  * rust-v0.160.0), so without CODEX_HOME here its own CODEX_HOME is unknown.
  */
 function unknownEnv(client: string | undefined): string[] {
-  const codexHome = process.env.CODEX_HOME;
+  const codexHome = process.env[CODEX_HOME_ENV];
   return client === CODEX_CLIENT &&
     (codexHome === undefined || codexHome === "")
-    ? ["CODEX_HOME"]
+    ? [CODEX_HOME_ENV]
     : [];
 }
 

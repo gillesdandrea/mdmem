@@ -7,6 +7,8 @@
  * Adapters are the only agent-specific code; everything else is agent-neutral.
  */
 
+import { HOOK_PARTS } from "../core/hook.ts";
+import type { HookAgent, HookPart } from "../core/hook.ts";
 import type { ImportPreference } from "../core/import.ts";
 import type { MemoryStore } from "../core/store.ts";
 
@@ -36,7 +38,7 @@ export interface EnableOptions {
 }
 
 export interface DisableOptions {
-  /** Codex (mdmem-4wz.10): also remove mdmem's handlers from the user-wide hooks file. Ignored by agents with no user-wide entries. */
+  /** Codex: also remove mdmem's handlers from the user-wide hooks file. Ignored by agents with no user-wide entries. */
   global?: boolean;
   /**
    * No project holds the working directory (no repository, no store): leave the
@@ -66,6 +68,9 @@ export interface WiringPlan {
   write: () => Promise<WiringResult>;
 }
 
+/** What enable (`add`) or disable (`remove`) does to mdmem's entries. */
+export type WiringMode = "add" | "remove";
+
 /** One piece of an agent's wiring, in one of its files. */
 export interface WiringEntry {
   label: string;
@@ -75,6 +80,8 @@ export interface WiringEntry {
 }
 
 export interface AgentStatus {
+  /** The adapter's id. */
+  id: HookAgent;
   title: string;
   /** Every entry is present. */
   wired: boolean;
@@ -87,6 +94,75 @@ export interface AgentStatus {
   warnings: string[];
   /** Status only, under the agent: what the agent decides that mdmem cannot read, such as folder trust. */
   notes: string[];
+}
+
+/** The mdmem MCP server, as every agent's config registers it (Claude Code's adds its transport type). */
+export const MCP_SERVER = { command: "mdmem", args: ["mcp"] };
+
+/** The command of the agent's session-start hook that injects `part`. */
+export function hookCommand(agent: HookAgent, part: HookPart): string {
+  return `mdmem hook ${agent} ${part}`;
+}
+
+/** The commands of the agent's session-start hooks, one per part. */
+export function hookCommands(agent: HookAgent): string[] {
+  return HOOK_PARTS.map((part) => hookCommand(agent, part));
+}
+
+/** The label of an entry holding the session-start hooks that run `commands`. */
+export function hooksLabel(commands: readonly string[]): string {
+  const quoted = commands.map((command) => `"${command}"`).join(", ");
+  return `SessionStart ${commands.length === 1 ? "hook" : "hooks"} ${quoted}`;
+}
+
+/**
+ * The action line of enable telling the user to commit the agent's project files
+ * `files`, which `what` ("they wire …"), and what the agent then requires `after`.
+ */
+export function commitLine(
+  files: readonly string[],
+  what: string,
+  after?: string
+): string {
+  const tail = after === undefined ? "" : ` ${after}`;
+  return `Commit ${files.join(" and ")}: ${what} for everyone working in the repository, who then needs mdmem on PATH.${tail}`;
+}
+
+/** What an agent's status holds only when the project is enabled for it. */
+export interface EnabledStatus {
+  problems: string[];
+  /** After the warnings about the agent's files. */
+  warnings?: string[];
+  notes: string[];
+}
+
+/**
+ * An agent's status from its entries: wired when every entry is present, and with
+ * the problems, notes and further warnings of `whenEnabled`, which runs only when
+ * the project is `enabled` for the agent.
+ */
+export async function agentStatus(
+  adapter: Pick<Adapter, "id" | "title">,
+  {
+    entries,
+    enabled,
+    warnings,
+  }: { entries: WiringEntry[]; enabled: boolean; warnings: string[] },
+  whenEnabled: () => EnabledStatus | Promise<EnabledStatus>
+): Promise<AgentStatus> {
+  const more: EnabledStatus = enabled
+    ? await whenEnabled()
+    : { problems: [], notes: [] };
+  return {
+    id: adapter.id,
+    title: adapter.title,
+    wired: entries.every(({ present }) => present),
+    enabled,
+    entries,
+    problems: more.problems,
+    warnings: [...warnings, ...(more.warnings ?? [])],
+    notes: more.notes,
+  };
 }
 
 /**
@@ -130,7 +206,7 @@ export function outsideProjectPlan(title: string): WiringPlan {
 }
 
 export interface Adapter {
-  readonly id: string;
+  readonly id: HookAgent;
   readonly title: string;
   /** The agent's command: on PATH, it counts the agent as found on this machine for `--all`. */
   readonly command: string;
@@ -150,6 +226,11 @@ export interface Adapter {
   ) => Promise<WiringPlan>;
   status: (ctx: AdapterContext) => Promise<AgentStatus>;
   /**
+   * What an agent started in a submodule of a project wired for it misses beyond
+   * the protocol, the index and the tools: a clause of status's submodule warning.
+   */
+  readonly submoduleClause?: string;
+  /**
    * For an agent whose session-start hook is user-wide (Codex), whether the project
    * at `projectRoot` is wired for it: the hook stays silent where it is not.
    * Absent for an agent whose hooks live in the project's own files, which disable
@@ -157,3 +238,6 @@ export interface Adapter {
    */
   projectWired?: (projectRoot: string) => Promise<boolean>;
 }
+
+/** The adapter of agent `K`: its id is `K` itself, so a registry keyed by agent can check each key against its adapter. */
+export type AdapterFor<K extends HookAgent> = Adapter & { readonly id: K };

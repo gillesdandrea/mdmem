@@ -16,15 +16,15 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 
 import { OUTSIDE_PROJECT_LINE } from "../src/adapters/adapter.ts";
-import { bobAdapter } from "../src/adapters/bob.ts";
-import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
-import { codexAdapter } from "../src/adapters/codex.ts";
 import type {
   Adapter,
   AdapterContext,
   WiringPlan,
   WiringResult,
-} from "../src/adapters/index.ts";
+} from "../src/adapters/adapter.ts";
+import { bobAdapter } from "../src/adapters/bob.ts";
+import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
+import { codexAdapter } from "../src/adapters/codex.ts";
 import {
   adapterContext,
   checkProject,

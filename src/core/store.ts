@@ -180,7 +180,8 @@ function storeAt(root: string): StoreLocation {
   return { root, dir, exists: isDirectory(dir) };
 }
 
-function realDir(path: string): string {
+/** The real path of `path`, symlinks resolved; `path` resolved, when it cannot be (it does not exist, say). */
+export function realDir(path: string): string {
   try {
     return realpathSync(path);
   } catch {

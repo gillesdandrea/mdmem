@@ -14,8 +14,7 @@ import { openStore } from "../core/operations.ts";
 import { RefusalError } from "../core/refusal.ts";
 import { locateStore, MemoryStore, STORE_DIR } from "../core/store.ts";
 import type { AdapterContext, AgentStatus } from "./adapter.ts";
-import { claudeCodeAdapter } from "./claude-code.ts";
-import { listAdapters } from "./index.ts";
+import { getAdapter, listAdapters } from "./index.ts";
 
 /**
  * What the check and `mdmem status` report about a project beyond its store: the
@@ -117,23 +116,21 @@ function submoduleWarnings(
   if (superproject === null) {
     return [];
   }
-  const unwiredHere = superproject.agents
-    .filter(
-      ({ enabled, title }) =>
-        enabled &&
-        !submoduleAgents.some(
-          (status) => status.title === title && status.enabled
-        )
-    )
-    .map(({ title }) => title);
+  const unwiredHere = superproject.agents.filter(
+    ({ enabled, id }) =>
+      enabled &&
+      !submoduleAgents.some((status) => status.id === id && status.enabled)
+  );
   if (unwiredHere.length === 0) {
     return [];
   }
-  const claudeClause = unwiredHere.includes(claudeCodeAdapter.title)
-    ? `; ${claudeCodeAdapter.title} applies the submodule's settings, not the superproject's, so mdmem's setting that turns its auto memory off does not apply`
-    : "";
+  const titles = unwiredHere.map(({ title }) => title).join(", ");
+  const clauses = unwiredHere
+    .flatMap(({ id }) => getAdapter(id)?.submoduleClause ?? [])
+    .map((clause) => `; ${clause}`)
+    .join("");
   return [
-    `This is a submodule of ${superproject.root}, which is wired for ${unwiredHere.join(", ")}: an agent started here reads the submodule's own files, not the superproject's, so its sessions get no memory protocol, no index and no mdmem tools${claudeClause}. Start agents at ${superproject.root}.`,
+    `This is a submodule of ${superproject.root}, which is wired for ${titles}: an agent started here reads the submodule's own files, not the superproject's, so its sessions get no memory protocol, no index and no mdmem tools${clauses}. Start agents at ${superproject.root}.`,
   ];
 }
 
