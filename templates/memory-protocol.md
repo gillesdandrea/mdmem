@@ -1,8 +1,8 @@
 # Memory protocol
 
 This project has a persistent, file-based memory: the memory store, a `.memory/`
-directory of Markdown memories at the root of the project's main checkout, shared by
-every agent that works here. Build it up over time, so that future sessions, yours or another agent's,
+directory of Markdown memories shared by every agent that works here. The block
+holding the index, injected at session start, gives its path. Build it up over time, so that future sessions, yours or another agent's,
 start with a complete picture of who the user is, how they want to work with you,
 what to avoid and what to repeat, and the context behind the work.
 
