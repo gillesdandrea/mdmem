@@ -436,7 +436,8 @@ Usage: mdmem <command> [options]
                             Wire an agent to the shared store, in files meant to be committed
                             (claude-code: import Claude's memories once, turn its auto memory off,
                             add its session-start hooks and the mdmem MCP server; --prefer settles
-                            an import conflict by keeping Claude's file or the store's)
+                            an import conflict by keeping Claude's file or the store's; bob: add its
+                            session-start hooks and the mdmem MCP server)
   disable <agent…> | --all  Remove exactly mdmem's entries from an agent's files (leaves the store)
   status                    Show the store and each agent's wiring, entry by entry
   path                      Print the store directory

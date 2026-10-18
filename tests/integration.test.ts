@@ -12,6 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { z } from "zod";
+
 import { agentsAdapter } from "../src/adapters/agents.ts";
 import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
@@ -224,6 +226,133 @@ describe("claude-code wiring", () => {
   });
 });
 
+const BOB_SETTINGS = ".bob/settings.json";
+const BOB_MCP = ".bob/mcp.json";
+const BOB_HOOK_GROUP = {
+  matcher: "^(startup|compact)$",
+  hooks: ["protocol", "index"].map((part) => ({
+    type: "command",
+    command: `mdmem hook bob ${part}`,
+    timeout: 10,
+  })),
+};
+
+// Bob's documented hooks shape: strict at every level, so one unknown key voids the block.
+const bobCommandHandler = z
+  .object({
+    type: z.literal("command"),
+    command: z.string().min(1),
+    timeout: z.number().positive().optional(),
+    disabled: z.boolean().optional(),
+  })
+  .strict();
+const bobHooks = z.record(
+  z.string(),
+  z.array(
+    z
+      .object({
+        matcher: z.string().optional(),
+        hooks: z.array(bobCommandHandler),
+      })
+      .strict()
+  )
+);
+
+describe("bob wiring", () => {
+  test("enable merges mdmem's hook group and server into existing files, valid for Bob and idempotent, and disable takes exactly them out", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      const settings = {
+        approval: { autoApprovalEnabled: true },
+        hooks: {
+          PostToolUse: [
+            {
+              matcher: "execute_command",
+              hooks: [{ type: "command", command: "lint", timeout: 5 }],
+            },
+          ],
+          SessionStart: [{ hooks: [{ type: "command", command: "echo hi" }] }],
+        },
+      };
+      const mcp = { mcpServers: { other: { command: "other-server" } } };
+      const settingsText = `${JSON.stringify(settings, null, 2)}\n`;
+      const mcpText = `${JSON.stringify(mcp, null, 2)}\n`;
+      await mkdir(join(root, ".bob"));
+      await writeFile(join(root, BOB_SETTINGS), settingsText, "utf-8");
+      await writeFile(join(root, BOB_MCP), mcpText, "utf-8");
+
+      await bobAdapter.enable(ctx, {});
+      const wiredSettings = {
+        ...settings,
+        hooks: {
+          ...settings.hooks,
+          SessionStart: [...settings.hooks.SessionStart, BOB_HOOK_GROUP],
+        },
+      };
+      const wiredMcp = {
+        mcpServers: {
+          other: mcp.mcpServers.other,
+          mdmem: { command: "mdmem", args: ["mcp"] },
+        },
+      };
+      const written = await readText(join(root, BOB_SETTINGS));
+      expect(written).toBe(`${JSON.stringify(wiredSettings, null, 2)}\n`);
+      expect(
+        bobHooks.safeParse(JSON.parse(written ?? "{}").hooks).success
+      ).toBe(true);
+      expect(await readText(join(root, BOB_MCP))).toBe(
+        `${JSON.stringify(wiredMcp, null, 2)}\n`
+      );
+      expect(await wired(bobAdapter, ctx)).toBe(true);
+
+      // a second run changes nothing
+      const again = await bobAdapter.enable(ctx, {});
+      expect(again.actions).toContain(
+        `${BOB_SETTINGS} already holds mdmem's entries`
+      );
+      expect(again.actions).toContain(
+        `${BOB_MCP} already holds mdmem's entries`
+      );
+      expect(await readText(join(root, BOB_SETTINGS))).toBe(written);
+      expect(await readText(join(root, BOB_MCP))).toBe(
+        `${JSON.stringify(wiredMcp, null, 2)}\n`
+      );
+
+      await bobAdapter.disable(ctx, {});
+      expect(await readText(join(root, BOB_SETTINGS))).toBe(settingsText);
+      expect(await readText(join(root, BOB_MCP))).toBe(mcpText);
+      const after = await bobAdapter.status(ctx);
+      expect(after.wired).toBe(false);
+      expect(after.entries.some(({ present }) => present)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("disable deletes a file that held only mdmem's entries", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      await bobAdapter.enable(ctx, {});
+      const status = await bobAdapter.status(ctx);
+      expect(
+        status.entries.map(({ file, present }) => [file, present])
+      ).toEqual([
+        [BOB_SETTINGS, true],
+        [BOB_MCP, true],
+      ]);
+
+      const disabled = await bobAdapter.disable(ctx, {});
+      expect(disabled.actions).toContain(
+        `deleted ${BOB_MCP}: it held only mdmem's entries`
+      );
+      expect(existsSync(join(root, BOB_SETTINGS))).toBe(false);
+      expect(existsSync(join(root, BOB_MCP))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("rule-file adapters", () => {
   test("AGENTS.md: enabling twice installs one block, and disable removes it, leaving other content", async () => {
     const { root, ctx } = await tempProject();
@@ -257,22 +386,6 @@ describe("rule-file adapters", () => {
       await agentsAdapter.enable(ctx, {});
       await agentsAdapter.disable(ctx, {});
       expect(existsSync(join(root, "AGENTS.md"))).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test("bob adapter installs and removes .bob/rules/memory.md", async () => {
-    const { root, ctx } = await tempProject();
-    try {
-      await bobAdapter.enable(ctx, {});
-      const rule = await readFile(join(root, ".bob/rules/memory.md"), "utf-8");
-      expect(rule).toContain("Memory protocol");
-      expect(await wired(bobAdapter, ctx)).toBe(true);
-
-      await bobAdapter.disable(ctx, {});
-      expect(existsSync(join(root, ".bob/rules/memory.md"))).toBe(false);
-      expect(await wired(bobAdapter, ctx)).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -277,6 +277,24 @@ export async function writeConfigs(
   }
 }
 
+/** One line per planned file, saying what enable ("add") or disable ("remove") did to it. */
+export function describePlan(
+  plan: readonly PlannedFile[],
+  mode: "add" | "remove"
+): string[] {
+  return plan.map(({ file, next, changed }) => {
+    if (changed.length === 0) {
+      return mode === "add"
+        ? `${file} already holds mdmem's entries`
+        : `${file} holds none of mdmem's entries`;
+    }
+    if (next === null) {
+      return `deleted ${file}: it held only mdmem's entries`;
+    }
+    return `${mode === "add" ? "added" : "removed"} in ${file}: ${changed.join(", ")}`;
+  });
+}
+
 /** Each entry of `files`, present or not; a file that cannot be read as a JSON object holds none, and a warning names it. */
 export async function configStatus(
   root: string,

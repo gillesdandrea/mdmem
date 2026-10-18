@@ -19,11 +19,12 @@ import type {
 import {
   arrayItemEntry,
   configStatus,
+  describePlan,
   planConfigs,
   valueEntry,
   writeConfigs,
 } from "./json-config.ts";
-import type { JsonConfigFile, PlannedFile } from "./json-config.ts";
+import type { JsonConfigFile } from "./json-config.ts";
 
 const TITLE = "Claude Code";
 
@@ -64,23 +65,6 @@ const FILES: readonly JsonConfigFile[] = [
     entries: [valueEntry("mcpServers.mdmem", ["mcpServers", "mdmem"], SERVER)],
   },
 ];
-
-function describePlan(
-  plan: readonly PlannedFile[],
-  mode: "add" | "remove"
-): string[] {
-  return plan.map(({ file, next, changed }) => {
-    if (changed.length === 0) {
-      return mode === "add"
-        ? `${file} already holds mdmem's entries`
-        : `${file} holds none of mdmem's entries`;
-    }
-    if (next === null) {
-      return `deleted ${file}: it held only mdmem's entries`;
-    }
-    return `${mode === "add" ? "added" : "removed"} in ${file}: ${changed.join(", ")}`;
-  });
-}
 
 /**
  * Import Claude's memories unless this user already did for the repository: the

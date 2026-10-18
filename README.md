@@ -38,7 +38,9 @@ any agent is visible to all of them.
     before acting on it, and saving through the MCP tools (writing files directly only
     when an agent lacks them). Its text lives in `templates/memory-protocol.md` and is
     easy to edit.
-  - **IBM Bob** (`bob`) — writes that same protocol to `.bob/rules/memory.md`.
+  - **IBM Bob** (`bob`): wires it through session-start hooks and the mdmem
+    MCP server, in workspace files meant to be committed. See [IBM Bob](#ibm-bob)
+    below.
   - **Cursor** (`cursor`) — writes `.cursor/rules/memory.mdc` (Cursor requires the
     `.mdc` extension and `alwaysApply: true` frontmatter to load a rule every session).
 - **Two surfaces, one core:** a CLI for humans/scripts and setup, and an MCP
@@ -52,8 +54,9 @@ bun link          # puts `mdmem` on your PATH
 ```
 
 Run `mdmem` from inside your project. The hooks and MCP server that
-`mdmem enable claude-code` writes (see [Claude Code](#claude-code)) also expect
-`mdmem` on your PATH.
+`mdmem enable claude-code` and `mdmem enable bob` write (see
+[Claude Code](#claude-code) and [IBM Bob](#ibm-bob)) also expect `mdmem` on
+your PATH.
 
 ## Quickstart
 
@@ -163,6 +166,30 @@ config directory, and against the
 the key in the project settings of a trusted folder the server connects; without
 it, or in an untrusted folder, it stays pending approval. A `claude -p` run
 connects project servers without asking, approved or not.
+
+## IBM Bob
+
+`mdmem enable bob` merges two entries into Bob's workspace files, leaving their
+other keys, and their order and indentation, as they were:
+
+- in `.bob/settings.json`, one `SessionStart` hook group, matcher
+  `^(startup|compact)$` (a new session and compaction, not a resume), with two
+  command handlers, `mdmem hook bob protocol` and `mdmem hook bob index`, each
+  with a 10-second timeout. Bob validates hooks strictly, so a single unknown
+  key voids the whole `hooks` block: the group holds only documented fields.
+- in `.bob/mcp.json`, the mdmem server:
+  `"mcpServers": {"mdmem": {"command": "mdmem", "args": ["mcp"]}}`.
+
+Commit both files: they wire Bob for everyone working in the repository, and
+everyone then needs `mdmem` on PATH. `mdmem disable bob` removes exactly these
+entries, along with an object or array they leave empty, and deletes a file that
+held nothing else. `mdmem status` lists each entry as present or missing.
+
+Bob runs workspace hooks and MCP servers only in a trusted folder; in an
+untrusted one neither runs. Bob also reads both `.bob/settings.json` (the
+hooks) and `.bob/mcp.json` only from its workspace, the folder it was launched
+in: launched at a checkout's root it gets the protocol, the index and the mdmem
+tools; launched in a subdirectory it has no memory wiring at all.
 
 ## Memory format
 

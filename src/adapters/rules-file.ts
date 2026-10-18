@@ -13,7 +13,7 @@ import type {
 interface RulesFileConfig {
   id: string;
   title: string;
-  /** Repo-relative path of the dedicated rule file, e.g. ".bob/rules/memory.md". */
+  /** Repo-relative path of the dedicated rule file, e.g. ".cursor/rules/memory.mdc". */
   rulePath: string;
   /** Text prepended before the protocol, e.g. Cursor's `.mdc` frontmatter. */
   frontmatter?: string;
@@ -21,7 +21,7 @@ interface RulesFileConfig {
 
 /**
  * Adapter for an agent that loads always-on rules from a dedicated file it owns
- * entirely (IBM Bob, Cursor, …). The file holds the raw protocol — optionally
+ * entirely (Cursor). The file holds the raw protocol — optionally
  * behind a frontmatter preamble — written and removed wholesale, with no marker
  * block (unlike the shared AGENTS.md).
  */
