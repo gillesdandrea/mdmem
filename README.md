@@ -18,14 +18,18 @@ any agent is visible to all of them.
   your home directory the walk stops before reaching it (run from the home
   directory itself, it still looks there). mdmem never edits `.gitignore`: ignoring or
   committing `.memory/` is your choice, and `mdmem init` says when git does not
-  ignore it.
+  ignore it. Committing it suits projects without worktrees: each linked worktree
+  would also check out a copy of `.memory/`, which mdmem ignores there.
 - **mdmem keeps the index up to date from the memories.** Agents only ever write
   their own memory files. After every save or delete through mdmem, and on
   `mdmem reindex`, mdmem updates `MEMORY.md` in place: it appends a pointer for a
   memory that has none, removes pointers to missing files and duplicate pointers,
-  and rewrites a pointer's description only when that memory's description
-  changed. Every other line (a title, headings, prose, a pointer's own title) is
-  kept, so an index written by hand or by Claude Code survives. An empty store has
+  and keeps descriptions current: a pointer in mdmem's form (titled with its
+  memory's name, then ` — `) takes the memory's description whenever it differs,
+  so a direct edit reaches the index; any other pointer (written by hand or by
+  Claude Code) takes a new description only when a save of its memory through
+  mdmem changes it, or finds no ` — ` on it. Every other line (a title,
+  headings, prose, a pointer's own title) is kept, so an index written by hand or by Claude Code survives. An empty store has
   an empty index.
 - **Each agent is wired to the store in its own native way** (`mdmem enable`),
   through session-start hooks that inject the memory protocol and the index,
@@ -89,7 +93,7 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
-| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring (see [What status and the check report](#what-status-and-the-check-report)) |
+| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring (see [What status and the check report](#what-status-and-the-check-report)) |
 | `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--all` wires the agents found on this machine (see below). `--prefer` settles a Claude Code import conflict, and is refused unless `claude-code` is among the agents. |
 | `mdmem disable <agent…> \| --all [--global]` | Remove exactly mdmem's entries from an agent's files (leaves the store); `--all` takes the agents found on this machine. Needs no store. Codex's hook in `~/.codex/hooks.json` stays unless `--global`. |
 | `mdmem status` | Show the store, the check in one line, and each agent's wiring, entry by entry (present or missing), with the warnings and notes below |
@@ -213,6 +217,9 @@ removes exactly these entries, along with an object or array they leave empty
 held nothing else; the imported memories stay in `.memory/`. `mdmem status` lists each entry as present
 or missing.
 
+Claude Code ignores the `permissions.allow` entry in `.claude/settings.json`
+until you accept the folder's trust dialog once.
+
 Claude Code asks each user to approve a server from a project's `.mcp.json`
 before it connects it; until then the mdmem tools are missing and agents fall
 back to writing files directly. Approving it in that dialog writes
@@ -290,9 +297,9 @@ only that project's server.
 
 Commit `.codex/config.toml`: it registers the server for everyone working in
 the repository, and everyone then needs `mdmem` on PATH. Codex reads a
-project's `.codex/config.toml` only in a folder you have trusted; in an
-untrusted one the mdmem tools are missing and agents fall back to writing files
-directly.
+project's `.codex/config.toml` only in a folder you have trusted, and trusting
+it for one run with a `-c` override does not count; in an untrusted one the
+mdmem tools are missing and agents fall back to writing files directly.
 
 `mdmem disable codex` removes the project's server, deleting
 `.codex/config.toml` when nothing else is left in it, and keeps the global hook,
@@ -342,7 +349,7 @@ server with the same memory-store tools as Claude Code, plus three of its own:
 | Tool | Purpose |
 |---|---|
 | `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
-| `memory_read` | Read one document by `path` (`prefers-bun.md`, or the index `MEMORY.md`), with its version token. |
+| `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. |
 | `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` is refused. |
 | `memory_search` | List the memories containing a query, by path with their description. A memory that does not parse is skipped and named in a warning. |
@@ -361,6 +368,9 @@ The server also serves one prompt, `consolidate` (see below).
 
 Claude Code: `mdmem enable claude-code` registers it in `.mcp.json` (see
 [Claude Code](#claude-code)).
+
+IBM Bob: `mdmem enable bob` registers it in `.bob/mcp.json` (see
+[IBM Bob](#ibm-bob)).
 
 Codex CLI: `mdmem enable codex` registers it in `.codex/config.toml` (see
 [Codex CLI](#codex-cli)).

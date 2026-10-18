@@ -129,14 +129,18 @@ function linkTarget(file: string): string {
     : `<${file.replaceAll(ANGLE_ESCAPED_RE, "\\$&")}>`;
 }
 
+/** The title, as a pointer's line spells it, of the pointer mdmem writes for the memory named `name`. */
+function pointerTitle(name: string): string {
+  return oneLine(name).replaceAll(TITLE_ESCAPED_RE, "\\$&");
+}
+
 /**
  * The pointer mdmem writes for a memory: titled with its name, since the format has
  * no title field, and written so that `matchPointer` recognizes it whatever the name
  * and file name hold, or reconciling would append it again on every save.
  */
 function pointerLine({ file, frontmatter }: PointerSource): Pointer {
-  const title = oneLine(frontmatter.name).replaceAll(TITLE_ESCAPED_RE, "\\$&");
-  return `- [${title}](${linkTarget(file)}) — ${oneLine(frontmatter.description)}`;
+  return `- [${pointerTitle(frontmatter.name)}](${linkTarget(file)}) — ${oneLine(frontmatter.description)}`;
 }
 
 function pointerSource({ file, memory }: LoadedMemory): PointerSource {
@@ -152,18 +156,20 @@ function pointerSource({ file, memory }: LoadedMemory): PointerSource {
  * pointer, so such a line is kept as it is.
  */
 const POINTER_RE =
-  /^\s*(?:[-*+]|\d+[.)])\s+\[(?:[^[\]\\]|\\.|\[(?:[^[\]\\]|\\.)*\])*\]\((?:<(?<angle>(?:[^<>\n\\]|\\.)+)>|(?<bare>[^()\s<>\\]+))\)/u;
+  /^\s*(?:[-*+]|\d+[.)])\s+\[(?<title>(?:[^[\]\\]|\\.|\[(?:[^[\]\\]|\\.)*\])*)\]\((?:<(?<angle>(?:[^<>\n\\]|\\.)+)>|(?<bare>[^()\s<>\\]+))\)/u;
 /** A `./` before a target, which still names a file in the store. */
 const CURRENT_DIR_RE = /^\.\//u;
 /** A backslash escape in an angle-bracketed target: CommonMark escapes ASCII punctuation only. */
 const TARGET_ESCAPE_RE = /\\(?<char>[!-/:-@[-`{-~])/gu;
 
 /** Separates a pointer's link from its description. */
-const HOOK_DASH = "—";
+const DESCRIPTION_SEPARATOR = "—";
 
 interface PointerMatch {
   /** The memory file the pointer links to. */
   target: string;
+  /** The pointer's title as the line spells it, escapes included. */
+  title: string;
   /** Where the link ends in the line. */
   linkEnd: number;
 }
@@ -174,7 +180,7 @@ function matchPointer(line: string): PointerMatch | undefined {
   if (match === null) {
     return undefined;
   }
-  const { angle, bare } = match.groups ?? {};
+  const { title = "", angle, bare } = match.groups ?? {};
   const target = (
     angle?.replaceAll(TARGET_ESCAPE_RE, "$<char>") ?? bare
   )?.replace(CURRENT_DIR_RE, "");
@@ -186,7 +192,7 @@ function matchPointer(line: string): PointerMatch | undefined {
   ) {
     return undefined;
   }
-  return { target, linkEnd: match[0].length };
+  return { target, title, linkEnd: match[0].length };
 }
 
 /** The memory file a line of an index points at, or undefined when the line is not a pointer. */
@@ -203,23 +209,62 @@ export interface SavedMemory {
 }
 
 /**
- * The saved memory's pointer: the line and its title are kept, and the text after
- * the dash becomes the new description only when the description changed. A pointer
- * with no dash gets one, followed by the description.
+ * `line`, a pointer whose separator, if any, is at `separator` (-1 when it has none),
+ * carrying `description` after it: the line and its title are kept, the text after
+ * the separator is replaced when it differs, and a pointer with no separator gets
+ * one, followed by the description.
  */
-function savedPointer(
+function withDescription(
   line: string,
-  { linkEnd }: PointerMatch,
-  { description, previousDescription }: SavedMemory
+  separator: number,
+  description: string
 ): Pointer {
-  const dash = line.indexOf(HOOK_DASH, linkEnd);
-  if (dash === -1) {
-    return `${line.trimEnd()} ${HOOK_DASH} ${oneLine(description)}`;
+  const text = oneLine(description);
+  if (separator === -1) {
+    return `${line.trimEnd()} ${DESCRIPTION_SEPARATOR} ${text}`;
   }
-  if (description === previousDescription) {
+  if (line.slice(separator + DESCRIPTION_SEPARATOR.length).trim() === text) {
     return line;
   }
-  return `${line.slice(0, dash)}${HOOK_DASH} ${oneLine(description)}`;
+  return `${line.slice(0, separator)}${DESCRIPTION_SEPARATOR} ${text}`;
+}
+
+/** A pointer kept in the index, and whether it is in mdmem's form with another description. */
+interface RefreshedPointer {
+  line: Pointer;
+  outdated: boolean;
+}
+
+/**
+ * The pointer `line` with the description it should carry. A pointer in mdmem's form
+ * (titled with its memory's name, then the separator) takes the memory's description
+ * whenever it differs. Any other pointer takes the saved memory's description only
+ * when the save changed it, or when the pointer has no separator.
+ */
+function refreshedPointer(
+  line: string,
+  { title, linkEnd }: PointerMatch,
+  frontmatter: Frontmatter | undefined,
+  saved: SavedMemory | undefined
+): RefreshedPointer {
+  const separator = line.indexOf(DESCRIPTION_SEPARATOR, linkEnd);
+  if (
+    separator !== -1 &&
+    frontmatter !== undefined &&
+    title === pointerTitle(frontmatter.name)
+  ) {
+    const refreshed = withDescription(line, separator, frontmatter.description);
+    return { line: refreshed, outdated: refreshed !== line };
+  }
+  const unchanged =
+    saved === undefined ||
+    (separator !== -1 && saved.description === saved.previousDescription);
+  return {
+    line: unchanged
+      ? line
+      : withDescription(line, separator, saved.description),
+    outdated: false,
+  };
 }
 
 /** What an index lacks or holds in excess against the memory files, each by file name. */
@@ -230,6 +275,8 @@ interface IndexFindings {
   dangling: string[];
   /** Files with more than one pointer, once each. */
   duplicated: string[];
+  /** Files whose pointer is in mdmem's form (`refreshedPointer`) and carries another description. */
+  outdated: string[];
 }
 
 /** An index brought up to date, the files it points at, and what was wrong with it. */
@@ -261,8 +308,9 @@ function linesOf(content: string): string[] {
 /**
  * Bring the index `current` up to date with the memory files `files`, in place:
  * pointers to missing files are dropped, a file's pointers after its first are
- * dropped, each saved memory's pointer gets its new description, and a memory that
- * parses and has no pointer gets one appended at the end. Every other line is kept.
+ * dropped, each pointer takes the description `refreshedPointer` gives it, and a
+ * memory that parses and has no pointer gets one appended at the end. Every other
+ * line is kept.
  */
 function reconcileIndex(
   current: string,
@@ -272,7 +320,13 @@ function reconcileIndex(
 ): Reconciled {
   const kept: string[] = [];
   const pointed = new Set<string>();
-  const findings: IndexFindings = { missing: [], dangling: [], duplicated: [] };
+  const findings: IndexFindings = {
+    missing: [],
+    dangling: [],
+    duplicated: [],
+    outdated: [],
+  };
+  const byFile = new Map(memories.map((loaded) => [loaded.file, loaded]));
   for (const line of linesOf(current)) {
     const pointer = matchPointer(line);
     if (pointer === undefined) {
@@ -285,8 +339,16 @@ function reconcileIndex(
       }
     } else {
       pointed.add(pointer.target);
-      const savedHere = saved.find(({ file }) => file === pointer.target);
-      kept.push(savedHere ? savedPointer(line, pointer, savedHere) : line);
+      const refreshed = refreshedPointer(
+        line,
+        pointer,
+        byFile.get(pointer.target)?.memory.frontmatter,
+        saved.find(({ file }) => file === pointer.target)
+      );
+      if (refreshed.outdated) {
+        findings.outdated.push(pointer.target);
+      }
+      kept.push(refreshed.line);
     }
   }
   for (const loaded of memories) {
@@ -468,7 +530,7 @@ function staleIndexProblems(
   files: ReadonlySet<string>,
   memories: readonly LoadedMemory[]
 ): string[] {
-  const { missing, dangling, duplicated } = reconcileIndex(
+  const { missing, dangling, duplicated, outdated } = reconcileIndex(
     current,
     files,
     memories
@@ -477,6 +539,10 @@ function staleIndexProblems(
     ...missing.map((file) => `no pointer to ${file}`),
     ...dangling.map((file) => `a pointer to ${file}, which does not exist`),
     ...duplicated.map((file) => `more than one pointer to ${file}`),
+    ...outdated.map(
+      (file) =>
+        `the pointer to ${file} holds a description other than the memory's`
+    ),
   ];
   return stale.map(
     (finding) => `${INDEX_FILE} is stale: ${finding} — run \`mdmem reindex\``
