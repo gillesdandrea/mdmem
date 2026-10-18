@@ -3,9 +3,15 @@ import { dirname } from "node:path";
 
 import { checkStore } from "../core/check.ts";
 import type { Check } from "../core/check.ts";
-import { isIgnoredByGit, workTreeRoot } from "../core/git.ts";
-import { STORE_DIR } from "../core/store.ts";
-import type { MemoryStore } from "../core/store.ts";
+import {
+  isIgnoredByGit,
+  repositoryRoot,
+  workTreeRoot,
+  worktreePaths,
+} from "../core/git.ts";
+import { openStore } from "../core/operations.ts";
+import { RefusalError } from "../core/refusal.ts";
+import { locateStore, MemoryStore, STORE_DIR } from "../core/store.ts";
 import type { AdapterContext, AgentStatus } from "./adapter.ts";
 import { listAdapters } from "./index.ts";
 
@@ -36,6 +42,45 @@ export function adapterContext(
     env,
     home,
     cwd,
+  };
+}
+
+/**
+ * The context `mdmem enable` works in: the working directory's work tree and the
+ * project's store. Refused in a repository with no work tree here (a bare
+ * repository, or the folder holding one at `<dir>/.git`), where no agent reads the
+ * files enable would write, and without a store. Outside git, the store's project
+ * directory is wired.
+ */
+export function enableContext(cwd: string): AdapterContext {
+  if (workTreeRoot(cwd) === null && repositoryRoot(cwd) !== null) {
+    const worktrees = worktreePaths(cwd).filter(
+      (path) => workTreeRoot(path) !== null
+    );
+    const where =
+      worktrees.length > 0
+        ? `run it in one of the repository's worktrees (\`git worktree list\`): ${worktrees.join(", ")}`
+        : "add a worktree with `git worktree add <path>` and run it there";
+    throw new RefusalError(
+      `${cwd} is not in a work tree (a bare repository, or the folder holding one), and agents read their files only from a work tree: ${where}`
+    );
+  }
+  return adapterContext(cwd, openStore(cwd));
+}
+
+/**
+ * The context `mdmem disable` works in, which needs no store: the store's location
+ * (a `.memory/` that may not exist), and whether no project holds `cwd` at all (no
+ * repository, no store), where disable leaves project files alone.
+ */
+export function disableContext(cwd: string): {
+  ctx: AdapterContext;
+  outsideProject: boolean;
+} {
+  const location = locateStore(cwd);
+  return {
+    ctx: adapterContext(cwd, new MemoryStore(location.dir)),
+    outsideProject: !location.exists && repositoryRoot(cwd) === null,
   };
 }
 

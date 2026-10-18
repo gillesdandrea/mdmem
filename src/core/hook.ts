@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 import { INDEX_FILE, INDEX_MAX_CHARS, sessionIndex } from "./check.ts";
+import { workTreeRoot } from "./git.ts";
 import { getMemoryProtocol } from "./protocol.ts";
 import { locateStore, MemoryStore } from "./store.ts";
 
@@ -10,9 +11,10 @@ import { locateStore, MemoryStore } from "./store.ts";
  * the store's path and the Check's warnings. Claude Code caps one entry's context at
  * about 10,000 characters, so each part stays under that.
  *
- * A hook never fails a session (ADR 0002): outside a project with a store, on a
- * resumed session or another event it prints nothing, and any error becomes a
- * one-line context saying why the memory could not be loaded.
+ * A hook never fails a session (ADR 0002): outside a project with a store, in a
+ * work tree not wired for an agent whose hook is user-wide (Codex), on a resumed
+ * session or another event it prints nothing, and any error becomes a one-line
+ * context saying why the memory could not be loaded.
  */
 
 export const HOOK_AGENTS = ["claude-code", "bob", "codex"] as const;
@@ -214,6 +216,16 @@ export interface HookRequest {
   readPayload: () => Promise<string>;
   /** Where to resolve the store when the payload names no cwd. */
   cwd: string;
+  /**
+   * Whether the session's work tree (else the store's project directory) is wired
+   * for the agent; the hook stays silent where it is not. Only a user-wide hook
+   * (Codex's) can run in a project disable has unwired. `projectRoot` runs git, so
+   * it is called only for an agent that needs the check.
+   */
+  projectWired: (
+    agent: HookAgent,
+    projectRoot: () => string
+  ) => Promise<boolean>;
 }
 
 interface HookContext {
@@ -232,12 +244,18 @@ async function hookContext(
   ) {
     return undefined;
   }
-  const location = locateStore(resolve(request.cwd, payload.cwd ?? "."));
+  const cwd = resolve(request.cwd, payload.cwd ?? ".");
+  const location = locateStore(cwd);
   if (!location.exists) {
     return undefined;
   }
   const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
   const part = oneOf(request.part, HOOK_PARTS, "part");
+  // The work tree as `mdmem enable` wires it: the session's own, else the project's directory.
+  const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
+  if (!(await request.projectWired(agent, projectRoot))) {
+    return undefined;
+  }
   const context =
     part === "protocol"
       ? getMemoryProtocol()

@@ -31,6 +31,12 @@ export interface EnableOptions {
 export interface DisableOptions {
   /** Codex (mdmem-4wz.10): also remove mdmem's handlers from the user-wide hooks file. Ignored by agents with no user-wide entries. */
   global?: boolean;
+  /**
+   * No project holds the working directory (no repository, no store): leave the
+   * project files alone, since the working directory may be one whose agent files
+   * are user-wide (the home directory), and act on user-wide entries only.
+   */
+  outsideProject?: boolean;
 }
 
 /** What enable or disable did, as the CLI prints it. */
@@ -40,6 +46,17 @@ export interface WiringResult {
   actions: string[];
   /** Printed as warnings: they do not mean the wiring failed. */
   warnings: string[];
+}
+
+/**
+ * What enable or disable will do: every file read and every refusal raised, nothing
+ * written yet. No two adapters write the same file, so one adapter's plan stays
+ * valid while another's is written: that is what lets the CLI plan every agent
+ * before writing any.
+ */
+export interface WiringPlan {
+  /** Write the planned changes and report them. */
+  write: () => Promise<WiringResult>;
 }
 
 /** One piece of an agent's wiring, in one of its files. */
@@ -91,6 +108,20 @@ export function missingHooksProblem(
   ];
 }
 
+/** What disable says of an agent's project files when no project holds the working directory, so it leaves them alone. */
+export const OUTSIDE_PROJECT_LINE =
+  "not in a project (no repository, no store here), so no project files were changed: run the command in the project's checkout";
+
+/** The plan of disabling an agent with no user-wide entries outside a project: it changes nothing. */
+export function outsideProjectPlan(title: string): WiringPlan {
+  const result: WiringResult = {
+    title,
+    actions: [OUTSIDE_PROJECT_LINE],
+    warnings: [],
+  };
+  return { write: () => Promise.resolve(result) };
+}
+
 export interface Adapter {
   readonly id: string;
   readonly title: string;
@@ -99,19 +130,23 @@ export interface Adapter {
   /** The agent's config directory, relative to the home directory: when it exists, the agent counts as found too. */
   readonly configDir: string;
   /**
-   * Add the entries that are missing, merging into the agent's files and leaving
-   * their other content as it was; running it again changes nothing. A refusal
-   * (an unparseable file, an import conflict) throws a RefusalError before any
-   * file is written.
+   * Plan adding the entries that are missing, merging into the agent's files and
+   * leaving their other content as it was; running it again changes nothing. A
+   * refusal (an unparseable file, an import conflict) throws a RefusalError while
+   * planning, before any file is written.
    */
-  enable: (
-    ctx: AdapterContext,
-    options: EnableOptions
-  ) => Promise<WiringResult>;
-  /** Remove exactly mdmem's entries; a file left holding nothing else is deleted. The store is untouched. */
+  enable: (ctx: AdapterContext, options: EnableOptions) => Promise<WiringPlan>;
+  /** Plan removing exactly mdmem's entries; a file left holding nothing else is deleted. The store is untouched. */
   disable: (
     ctx: AdapterContext,
     options: DisableOptions
-  ) => Promise<WiringResult>;
+  ) => Promise<WiringPlan>;
   status: (ctx: AdapterContext) => Promise<AgentStatus>;
+  /**
+   * For an agent whose session-start hook is user-wide (Codex), whether the project
+   * at `projectRoot` is wired for it: the hook stays silent where it is not.
+   * Absent for an agent whose hooks live in the project's own files, which disable
+   * removes.
+   */
+  projectWired?: (projectRoot: string) => Promise<boolean>;
 }

@@ -6,7 +6,7 @@ We chose this over sharing the store through Claude Code's auto-memory directory
 
 ## Consequences
 
-- Claude Code's wiring is files committed with the repository: `autoMemoryEnabled: false`, the hook entries and the mdmem tool permission in `.claude/settings.json`, the server in `.mcp.json`. Bob's is `.bob/settings.json` and `.bob/mcp.json`. Codex's hook is global (`~/.codex/hooks.json`, approved once, silent outside a project with a store), because Codex pins hook approval to the hook file's absolute path; its MCP server is registered per project in `.codex/config.toml`.
+- Claude Code's wiring is files committed with the repository: `autoMemoryEnabled: false`, the hook entries and the mdmem tool permission in `.claude/settings.json`, the server in `.mcp.json`. Bob's is `.bob/settings.json` and `.bob/mcp.json`. Codex's hook is global (`~/.codex/hooks.json`, approved once, silent outside a project with a store and in a work tree whose `.codex/config.toml` does not register the mdmem server), because Codex pins hook approval to the hook file's absolute path; its MCP server is registered per project in `.codex/config.toml`.
 - Anyone working in the repository needs `mdmem` on PATH, or the hooks and the server fail; a failed session-start hook does not block the agent.
 - Only agents with session-start hooks are supported. There is no `AGENTS.md` block and no fallback when hooks do not run (untrusted folder, hooks off); `mdmem status` reports it.
 - Claude Code caps one hook entry's context at about 10,000 characters, so the protocol and the index are two entries, the protocol stays under that size, and the index's limit is about 9,500 characters.

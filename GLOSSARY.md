@@ -62,7 +62,7 @@ The `MEMORY.md` file holding one pointer per memory, read at the start of every 
 _Avoid_: catalog, manifest, table of contents
 
 **Pointer**:
-One line of the index: a memory's title linked to its file, then the memory's description.
+One line of the index: a memory's title linked to its file, then a one-line hook.
 _Avoid_: index entry, index line
 
 ### Using memory
@@ -90,5 +90,5 @@ What connects one agent to a project's memory store in that agent's native way, 
 _Avoid_: link (a `[[name]]` in a memory), integration, setup
 
 **Import**:
-The one-time copy of the memories an agent kept in its own directories into the project's memory store, when that agent is wired and its own memory is turned off: Claude Code's auto memory, from each of its memory directories for the repository, which are left untouched. Same-name files that differ are a conflict, which stops the import before anything changes.
+The one-time move of the memories an agent kept in its own directories into the project's memory store, when that agent is wired and its own memory is turned off: Claude Code's auto memory, from each of its memory directories for the repository. Same-name files that differ are a conflict, which stops the import before anything changes.
 _Avoid_: migration, sync

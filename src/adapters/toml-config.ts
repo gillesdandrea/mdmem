@@ -182,3 +182,16 @@ export async function tomlTableStatus(
     };
   }
 }
+
+/** Whether a table stands at the entry's path, whatever it holds; a file that cannot be read as TOML holds none. */
+export async function tomlTableExists(
+  root: string,
+  entry: TomlTableEntry
+): Promise<boolean> {
+  try {
+    const { doc } = await readToml(root, entry.file);
+    return isObject(valueAt(doc, entry.path));
+  } catch {
+    return false;
+  }
+}

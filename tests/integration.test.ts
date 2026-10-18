@@ -15,10 +15,16 @@ import { dirname, join } from "node:path";
 
 import { z } from "zod";
 
+import { OUTSIDE_PROJECT_LINE } from "../src/adapters/adapter.ts";
 import { bobAdapter } from "../src/adapters/bob.ts";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.ts";
 import { codexAdapter } from "../src/adapters/codex.ts";
-import type { Adapter, AdapterContext } from "../src/adapters/index.ts";
+import type {
+  Adapter,
+  AdapterContext,
+  WiringPlan,
+  WiringResult,
+} from "../src/adapters/index.ts";
 import {
   adapterContext,
   checkProject,
@@ -26,7 +32,7 @@ import {
 } from "../src/adapters/report.ts";
 import { checkSummary, reindex } from "../src/core/check.ts";
 import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
-import { claudeProjectDir } from "../src/core/import.ts";
+import { claudeProjectDir, importMarker } from "../src/core/import.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import {
   getConsolidatePrompt,
@@ -82,6 +88,12 @@ async function claudeMemory(
   await writeFile(join(dir, file), content, "utf-8");
 }
 
+/** Plan an adapter's enable or disable, then write it. */
+async function wire(plan: Promise<WiringPlan>): Promise<WiringResult> {
+  const planned = await plan;
+  return await planned.write();
+}
+
 async function wired(adapter: Adapter, ctx: AdapterContext): Promise<boolean> {
   const status = await adapter.status(ctx);
   return status.wired;
@@ -123,7 +135,7 @@ describe("claude-code wiring", () => {
       await writeFile(join(root, CLAUDE_SETTINGS), settingsText, "utf-8");
       await writeFile(join(root, MCP_CONFIG), mcpText, "utf-8");
 
-      const enabled = await claudeCodeAdapter.enable(ctx, {});
+      const enabled = await wire(claudeCodeAdapter.enable(ctx, {}));
       expect(enabled.actions).toContain(
         `added in ${CLAUDE_SETTINGS}: autoMemoryEnabled: false, SessionStart hook "mdmem hook claude-code protocol", SessionStart hook "mdmem hook claude-code index", permissions.allow "mcp__mdmem"`
       );
@@ -153,7 +165,7 @@ describe("claude-code wiring", () => {
       expect(status.entries).toHaveLength(5);
 
       // a second run changes nothing
-      const again = await claudeCodeAdapter.enable(ctx, {});
+      const again = await wire(claudeCodeAdapter.enable(ctx, {}));
       expect(again.actions).toContain(
         `${CLAUDE_SETTINGS} already holds mdmem's entries`
       );
@@ -161,7 +173,7 @@ describe("claude-code wiring", () => {
         `${JSON.stringify(wiredSettings, null, 2)}\n`
       );
 
-      await claudeCodeAdapter.disable(ctx, {});
+      await wire(claudeCodeAdapter.disable(ctx, {}));
       expect(await readText(join(root, CLAUDE_SETTINGS))).toBe(settingsText);
       expect(await readText(join(root, MCP_CONFIG))).toBe(mcpText);
       const after = await claudeCodeAdapter.status(ctx);
@@ -187,7 +199,7 @@ describe("claude-code wiring", () => {
       expect(await store.view("a.md")).toBe(ours);
 
       // --prefer settles it, and enable goes on to wire Claude Code
-      await claudeCodeAdapter.enable(ctx, { prefer: "mdmem" });
+      await wire(claudeCodeAdapter.enable(ctx, { prefer: "mdmem" }));
       expect(await wired(claudeCodeAdapter, ctx)).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -200,11 +212,11 @@ describe("claude-code wiring", () => {
       await claudeMemory(ctx, root, "b.md", memoryText("b", "From Claude."));
       await claudeMemory(ctx, root, "c.md", memoryText("c", "Claude's."));
       await store.create("c.md", memoryText("c", "Ours."));
-      await claudeCodeAdapter.enable(ctx, { prefer: "mdmem" });
+      await wire(claudeCodeAdapter.enable(ctx, { prefer: "mdmem" }));
       expect(existsSync(join(store.root, "b.md"))).toBe(true);
 
       await rm(join(store.root, "b.md"));
-      const again = await claudeCodeAdapter.enable(ctx, {});
+      const again = await wire(claudeCodeAdapter.enable(ctx, {}));
       expect(again.actions[0]).toStartWith(
         "Claude Code's memories were already imported"
       );
@@ -218,11 +230,11 @@ describe("claude-code wiring", () => {
     const { root, ctx, store } = await tempProject();
     try {
       await claudeMemory(ctx, root, "b.md", memoryText("b", "From Claude."));
-      await claudeCodeAdapter.enable(ctx, {});
+      await wire(claudeCodeAdapter.enable(ctx, {}));
       expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(true);
       expect(existsSync(join(root, MCP_CONFIG))).toBe(true);
 
-      const disabled = await claudeCodeAdapter.disable(ctx, {});
+      const disabled = await wire(claudeCodeAdapter.disable(ctx, {}));
       expect(disabled.actions).toContain(
         `deleted ${MCP_CONFIG}: it held only mdmem's entries`
       );
@@ -290,7 +302,7 @@ describe("bob wiring", () => {
       await writeFile(join(root, BOB_SETTINGS), settingsText, "utf-8");
       await writeFile(join(root, BOB_MCP), mcpText, "utf-8");
 
-      await bobAdapter.enable(ctx, {});
+      await wire(bobAdapter.enable(ctx, {}));
       const wiredSettings = {
         ...settings,
         hooks: {
@@ -315,7 +327,7 @@ describe("bob wiring", () => {
       expect(await wired(bobAdapter, ctx)).toBe(true);
 
       // a second run changes nothing
-      const again = await bobAdapter.enable(ctx, {});
+      const again = await wire(bobAdapter.enable(ctx, {}));
       expect(again.actions).toContain(
         `${BOB_SETTINGS} already holds mdmem's entries`
       );
@@ -327,7 +339,7 @@ describe("bob wiring", () => {
         `${JSON.stringify(wiredMcp, null, 2)}\n`
       );
 
-      await bobAdapter.disable(ctx, {});
+      await wire(bobAdapter.disable(ctx, {}));
       expect(await readText(join(root, BOB_SETTINGS))).toBe(settingsText);
       expect(await readText(join(root, BOB_MCP))).toBe(mcpText);
       const after = await bobAdapter.status(ctx);
@@ -341,7 +353,7 @@ describe("bob wiring", () => {
   test("disable deletes a file that held only mdmem's entries", async () => {
     const { root, ctx } = await tempProject();
     try {
-      await bobAdapter.enable(ctx, {});
+      await wire(bobAdapter.enable(ctx, {}));
       const status = await bobAdapter.status(ctx);
       expect(
         status.entries.map(({ file, present }) => [file, present])
@@ -350,7 +362,7 @@ describe("bob wiring", () => {
         [BOB_MCP, true],
       ]);
 
-      const disabled = await bobAdapter.disable(ctx, {});
+      const disabled = await wire(bobAdapter.disable(ctx, {}));
       expect(disabled.actions).toContain(
         `deleted ${BOB_MCP}: it held only mdmem's entries`
       );
@@ -460,7 +472,7 @@ describe("codex wiring", () => {
     });
     const second = await codexProject(codexHome);
     try {
-      const enabled = await codexAdapter.enable(first.ctx, {});
+      const enabled = await wire(codexAdapter.enable(first.ctx, {}));
       const wiredHooks = {
         hooks: {
           ...CODEX_HOOKS.hooks,
@@ -488,7 +500,7 @@ describe("codex wiring", () => {
       expect(await wired(codexAdapter, first.ctx)).toBe(true);
 
       // a second run changes nothing
-      const again = await codexAdapter.enable(first.ctx, {});
+      const again = await wire(codexAdapter.enable(first.ctx, {}));
       expect(again.actions).toContain(
         `${first.hooksPath} already holds mdmem's entries`
       );
@@ -499,7 +511,7 @@ describe("codex wiring", () => {
       expect(await readText(join(first.root, CODEX_CONFIG))).toBe(toml);
 
       // another project: the global hook is already there, the project gets its own server
-      const other = await codexAdapter.enable(second.ctx, {});
+      const other = await wire(codexAdapter.enable(second.ctx, {}));
       expect(other.actions).toContain(
         `${second.hooksPath} already holds mdmem's entries`
       );
@@ -526,13 +538,13 @@ describe("codex wiring", () => {
       toml: CODEX_TOML,
     });
     try {
-      await codexAdapter.enable(ctx, {});
+      await wire(codexAdapter.enable(ctx, {}));
       expect(await readText(hooksPath)).not.toBe(CODEX_HOOKS_TEXT);
 
-      const disabled = await codexAdapter.disable(ctx, {});
+      const disabled = await wire(codexAdapter.disable(ctx, {}));
       expect(await readText(join(root, CODEX_CONFIG))).toBe(CODEX_TOML);
       expect(disabled.actions).toContain(
-        `The global hook in ${hooksPath} stays: it prints nothing outside a project with a store. \`mdmem disable codex --global\` removes it.`
+        `The global hook in ${hooksPath} stays, and is now silent in this project, whose ${CODEX_CONFIG} no longer registers the mdmem server. \`mdmem disable codex --global\` removes it.`
       );
       const status = await codexAdapter.status(ctx);
       expect(
@@ -542,7 +554,7 @@ describe("codex wiring", () => {
         [hooksPath, true],
       ]);
 
-      await codexAdapter.disable(ctx, { global: true });
+      await wire(codexAdapter.disable(ctx, { global: true }));
       expect(await readText(hooksPath)).toBe(CODEX_HOOKS_TEXT);
       const after = await codexAdapter.status(ctx);
       expect(after.entries.some(({ present }) => present)).toBe(false);
@@ -557,10 +569,10 @@ describe("codex wiring", () => {
     );
     const { root, ctx, hooksPath } = await codexProject(join(shared, "home"));
     try {
-      await codexAdapter.enable(ctx, {});
+      await wire(codexAdapter.enable(ctx, {}));
       expect(existsSync(hooksPath)).toBe(true);
 
-      const disabled = await codexAdapter.disable(ctx, { global: true });
+      const disabled = await wire(codexAdapter.disable(ctx, { global: true }));
       expect(disabled.actions).toEqual([
         `deleted ${CODEX_CONFIG}: it held only mdmem's entries`,
         `deleted ${hooksPath}: it held only mdmem's entries`,
@@ -601,7 +613,7 @@ describe("codex wiring", () => {
       toml: crlf,
     });
     try {
-      await codexAdapter.enable(ctx, {});
+      await wire(codexAdapter.enable(ctx, {}));
       expect(await readText(join(root, CODEX_CONFIG))).toBe(
         `${crlf}\r\n${CODEX_SECTION.replaceAll("\n", "\r\n")}`
       );
@@ -622,13 +634,13 @@ describe("codex wiring", () => {
       toml: inline,
     });
     try {
-      await codexAdapter.enable(ctx, {});
+      await wire(codexAdapter.enable(ctx, {}));
       expect(await readText(join(root, CODEX_CONFIG))).toBe(
         'model = "x"\nmcp_servers = { other = { command = "o" }, mdmem = { command = "mdmem", args = [ "mcp" ] } }\n'
       );
       expect(await wired(codexAdapter, ctx)).toBe(true);
 
-      await codexAdapter.disable(ctx, { global: true });
+      await wire(codexAdapter.disable(ctx, { global: true }));
       expect(
         Bun.TOML.parse((await readText(join(root, CODEX_CONFIG))) ?? "")
       ).toEqual({
@@ -658,7 +670,7 @@ describe("codex wiring", () => {
       expect(status.warnings[1]).toContain("hooks.json");
 
       await writeFile(join(root, CODEX_CONFIG), 'model = "x"\n', "utf-8");
-      const disabled = await codexAdapter.disable(ctx, {});
+      const disabled = await wire(codexAdapter.disable(ctx, {}));
       expect(disabled.warnings).toHaveLength(1);
       expect(disabled.warnings[0]).toContain("hooks.json");
     } finally {
@@ -738,6 +750,9 @@ async function seedMemories(store: MemoryStore, count: number): Promise<void> {
   await reindex(store);
 }
 
+/** The end-to-end test spawns about thirty CLI processes in sequence; give it room past bun's 5s default. */
+const END_TO_END_TIMEOUT_MS = 30_000;
+
 describe("cli", () => {
   test("init in a linked worktree creates the store at the main checkout's root, leaving .gitignore alone", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
@@ -797,171 +812,175 @@ describe("cli", () => {
     }
   });
 
-  test("init, add, status, enable run end-to-end", async () => {
-    const root = await mkdtemp(join(tmpdir(), "mdmem-cli-"));
-    try {
-      // mdmem on PATH, so the check does not depend on whether this machine linked it
-      const bin = join(root, "bin");
-      await mkdir(bin);
-      await writeFile(join(bin, "mdmem"), "#!/bin/sh\n", "utf-8");
-      await chmod(join(bin, "mdmem"), 0o755);
-      const run = (...args: string[]) => {
-        const proc = Bun.spawnSync(["bun", CLI, ...args], {
-          cwd: root,
-          // no-op editor, and a Claude Code config directory that is not the real ~/.claude
-          env: {
-            ...process.env,
-            EDITOR: "true",
-            VISUAL: "true",
-            CLAUDE_CONFIG_DIR: join(root, "claude-config"),
-            CODEX_HOME: join(root, "codex-home"),
-            PATH: `${bin}:${process.env.PATH ?? ""}`,
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "",
-          },
-        });
-        return {
-          code: proc.exitCode,
-          out: proc.stdout.toString(),
-          err: proc.stderr.toString(),
+  test(
+    "init, add, status, enable run end-to-end",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "mdmem-cli-"));
+      try {
+        // mdmem on PATH, so the check does not depend on whether this machine linked it
+        const bin = join(root, "bin");
+        await mkdir(bin);
+        await writeFile(join(bin, "mdmem"), "#!/bin/sh\n", "utf-8");
+        await chmod(join(bin, "mdmem"), 0o755);
+        const run = (...args: string[]) => {
+          const proc = Bun.spawnSync(["bun", CLI, ...args], {
+            cwd: root,
+            // no-op editor, and a Claude Code config directory that is not the real ~/.claude
+            env: {
+              ...process.env,
+              EDITOR: "true",
+              VISUAL: "true",
+              CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+              CODEX_HOME: join(root, "codex-home"),
+              PATH: `${bin}:${process.env.PATH ?? ""}`,
+              CLAUDE_CODE_DISABLE_AUTO_MEMORY: "",
+            },
+          });
+          return {
+            code: proc.exitCode,
+            out: proc.stdout.toString(),
+            err: proc.stderr.toString(),
+          };
         };
-      };
 
-      const init = run("init");
-      expect(init.code).toBe(0);
-      expect(existsSync(join(root, ".memory/MEMORY.md"))).toBe(true);
+        const init = run("init");
+        expect(init.code).toBe(0);
+        expect(existsSync(join(root, ".memory/MEMORY.md"))).toBe(true);
 
-      const add = run(
-        "add",
-        "--type",
-        "feedback",
-        "--name",
-        "uses-bun",
-        "--description",
-        "Uses bun",
-        "--body",
-        "Use bun."
-      );
-      expect(add.code).toBe(0);
-      expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(true);
+        const add = run(
+          "add",
+          "--type",
+          "feedback",
+          "--name",
+          "uses-bun",
+          "--description",
+          "Uses bun",
+          "--body",
+          "Use bun."
+        );
+        expect(add.code).toBe(0);
+        expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(true);
 
-      const read = run("read", "uses-bun");
-      expect(read.code).toBe(0);
-      expect(read.out).toContain("Use bun.");
+        const read = run("read", "uses-bun");
+        expect(read.code).toBe(0);
+        expect(read.out).toContain("Use bun.");
 
-      const readIndex = run("read", "MEMORY.md");
-      expect(readIndex.code).toBe(0);
-      expect(readIndex.out).toContain("[uses-bun](uses-bun.md)");
+        const readIndex = run("read", "MEMORY.md");
+        expect(readIndex.code).toBe(0);
+        expect(readIndex.out).toContain("[uses-bun](uses-bun.md)");
 
-      const status = run("status");
-      expect(status.code).toBe(0);
-      expect(status.out).toContain("Memories: 1\nCheck: ✓ no problems\n");
+        const status = run("status");
+        expect(status.code).toBe(0);
+        expect(status.out).toContain("Memories: 1\nCheck: ✓ no problems\n");
 
-      const claude = run("enable", "claude-code");
-      expect(claude.code).toBe(0);
-      expect(claude.out).toContain(
-        "No Claude Code memories for this project: nothing to import."
-      );
-      const settings: unknown = JSON.parse(
-        await readFile(join(root, CLAUDE_SETTINGS), "utf-8")
-      );
-      expect(settings).toMatchObject({ autoMemoryEnabled: false });
-      const enabled = run("status");
-      expect(enabled.out).toContain("✓ Claude Code\n");
-      expect(enabled.out).toContain(
-        "      Claude Code runs the project's hooks only in a folder whose trust dialog you accepted"
-      );
-      expect(enabled.err).toBe("");
+        const claude = run("enable", "claude-code");
+        expect(claude.code).toBe(0);
+        expect(claude.out).toContain(
+          "No Claude Code memories for this project: nothing to import."
+        );
+        const settings: unknown = JSON.parse(
+          await readFile(join(root, CLAUDE_SETTINGS), "utf-8")
+        );
+        expect(settings).toMatchObject({ autoMemoryEnabled: false });
+        const enabled = run("status");
+        expect(enabled.out).toContain("✓ Claude Code\n");
+        expect(enabled.out).toContain(
+          "      Claude Code runs the project's hooks only in a folder whose trust dialog you accepted"
+        );
+        expect(enabled.err).toBe("");
 
-      // add refuses to clobber an existing name without --force
-      const dup = run(
-        "add",
-        "--type",
-        "feedback",
-        "--name",
-        "uses-bun",
-        "--description",
-        "again",
-        "--body",
-        "x"
-      );
-      expect(dup.code).toBe(1);
-      expect(dup.err).toBe(
-        'mdmem: a memory named "uses-bun" already exists — pass --force to overwrite, or `mdmem delete uses-bun`\n'
-      );
-      const forced = run(
-        "add",
-        "--type",
-        "feedback",
-        "--name",
-        "uses-bun",
-        "--description",
-        "again",
-        "--body",
-        "x",
-        "--force"
-      );
-      expect(forced.code).toBe(0);
+        // add refuses to clobber an existing name without --force
+        const dup = run(
+          "add",
+          "--type",
+          "feedback",
+          "--name",
+          "uses-bun",
+          "--description",
+          "again",
+          "--body",
+          "x"
+        );
+        expect(dup.code).toBe(1);
+        expect(dup.err).toBe(
+          'mdmem: a memory named "uses-bun" already exists — pass --force to overwrite, or `mdmem delete uses-bun`\n'
+        );
+        const forced = run(
+          "add",
+          "--type",
+          "feedback",
+          "--name",
+          "uses-bun",
+          "--description",
+          "again",
+          "--body",
+          "x",
+          "--force"
+        );
+        expect(forced.code).toBe(0);
 
-      // the no-op editor leaves the memory as it was
-      const edited = run("edit", "uses-bun");
-      expect(edited.code).toBe(0);
-      expect(edited.out).toBe("Unchanged uses-bun.md\n");
+        // the no-op editor leaves the memory as it was
+        const edited = run("edit", "uses-bun");
+        expect(edited.code).toBe(0);
+        expect(edited.out).toBe("Unchanged uses-bun.md\n");
 
-      const doctor = run("doctor");
-      expect(doctor.code).toBe(0);
-      expect(doctor.out).toBe("✓ 1 memory, no problems\n");
-      const check = run("check");
-      expect(check.code).toBe(0);
-      expect(check.out).toBe(doctor.out);
+        const doctor = run("doctor");
+        expect(doctor.code).toBe(0);
+        expect(doctor.out).toBe("✓ 1 memory, no problems\n");
+        const check = run("check");
+        expect(check.code).toBe(0);
+        expect(check.out).toBe(doctor.out);
 
-      const storePath = run("path");
-      expect(storePath.code).toBe(0);
-      expect(storePath.out.trim()).toMatch(/[/\\]\.memory$/u);
+        const storePath = run("path");
+        expect(storePath.code).toBe(0);
+        expect(storePath.out.trim()).toMatch(/[/\\]\.memory$/u);
 
-      const del = run("delete", "uses-bun");
-      expect(del.code).toBe(0);
-      expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(false);
+        const del = run("delete", "uses-bun");
+        expect(del.code).toBe(0);
+        expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(false);
 
-      // a search skips a broken memory and warns of it on stderr
-      await writeFile(join(root, ".memory/broken.md"), "no frontmatter\n");
-      const search = run("search", "frontmatter");
-      expect(search.code).toBe(0);
-      expect(search.out).toBe('No memories matching "frontmatter".\n');
-      expect(search.err).toBe(
-        "mdmem: warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`\n"
-      );
+        // a search skips a broken memory and warns of it on stderr
+        await writeFile(join(root, ".memory/broken.md"), "no frontmatter\n");
+        const search = run("search", "frontmatter");
+        expect(search.code).toBe(0);
+        expect(search.out).toBe('No memories matching "frontmatter".\n');
+        expect(search.err).toBe(
+          "mdmem: warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`\n"
+        );
 
-      // a broken memory elsewhere doesn't make a write that landed read as failed
-      const brokenWarning =
-        "mdmem: warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (it has no pointer in MEMORY.md until it parses)\n";
-      const keep = run(
-        "add",
-        "--type",
-        "user",
-        "--name",
-        "keep",
-        "--description",
-        "k",
-        "--body",
-        "k"
-      );
-      expect(keep.code).toBe(0);
-      expect(keep.out).toBe("Saved keep.md\n");
-      expect(keep.err).toBe(brokenWarning);
-      const append = await editorScript(root, `printf 'More.\\n' >> "$1"`);
-      const editKeep = runEdit(root, append, "keep");
-      expect(editKeep.code).toBe(0);
-      expect(editKeep.out).toBe("Saved keep.md\n");
-      expect(editKeep.err).toBe(brokenWarning);
-      const dropKeep = run("delete", "keep");
-      expect(dropKeep.code).toBe(0);
-      expect(dropKeep.out).toBe("Deleted keep.md\n");
-      expect(dropKeep.err).toBe(brokenWarning);
-      expect(existsSync(join(root, ".memory/keep.md"))).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
+        // a broken memory elsewhere doesn't make a write that landed read as failed
+        const brokenWarning =
+          "mdmem: warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (it has no pointer in MEMORY.md until it parses)\n";
+        const keep = run(
+          "add",
+          "--type",
+          "user",
+          "--name",
+          "keep",
+          "--description",
+          "k",
+          "--body",
+          "k"
+        );
+        expect(keep.code).toBe(0);
+        expect(keep.out).toBe("Saved keep.md\n");
+        expect(keep.err).toBe(brokenWarning);
+        const append = await editorScript(root, `printf 'More.\\n' >> "$1"`);
+        const editKeep = runEdit(root, append, "keep");
+        expect(editKeep.code).toBe(0);
+        expect(editKeep.out).toBe("Saved keep.md\n");
+        expect(editKeep.err).toBe(brokenWarning);
+        const dropKeep = run("delete", "keep");
+        expect(dropKeep.code).toBe(0);
+        expect(dropKeep.out).toBe("Deleted keep.md\n");
+        expect(dropKeep.err).toBe(brokenWarning);
+        expect(existsSync(join(root, ".memory/keep.md"))).toBe(false);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    END_TO_END_TIMEOUT_MS
+  );
 
   test("edit refuses an invalid memory, leaving the store untouched and keeping the edit", async () => {
     await withCliProject(async (root, store) => {
@@ -1145,11 +1164,227 @@ describe("cli", () => {
       );
     });
   });
+
+  test("disable needs no store: it unwires every agent in a repository whose .memory/ was deleted", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
+    try {
+      await gitRepo(root);
+      const env = {
+        HOME: join(root, "home"),
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+      };
+      expect(runCliWith(root, ["init"], env).code).toBe(0);
+      const agents = ["claude-code", "bob", "codex"];
+      expect(runCliWith(root, ["enable", ...agents], env).code).toBe(0);
+      await rm(join(root, ".memory"), { recursive: true });
+
+      const disable = runCliWith(root, ["disable", ...agents], env);
+      expect(disable.err).toBe("");
+      expect(disable.code).toBe(0);
+      for (const file of [
+        CLAUDE_SETTINGS,
+        MCP_CONFIG,
+        ".bob/settings.json",
+        ".bob/mcp.json",
+        CODEX_CONFIG,
+      ]) {
+        expect(existsSync(join(root, file))).toBe(false);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("disable codex --global outside any project removes only the global hook", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
+    try {
+      const env = {
+        HOME: join(tmp, "home"),
+        CODEX_HOME: join(tmp, "codex-home"),
+      };
+      const project = join(tmp, "project");
+      await mkdir(project);
+      expect(runCliWith(project, ["init"], env).code).toBe(0);
+      expect(runCliWith(project, ["enable", "codex"], env).code).toBe(0);
+      const hooksPath = join(tmp, "codex-home", "hooks.json");
+      expect(existsSync(hooksPath)).toBe(true);
+
+      // no repository and no store: the directory's own .codex/config.toml is left alone
+      const outside = join(tmp, "outside");
+      await mkdir(join(outside, ".codex"), { recursive: true });
+      const toml = '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\n';
+      await writeFile(join(outside, CODEX_CONFIG), toml, "utf-8");
+      const disable = runCliWith(
+        outside,
+        ["disable", "codex", "--global"],
+        env
+      );
+      expect(disable.err).toBe("");
+      expect(disable.code).toBe(0);
+      expect(disable.out).toBe(
+        `Codex CLI:\n  deleted ${hooksPath}: it held only mdmem's entries\n`
+      );
+      expect(existsSync(hooksPath)).toBe(false);
+      expect(await readText(join(outside, CODEX_CONFIG))).toBe(toml);
+      expect(existsSync(join(project, CODEX_CONFIG))).toBe(true);
+
+      // an agent with no user-wide entries: nothing to change outside a project
+      const bob = runCliWith(outside, ["disable", "bob"], env);
+      expect(bob.code).toBe(0);
+      expect(bob.out).toBe(`IBM Bob:\n  ${OUTSIDE_PROJECT_LINE}\n`);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("enable checks every agent name and plans every agent before writing any", async () => {
+    await withCliProject(async (root, store) => {
+      const home = join(root, "home");
+      await Promise.all(
+        [".claude", ".bob", ".codex"].map((dir) =>
+          mkdir(join(home, dir), { recursive: true })
+        )
+      );
+      const env = {
+        HOME: home,
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+      };
+
+      const unknown = runCliWith(root, ["enable", "bob", "cursor"], env);
+      expect(unknown.code).toBe(1);
+      expect(unknown.err).toBe(
+        'mdmem: unknown agent "cursor". Known: claude-code, bob, codex\n'
+      );
+      expect(existsSync(join(root, ".bob"))).toBe(false);
+
+      // a Claude memory the import would copy, and a broken config.toml Codex's plan refuses
+      const ctx = { projectRoot: root, store, env, home, cwd: root };
+      await claudeMemory(ctx, root, "note.md", memoryText("note", "Body."));
+      await mkdir(join(root, ".codex"));
+      await writeFile(join(root, CODEX_CONFIG), "{\n", "utf-8");
+      const all = runCliWith(root, ["enable", "--all"], env);
+      expect(all.code).toBe(1);
+      expect(all.err).toStartWith(`mdmem: ${CODEX_CONFIG} is not valid TOML (`);
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
+      expect(existsSync(join(root, MCP_CONFIG))).toBe(false);
+      expect(existsSync(join(root, ".bob"))).toBe(false);
+      expect(existsSync(join(root, "codex-home"))).toBe(false);
+      expect(store.exists("note.md")).toBe(false);
+      expect(existsSync(await importMarker(store, ctx))).toBe(false);
+    });
+  });
+
+  test("an agent named twice is wired once", async () => {
+    await withCliProject(async (root, store) => {
+      const home = join(root, "home");
+      const env = {
+        HOME: home,
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+        CODEX_HOME: join(root, "codex-home"),
+      };
+      const ctx = { projectRoot: root, store, env, home, cwd: root };
+      await claudeMemory(ctx, root, "note.md", memoryText("note", "Body."));
+      const twice = runCliWith(
+        root,
+        ["enable", "claude-code", "claude-code"],
+        env
+      );
+      expect(twice.err).toBe("");
+      expect(twice.code).toBe(0);
+      expect(twice.out.split("Claude Code:").length).toBe(2);
+      expect(twice.out.split("Backed up .memory/").length).toBe(2);
+      expect(twice.out.split("added in .mcp.json").length).toBe(2);
+
+      expect(runCliWith(root, ["enable", "codex"], env).code).toBe(0);
+      const disable = runCliWith(
+        root,
+        ["disable", "codex", "codex", "--global"],
+        env
+      );
+      expect(disable.err).toBe("");
+      expect(disable.code).toBe(0);
+      expect(existsSync(join(root, CODEX_CONFIG))).toBe(false);
+      expect(existsSync(join(root, "codex-home", "hooks.json"))).toBe(false);
+    });
+  });
+
+  test("enable refuses in a bare repository and in the folder holding one, naming the worktrees", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
+    try {
+      const source = join(tmp, "source");
+      await mkdir(source);
+      await gitRepo(source);
+      const bare = join(tmp, "x.git");
+      git(tmp, "clone", "-q", "--bare", source, bare);
+      const container = join(tmp, "c");
+      await mkdir(container);
+      git(tmp, "clone", "-q", "--bare", source, join(container, ".git"));
+      const worktree = join(container, "wt");
+      git(container, "worktree", "add", "-q", worktree, "-b", "wt");
+
+      const inBare = runCli(bare, "enable", "bob");
+      expect(inBare.code).toBe(1);
+      expect(inBare.err).toBe(
+        `mdmem: ${bare} is not in a work tree (a bare repository, or the folder holding one), and agents read their files only from a work tree: add a worktree with \`git worktree add <path>\` and run it there\n`
+      );
+      const inContainer = runCli(container, "enable", "bob");
+      expect(inContainer.code).toBe(1);
+      expect(inContainer.err).toBe(
+        `mdmem: ${container} is not in a work tree (a bare repository, or the folder holding one), and agents read their files only from a work tree: run it in one of the repository's worktrees (\`git worktree list\`): ${worktree}\n`
+      );
+      expect(existsSync(join(bare, ".bob"))).toBe(false);
+      expect(existsSync(join(container, ".bob"))).toBe(false);
+
+      // disable still runs there
+      const disable = runCli(container, "disable", "bob");
+      expect(disable.err).toBe("");
+      expect(disable.code).toBe(0);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("--prefer is refused unless claude-code is enabled, and an import skipped by its marker says --prefer was not used", async () => {
+    await withCliProject(async (root, store) => {
+      const env = {
+        HOME: join(root, "home"),
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+      };
+      const bob = runCliWith(
+        root,
+        ["enable", "bob", "--prefer", "claude"],
+        env
+      );
+      expect(bob.code).toBe(1);
+      expect(bob.err).toBe(
+        "mdmem: --prefer settles the import of Claude Code's memories, so it applies only when claude-code is among the agents enabled\n"
+      );
+      expect(existsSync(join(root, ".bob"))).toBe(false);
+
+      const marker = await importMarker(store, { env, home: env.HOME });
+      await mkdir(dirname(marker), { recursive: true });
+      await writeFile(marker, "2026-10-18T00:00:00.000Z into x\n", "utf-8");
+      const claude = runCliWith(
+        root,
+        ["enable", "claude-code", "--prefer", "claude"],
+        env
+      );
+      expect(claude.code).toBe(0);
+      expect(claude.out).toContain(
+        `  Claude Code's memories were already imported (2026-10-18T00:00:00.000Z into x): skipped the import, so --prefer claude was not used. To import again, delete ${marker} and run \`mdmem enable claude-code\` again.\n`
+      );
+    });
+  });
 });
 
 /** Run `mdmem hook <agent> <part>` in `cwd` with `payload` on stdin, capturing its exit code and output. */
-function runHookCli(cwd: string, part: string, payload: unknown) {
-  const proc = Bun.spawnSync(["bun", CLI, "hook", "claude-code", part], {
+function runHookCli(
+  cwd: string,
+  part: string,
+  payload: unknown,
+  agent = "claude-code"
+) {
+  const proc = Bun.spawnSync(["bun", CLI, "hook", agent, part], {
     cwd,
     stdin: Buffer.from(
       typeof payload === "string" ? payload : JSON.stringify(payload)
@@ -1242,6 +1477,51 @@ describe("hook", () => {
     } finally {
       await rm(bare, { recursive: true, force: true });
     }
+  });
+
+  test("Codex's global hook prints nothing in a project whose .codex/config.toml does not register the mdmem server", async () => {
+    await withCliProject(async (root) => {
+      expect(runHookCli(root, "protocol", startPayload(root), "codex")).toEqual(
+        { code: 0, out: "", err: "" }
+      );
+
+      await mkdir(join(root, ".codex"));
+      await writeFile(
+        join(root, CODEX_CONFIG),
+        '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\n',
+        "utf-8"
+      );
+      const hook = runHookCli(root, "protocol", startPayload(root), "codex");
+      expect(hook.code).toBe(0);
+      expect(injected(hook.out)).toBe(getMemoryProtocol());
+
+      // a server table the user extended still registers the server
+      await writeFile(
+        join(root, CODEX_CONFIG),
+        '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\nstartup_timeout_sec = 20\n',
+        "utf-8"
+      );
+      const extended = runHookCli(
+        root,
+        "protocol",
+        startPayload(root),
+        "codex"
+      );
+      expect(injected(extended.out)).toBe(getMemoryProtocol());
+
+      // disable keeps a table that is not mdmem's own, so the hook is not called silent
+      const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex") };
+      expect(runCliWith(root, ["enable", "codex"], env).code).toBe(0);
+      await writeFile(
+        join(root, CODEX_CONFIG),
+        '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\nstartup_timeout_sec = 20\n',
+        "utf-8"
+      );
+      const disable = runCliWith(root, ["disable", "codex"], env);
+      expect(disable.out).toBe(
+        `Codex CLI:\n  ${CODEX_CONFIG} holds none of mdmem's entries\n  The global hook in ${join(root, "codex", "hooks.json")} stays. \`mdmem disable codex --global\` removes it.\n`
+      );
+    });
   });
 
   test("a payload cwd in a linked worktree resolves the main checkout's store", async () => {
@@ -1404,7 +1684,7 @@ async function wiredRepo(): Promise<{
   const ctx = adapterContext(root, store, env, home);
   for (const adapter of [claudeCodeAdapter, bobAdapter, codexAdapter]) {
     // oxlint-disable-next-line no-await-in-loop -- one adapter at a time, as the CLI wires them
-    await adapter.enable(ctx, {});
+    await wire(adapter.enable(ctx, {}));
   }
   return { root, ctx, store };
 }
@@ -1572,7 +1852,7 @@ describe("status and check", () => {
       ]);
       for (const adapter of [claudeCodeAdapter, bobAdapter, codexAdapter]) {
         // oxlint-disable-next-line no-await-in-loop -- one adapter at a time, as the CLI unwires them
-        await adapter.disable(noMdmem, { global: true });
+        await wire(adapter.disable(noMdmem, { global: true }));
       }
       expect(await checkProject(noMdmem)).toMatchObject({ problems: [] });
     });

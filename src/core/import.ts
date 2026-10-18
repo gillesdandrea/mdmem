@@ -558,22 +558,18 @@ export async function importMarker(
   return join(claudeProjectDir(projectRoot, environment), IMPORT_MARKER);
 }
 
+/** An import planned: Claude's directories and the store read, its conflicts refused, nothing written yet. */
+export type PlannedImport = () => Promise<ImportResult>;
+
 /**
- * Import Claude Code's memories for the project whose store is `store` (ADR 0003):
- * the memory directory at the repository's key and every other Claude project
- * directory of the repository's worktrees. A file in one place only is copied, files
- * with the same content (bar Claude's `modified:` stamp) are kept once, and a memory
- * that breaks mdmem's write rules is copied as it is. A same-name file with
- * different content is a conflict: every conflict is listed in one refusal, before
- * anything changes, unless `prefer` picks a side. Each source index's pointer lines
- * are appended after the store's, then the index is reconciled as `reindex` does.
- * The store is backed up before the first write; with nothing new, nothing is
- * written. Claude's directories are only read.
+ * Plan importClaudeMemories: read Claude's directories and the store, and throw the
+ * refusal listing every conflict; the returned function does the writes and reports
+ * them. Nothing is written until it is called.
  */
-export async function importClaudeMemories(
+export async function planClaudeImport(
   store: MemoryStore,
   options: ImportOptions = {}
-): Promise<ImportResult> {
+): Promise<PlannedImport> {
   const projectRoot = await realDirectory(dirname(store.root));
   const sources = await claudeSources(projectRoot, options);
   const { copiesByKey, skipped } = await readClaudeDirectories(sources);
@@ -610,25 +606,47 @@ export async function importClaudeMemories(
   ]);
   const pointers = newPointerLines(storeIndex, sourceIndexes, files);
   if (writes.length === 0 && pointers.length === 0) {
-    return result;
+    return () => Promise.resolve(result);
   }
 
-  result.backup = await backUp(store, projectRoot, options);
-  for (const { file, raw } of writes) {
-    // oxlint-disable-next-line no-await-in-loop -- a few files, written in order
-    await store.create(file, raw);
-  }
-  if (pointers.length > 0) {
-    await store.create(INDEX_FILE, appendLines(storeIndex, pointers));
-  }
-  result.warnings = [
-    ...secretWarnings(writes),
-    ...(await reindex(store, saved)),
-  ];
-  const fromSources = new Set(writes.map(({ from }) => from));
-  result.merged =
-    writes.length > 0 && (stored.size > 0 || fromSources.size > 1);
-  return result;
+  return async () => {
+    result.backup = await backUp(store, projectRoot, options);
+    for (const { file, raw } of writes) {
+      // oxlint-disable-next-line no-await-in-loop -- a few files, written in order
+      await store.create(file, raw);
+    }
+    if (pointers.length > 0) {
+      await store.create(INDEX_FILE, appendLines(storeIndex, pointers));
+    }
+    result.warnings = [
+      ...secretWarnings(writes),
+      ...(await reindex(store, saved)),
+    ];
+    const fromSources = new Set(writes.map(({ from }) => from));
+    result.merged =
+      writes.length > 0 && (stored.size > 0 || fromSources.size > 1);
+    return result;
+  };
+}
+
+/**
+ * Import Claude Code's memories for the project whose store is `store` (ADR 0003):
+ * the memory directory at the repository's key and every other Claude project
+ * directory of the repository's worktrees. A file in one place only is copied, files
+ * with the same content (bar Claude's `modified:` stamp) are kept once, and a memory
+ * that breaks mdmem's write rules is copied as it is. A same-name file with
+ * different content is a conflict: every conflict is listed in one refusal, before
+ * anything changes, unless `prefer` picks a side. Each source index's pointer lines
+ * are appended after the store's, then the index is reconciled as `reindex` does.
+ * The store is backed up before the first write; with nothing new, nothing is
+ * written. Claude's directories are only read.
+ */
+export async function importClaudeMemories(
+  store: MemoryStore,
+  options: ImportOptions = {}
+): Promise<ImportResult> {
+  const write = await planClaudeImport(store, options);
+  return await write();
 }
 
 function fileList(files: readonly ImportedFile[]): string[] {

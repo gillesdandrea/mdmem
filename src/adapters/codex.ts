@@ -1,13 +1,13 @@
 import { join, resolve } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import { missingHooksProblem } from "./adapter.ts";
+import { missingHooksProblem, OUTSIDE_PROJECT_LINE } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
   AgentStatus,
   DisableOptions,
-  WiringResult,
+  WiringPlan,
 } from "./adapter.ts";
 import {
   arrayItemEntry,
@@ -17,7 +17,11 @@ import {
   writeConfigs,
 } from "./json-config.ts";
 import type { JsonConfigFile } from "./json-config.ts";
-import { planTomlTable, tomlTableStatus } from "./toml-config.ts";
+import {
+  planTomlTable,
+  tomlTableExists,
+  tomlTableStatus,
+} from "./toml-config.ts";
 import type { TomlTableEntry } from "./toml-config.ts";
 
 const ID = "codex";
@@ -26,10 +30,11 @@ const TITLE = "Codex CLI";
 // Codex CLI's session-start hook is global (ADR 0003): Codex pins a hook's approval
 // to the absolute path of the file declaring it, so a hook in each worktree's
 // .codex/hooks.json would need approving in every worktree, while one in
-// $CODEX_HOME/hooks.json is approved once. mdmem hook prints nothing outside a
-// project with a store, so the global hook is silent elsewhere. The mdmem MCP
-// server is registered per project, in .codex/config.toml committed with the
-// repository, which Codex reads only in a trusted folder.
+// $CODEX_HOME/hooks.json is approved once. The mdmem MCP server is registered per
+// project, in .codex/config.toml committed with the repository, which Codex reads
+// only in a trusted folder; that registration is what wires a project for Codex, so
+// mdmem hook codex prints nothing in a work tree without it, as it prints nothing
+// outside a project with a store.
 const MCP_CONFIG = ".codex/config.toml";
 // Seconds; Codex's default is 600.
 const HOOK_TIMEOUT = 10;
@@ -83,40 +88,46 @@ export const codexAdapter: Adapter = {
   configDir: ".codex",
   title: TITLE,
 
-  async enable(ctx: AdapterContext): Promise<WiringResult> {
+  async enable(ctx: AdapterContext): Promise<WiringPlan> {
     // Plan both files before writing either, so an unparseable one refuses with nothing written.
     const file = hooksFile(ctx);
     const hooks = await planConfigs(ctx.projectRoot, [file], "add");
     const server = await planTomlTable(ctx.projectRoot, SERVER_ENTRY, "add");
     const plan = [...hooks, server];
-    await writeConfigs(plan);
-    const review = hooks.some(({ changed }) => changed.length > 0)
-      ? [
-          `Codex asks you once to review the new hook in ${file.file}, at its next start or in /hooks: trust it, and it runs in every project, printing nothing outside a project with a store.`,
-        ]
-      : [];
     return {
-      title: TITLE,
-      actions: [
-        ...describePlan(plan, "add"),
-        ...review,
-        `Commit ${MCP_CONFIG}: it registers the mdmem MCP server for everyone working in the repository, who then needs mdmem on PATH. Codex reads it only in a trusted folder.`,
-      ],
-      warnings: [],
+      write: async () => {
+        await writeConfigs(plan);
+        const review = hooks.some(({ changed }) => changed.length > 0)
+          ? [
+              `Codex asks you once to review the new hook in ${file.file}, at its next start or in /hooks: trust it, and it runs in every project, printing nothing where ${MCP_CONFIG} does not register the mdmem server or no store exists.`,
+            ]
+          : [];
+        return {
+          title: TITLE,
+          actions: [
+            ...describePlan(plan, "add"),
+            ...review,
+            `Commit ${MCP_CONFIG}: it registers the mdmem MCP server for everyone working in the repository, who then needs mdmem on PATH. Codex reads it only in a trusted folder.`,
+          ],
+          warnings: [],
+        };
+      },
     };
   },
 
   async disable(
     ctx: AdapterContext,
     options: DisableOptions
-  ): Promise<WiringResult> {
+  ): Promise<WiringPlan> {
     const file = hooksFile(ctx);
     const hooks = options.global
       ? await planConfigs(ctx.projectRoot, [file], "remove")
       : [];
-    const server = await planTomlTable(ctx.projectRoot, SERVER_ENTRY, "remove");
-    const plan = [server, ...hooks];
-    await writeConfigs(plan);
+    // Outside a project only the global hook is mdmem's to remove.
+    const server = options.outsideProject
+      ? []
+      : [await planTomlTable(ctx.projectRoot, SERVER_ENTRY, "remove")];
+    const plan = [...server, ...hooks];
     const kept: string[] = [];
     const warnings: string[] = [];
     if (!options.global) {
@@ -125,18 +136,42 @@ export const codexAdapter: Adapter = {
         [file]
       );
       warnings.push(...unread);
+      const removeIt = `\`mdmem disable ${ID} --global\` removes it.`;
+      // A server table other than mdmem's own is kept, and the hook still runs beside it.
+      const silenced =
+        !options.outsideProject &&
+        (server[0]?.changed.length !== 0 ||
+          !(await tomlTableExists(ctx.projectRoot, SERVER_ENTRY)));
       if (entries.some(({ present }) => present)) {
         kept.push(
-          `The global hook in ${file.file} stays: it prints nothing outside a project with a store. \`mdmem disable codex --global\` removes it.`
+          silenced
+            ? `The global hook in ${file.file} stays, and is now silent in this project, whose ${MCP_CONFIG} no longer registers the mdmem server. ${removeIt}`
+            : `The global hook in ${file.file} stays. ${removeIt}`
         );
       }
     }
     return {
-      title: TITLE,
-      actions: [...describePlan(plan, "remove"), ...kept],
-      warnings,
+      write: async () => {
+        await writeConfigs(plan);
+        return {
+          title: TITLE,
+          actions: [
+            // With --global outside a project, the hook is all there is to remove.
+            ...(options.outsideProject && !options.global
+              ? [OUTSIDE_PROJECT_LINE]
+              : []),
+            ...describePlan(plan, "remove"),
+            ...kept,
+          ],
+          warnings,
+        };
+      },
     };
   },
+
+  // Any mdmem server table counts, extra keys included: Codex then runs that server.
+  projectWired: (projectRoot: string): Promise<boolean> =>
+    tomlTableExists(projectRoot, SERVER_ENTRY),
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const server = await tomlTableStatus(ctx.projectRoot, SERVER_ENTRY);

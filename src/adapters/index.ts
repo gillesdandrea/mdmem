@@ -60,5 +60,6 @@ export type {
   DisableOptions,
   EnableOptions,
   WiringEntry,
+  WiringPlan,
   WiringResult,
 } from "./adapter.ts";

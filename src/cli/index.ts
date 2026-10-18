@@ -1,14 +1,21 @@
 #!/usr/bin/env bun
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 
-import type { AdapterContext, AgentStatus } from "../adapters/index.ts";
+import type {
+  Adapter,
+  AdapterContext,
+  AgentStatus,
+  WiringPlan,
+} from "../adapters/index.ts";
 import { adapterIds, findAdapters, getAdapter } from "../adapters/index.ts";
 import {
   adapterContext,
   checkProject,
+  disableContext,
+  enableContext,
   projectStatus,
 } from "../adapters/report.ts";
 import { checkSummary, formatCheck, reindex } from "../core/check.ts";
@@ -289,38 +296,72 @@ async function cmdSearch(args: string[]): Promise<void> {
   }
 }
 
+/** The agents to wire, and a line to print about the ones `--all` skipped. */
+interface Targets {
+  adapters: Adapter[];
+  notice?: string;
+}
+
 /**
- * The agents to wire: those named, or with `--all` the supported agents found on
- * this machine, printing the ones skipped as not found.
+ * The agents to wire: those named, every name checked before any agent is planned,
+ * or with `--all` the supported agents found on this machine.
  */
 function resolveTargets(
   values: { all?: boolean },
   positionals: string[],
-  ctx: AdapterContext,
   mode: "enable" | "disable"
-): string[] {
+): Targets {
   if (!values.all) {
     if (positionals.length === 0) {
       die(`specify agent(s) or --all. Known: ${adapterIds().join(", ")}`);
     }
-    return positionals;
+    // A name given twice is wired once: every plan reads the files as they are now.
+    const adapters = [...new Set(positionals)].map(
+      (id) =>
+        getAdapter(id) ??
+        die(`unknown agent "${id}". Known: ${adapterIds().join(", ")}`)
+    );
+    return { adapters };
   }
   if (positionals.length > 0) {
     die("give agent names or --all, not both");
   }
-  const { found, notFound } = findAdapters(ctx);
+  const { found, notFound } = findAdapters({
+    env: process.env,
+    home: homedir(),
+  });
   const ids = notFound.map(({ id }) => id);
   const nameOne = `Name an agent to ${mode} it anyway, as in \`mdmem ${mode} ${ids[0]}\`.`;
   if (found.length === 0) {
-    print(
-      `No supported agent found on this machine (no command on PATH, no config directory). ${nameOne}`
-    );
-  } else if (notFound.length > 0) {
-    print(
-      `Skipped, not found on this machine (no command on PATH, no config directory): ${ids.join(", ")}. ${nameOne}`
-    );
+    return {
+      adapters: [],
+      notice: `No supported agent found on this machine (no command on PATH, no config directory). ${nameOne}`,
+    };
   }
-  return found.map(({ id }) => id);
+  return {
+    adapters: found,
+    notice:
+      notFound.length > 0
+        ? `Skipped, not found on this machine (no command on PATH, no config directory): ${ids.join(", ")}. ${nameOne}`
+        : undefined,
+  };
+}
+
+/** The agent whose import `--prefer` settles. */
+const PREFER_AGENT = "claude-code";
+
+/** Plan every agent's enable or disable; the first refusal, in the agents' order, stops the run. */
+async function planWiring(
+  adapters: readonly Adapter[],
+  plan: (adapter: Adapter) => Promise<WiringPlan>
+): Promise<WiringPlan[]> {
+  const settled = await Promise.allSettled(adapters.map(plan));
+  return settled.map((outcome) => {
+    if (outcome.status === "rejected") {
+      throw outcome.reason;
+    }
+    return outcome.value;
+  });
 }
 
 async function cmdWiring(
@@ -344,17 +385,30 @@ async function cmdWiring(
     die("--global applies to `mdmem disable` only");
   }
   const prefer = preferOption(values.prefer);
-  const resolved = resolveStore();
-  const ctx = context(resolved);
-  for (const id of resolveTargets(values, positionals, ctx, mode)) {
-    const adapter = getAdapter(id);
-    if (!adapter) {
-      die(`unknown agent "${id}". Known: ${adapterIds().join(", ")}`);
-    }
-    // oxlint-disable-next-line no-await-in-loop -- writes stay in argument order, and an unknown agent stops the run before later ones are touched
-    const result = await (mode === "enable"
+  const { adapters, notice } = resolveTargets(values, positionals, mode);
+  if (notice !== undefined) {
+    print(notice);
+  }
+  if (prefer !== undefined && !adapters.some(({ id }) => id === PREFER_AGENT)) {
+    die(
+      `--prefer settles the import of Claude Code's memories, so it applies only when ${PREFER_AGENT} is among the agents enabled`
+    );
+  }
+  const cwd = process.cwd();
+  // enable needs a work tree and a store; disable needs neither.
+  const { ctx, outsideProject } =
+    mode === "enable"
+      ? { ctx: enableContext(cwd), outsideProject: false }
+      : disableContext(cwd);
+  // Plan every agent before writing any, so a refusal leaves every file as it was.
+  const plans = await planWiring(adapters, (adapter) =>
+    mode === "enable"
       ? adapter.enable(ctx, { prefer })
-      : adapter.disable(ctx, { global: values.global }));
+      : adapter.disable(ctx, { global: values.global, outsideProject })
+  );
+  for (const plan of plans) {
+    // oxlint-disable-next-line no-await-in-loop -- writes stay in argument order
+    const result = await plan.write();
     print(`${result.title}:`);
     for (const action of result.actions) {
       print(`  ${action}`);
@@ -421,6 +475,11 @@ async function cmdHook(args: string[]): Promise<void> {
     readPayload: async () =>
       process.stdin.isTTY ? "" : await Bun.stdin.text(),
     cwd: process.cwd(),
+    // A hook declared outside the project (Codex's) runs only where the project is wired for it.
+    projectWired: async (hookAgent, projectRoot) => {
+      const check = getAdapter(hookAgent)?.projectWired;
+      return check === undefined ? true : await check(projectRoot());
+    },
   });
   if (output !== "") {
     print(output);
@@ -459,15 +518,19 @@ Usage: mdmem <command> [options]
                             PATH (claude, bob, codex) or config directory (~/.claude, ~/.bob, ~/.codex)
                             (claude-code: import Claude's memories once, turn its auto memory off,
                             add its session-start hooks and the mdmem MCP server; --prefer settles
-                            an import conflict by keeping Claude's file or the store's; bob: add its
-                            session-start hooks and the mdmem MCP server; codex: add its session-start
-                            hooks to ~/.codex/hooks.json ($CODEX_HOME when set), once per user, and the
-                            mdmem MCP server to .codex/config.toml)
+                            an import conflict by keeping Claude's file or the store's, and needs
+                            claude-code among the agents; bob: add its session-start hooks and the
+                            mdmem MCP server; codex: add its session-start hooks to ~/.codex/hooks.json
+                            ($CODEX_HOME when set), once per user, and the mdmem MCP server to
+                            .codex/config.toml); refused in a bare repository or the folder holding
+                            one; an unknown agent, a file that does not parse or an import conflict
+                            stops it with no file written
   disable <agent…> | --all [--global]
-                            Remove exactly mdmem's entries from an agent's files (leaves the store);
-                            --all takes the agents found on this machine;
-                            codex keeps its global hook, silent outside a project with a store, unless
-                            --global, which also removes it from ~/.codex/hooks.json
+                            Remove exactly mdmem's entries from an agent's files (leaves the store,
+                            needs none); --all takes the agents found on this machine;
+                            codex keeps its global hook, then silent in the project, unless
+                            --global, which also removes it from ~/.codex/hooks.json (the only
+                            change disable makes outside a project)
   status                    Show the store, the check in one line, whether git ignores .memory/, and
                             each agent's wiring, entry by entry, with what mdmem cannot check (folder
                             trust) and a warning when Bob would be launched below the checkout's root
@@ -475,7 +538,8 @@ Usage: mdmem <command> [options]
   mcp                       Run the MCP server over stdio (for agent tool-calls)
   hook <agent> <part>       Run by an agent's session-start hook, not typed by hand: print the
                             memory protocol or the index as context to inject (agent: ${HOOK_AGENTS.join(", ")};
-                            part: ${HOOK_PARTS.join(", ")}); prints nothing outside a project with a store
+                            part: ${HOOK_PARTS.join(", ")}); prints nothing outside a project with a store,
+                            nor for codex where .codex/config.toml does not register the mdmem server
 
 Agents: ${adapterIds().join(", ")} (only agents with session-start hooks are supported)
 Memory types: ${MEMORY_TYPES.join(", ")}`);

@@ -6,16 +6,17 @@ import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookPart } from "../core/hook.ts";
 import {
   formatImport,
-  importClaudeMemories,
   importMarker,
+  planClaudeImport,
 } from "../core/import.ts";
-import { missingHooksProblem } from "./adapter.ts";
+import { missingHooksProblem, outsideProjectPlan } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
   AgentStatus,
+  DisableOptions,
   EnableOptions,
-  WiringResult,
+  WiringPlan,
 } from "./adapter.ts";
 import {
   arrayItemEntry,
@@ -82,36 +83,53 @@ const FILES: readonly JsonConfigFile[] = [
   },
 ];
 
+/** The import's report and warnings, once written, and the marker to record when it imported something. */
+interface ImportOutcome {
+  lines: string[];
+  warnings: string[];
+  record?: string;
+}
+
 /**
- * Import Claude's memories unless this user already did for the repository: the
- * import runs once, so a later enable neither refuses again over files settled with
- * --prefer nor brings back a memory deleted since. Returns the report and warnings.
+ * Plan importing Claude's memories unless this user already did for the
+ * repository: the import runs once, so a later enable neither refuses again over
+ * files settled with --prefer nor brings back a memory deleted since. A conflict
+ * refuses here, before anything is written.
  */
-async function importOnce(
+async function planImportOnce(
   ctx: AdapterContext,
   options: EnableOptions
-): Promise<{ lines: string[]; warnings: string[]; record?: string }> {
+): Promise<() => Promise<ImportOutcome>> {
   const environment = { env: ctx.env, home: ctx.home };
   const marker = await importMarker(ctx.store, environment);
   if (existsSync(marker)) {
     const text = await readFile(marker, "utf-8");
     const recorded = text.trim();
-    return {
+    const when = recorded === "" ? "" : ` (${recorded})`;
+    const prefer =
+      options.prefer === undefined
+        ? ""
+        : `, so --prefer ${options.prefer} was not used`;
+    const outcome: ImportOutcome = {
       lines: [
-        `Claude Code's memories were already imported (${recorded || marker}): skipped the import.`,
+        `Claude Code's memories were already imported${when}: skipped the import${prefer}. To import again, delete ${marker} and run \`mdmem enable ${ID}\` again.`,
       ],
       warnings: [],
     };
+    return () => Promise.resolve(outcome);
   }
-  const result = await importClaudeMemories(ctx.store, {
+  const write = await planClaudeImport(ctx.store, {
     ...environment,
     prefer: options.prefer,
   });
-  return {
-    lines: formatImport(result),
-    warnings: result.warnings,
-    // Nothing to remember when Claude held no memories for the repository.
-    record: result.sources.length > 0 ? marker : undefined,
+  return async () => {
+    const result = await write();
+    return {
+      lines: formatImport(result),
+      warnings: result.warnings,
+      // Nothing to remember when Claude held no memories for the repository.
+      record: result.sources.length > 0 ? marker : undefined,
+    };
   };
 }
 
@@ -192,41 +210,56 @@ export const claudeCodeAdapter: Adapter = {
   async enable(
     ctx: AdapterContext,
     options: EnableOptions
-  ): Promise<WiringResult> {
-    // Read every file first, so an unparseable one is refused before the import writes.
+  ): Promise<WiringPlan> {
+    // Read every file and plan the import, so an unparseable file or an import conflict refuses before anything is written.
     const plan = await planConfigs(ctx.projectRoot, FILES, "add");
-    const imported = await importOnce(ctx, options);
-    // Recorded before the config files, so a failed write leaves the import done once.
-    if (imported.record !== undefined) {
-      await mkdir(dirname(imported.record), { recursive: true });
-      await writeFile(
-        imported.record,
-        `${new Date().toISOString()} into ${ctx.store.root}\n`,
-        "utf-8"
-      );
-    }
-    await writeConfigs(plan);
+    const importOnce = await planImportOnce(ctx, options);
     return {
-      title: TITLE,
-      actions: [
-        ...imported.lines,
-        ...describePlan(plan, "add"),
-        `Commit ${SETTINGS} and ${MCP_CONFIG}: they wire Claude Code for everyone working in the repository, who then needs mdmem on PATH.`,
-      ],
-      warnings: imported.warnings,
+      write: async () => {
+        const imported = await importOnce();
+        // Recorded before the config files, so a failed write leaves the import done once.
+        if (imported.record !== undefined) {
+          await mkdir(dirname(imported.record), { recursive: true });
+          await writeFile(
+            imported.record,
+            `${new Date().toISOString()} into ${ctx.store.root}\n`,
+            "utf-8"
+          );
+        }
+        await writeConfigs(plan);
+        return {
+          title: TITLE,
+          actions: [
+            ...imported.lines,
+            ...describePlan(plan, "add"),
+            `Commit ${SETTINGS} and ${MCP_CONFIG}: they wire Claude Code for everyone working in the repository, who then needs mdmem on PATH.`,
+          ],
+          warnings: imported.warnings,
+        };
+      },
     };
   },
 
-  async disable(ctx: AdapterContext): Promise<WiringResult> {
+  async disable(
+    ctx: AdapterContext,
+    options: DisableOptions
+  ): Promise<WiringPlan> {
+    if (options.outsideProject) {
+      return outsideProjectPlan(TITLE);
+    }
     const plan = await planConfigs(ctx.projectRoot, FILES, "remove");
-    await writeConfigs(plan);
     return {
-      title: TITLE,
-      actions: [
-        ...describePlan(plan, "remove"),
-        "The memories imported from Claude Code stay in the store.",
-      ],
-      warnings: [],
+      write: async () => {
+        await writeConfigs(plan);
+        return {
+          title: TITLE,
+          actions: [
+            ...describePlan(plan, "remove"),
+            "The memories imported from Claude Code stay in the store.",
+          ],
+          warnings: [],
+        };
+      },
     };
   },
 

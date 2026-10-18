@@ -1,12 +1,13 @@
 import { realpath } from "node:fs/promises";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import { missingHooksProblem } from "./adapter.ts";
+import { missingHooksProblem, outsideProjectPlan } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
   AgentStatus,
-  WiringResult,
+  DisableOptions,
+  WiringPlan,
 } from "./adapter.ts";
 import {
   arrayItemEntry,
@@ -107,26 +108,40 @@ export const bobAdapter: Adapter = {
   configDir: ".bob",
   title: TITLE,
 
-  async enable(ctx: AdapterContext): Promise<WiringResult> {
+  async enable(ctx: AdapterContext): Promise<WiringPlan> {
     const plan = await planConfigs(ctx.projectRoot, FILES, "add");
-    await writeConfigs(plan);
     return {
-      title: TITLE,
-      actions: [
-        ...describePlan(plan, "add"),
-        `Commit ${SETTINGS} and ${MCP_CONFIG}: they wire IBM Bob for everyone working in the repository, who then needs mdmem on PATH. Bob runs them only in a trusted folder, and reads them only when launched at the checkout's root: launched in a subdirectory it gets neither the hooks nor the mdmem tools.`,
-      ],
-      warnings: [],
+      write: async () => {
+        await writeConfigs(plan);
+        return {
+          title: TITLE,
+          actions: [
+            ...describePlan(plan, "add"),
+            `Commit ${SETTINGS} and ${MCP_CONFIG}: they wire IBM Bob for everyone working in the repository, who then needs mdmem on PATH. Bob runs them only in a trusted folder, and reads them only when launched at the checkout's root: launched in a subdirectory it gets neither the hooks nor the mdmem tools.`,
+          ],
+          warnings: [],
+        };
+      },
     };
   },
 
-  async disable(ctx: AdapterContext): Promise<WiringResult> {
+  async disable(
+    ctx: AdapterContext,
+    options: DisableOptions
+  ): Promise<WiringPlan> {
+    if (options.outsideProject) {
+      return outsideProjectPlan(TITLE);
+    }
     const plan = await planConfigs(ctx.projectRoot, FILES, "remove");
-    await writeConfigs(plan);
     return {
-      title: TITLE,
-      actions: describePlan(plan, "remove"),
-      warnings: [],
+      write: async () => {
+        await writeConfigs(plan);
+        return {
+          title: TITLE,
+          actions: describePlan(plan, "remove"),
+          warnings: [],
+        };
+      },
     };
   },
 

@@ -301,7 +301,7 @@ function parseWrittenMemory(path: string, content: string): Memory {
  * version last read or written at `path`, or `new` for a file that must not exist
  * yet. The content must parse as a memory named after its file, in kebab-case or
  * snake_case, and hold no secret; it is stored as given, unknown fields included.
- * Updates the index as `reindex` does (./check.ts).
+ * Updates the index, rewriting the memory's pointer only if its description changed.
  */
 export async function writeDocument(
   store: MemoryStore,
