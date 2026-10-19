@@ -131,12 +131,12 @@ part as SessionStart context, each under 10,000 characters: warnings past that a
 counted instead of listed, and an index over its limit is cut short with a note to
 `memory_read` the rest and run a consolidation. It prints nothing outside a
 project with a store, for `codex` in a work tree whose `.codex/config.toml` does
-not register the mdmem server, on a resumed session, or for any event but
-SessionStart; empty stdin counts as an empty payload, so run by hand it prints
-nothing. A payload that is not a JSON object is reported only where the working
-directory holds a store wired for the agent; elsewhere the hook prints nothing.
-It never fails a session: an error becomes a one-line context saying why the
-memory could not be loaded, and it exits 0.
+not register the mdmem server, on a resumed or forked session, or for any event
+but SessionStart; empty stdin counts as an empty payload, so run by hand it
+prints nothing. A payload that is not a JSON object is reported only where the
+working directory holds a store wired for the agent; elsewhere the hook prints
+nothing. It never fails a session: an error becomes a one-line context saying
+why the memory could not be loaded, and it exits 0.
 
 `mdmem edit` saves the copy back the way `add` saves a memory, so an edit that is
 not a valid memory, holds a secret, or races another change to the memory is
@@ -314,7 +314,8 @@ was:
   `mdmem hook codex protocol` and `mdmem hook codex index`, each with a
   10-second timeout and `"additionalContextLimit": 0`. Without that limit,
   Codex replaces a hook context over about 2,500 tokens with a preview and the
-  path of a temporary file. `mdmem hook` skips a resumed session itself.
+  path of a temporary file. `mdmem hook` skips a resumed or forked session
+  itself.
 - in the project's `.codex/config.toml`, the mdmem server:
 
   ```toml

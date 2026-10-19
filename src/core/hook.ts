@@ -15,8 +15,8 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
  * about 10,000 characters, so each part stays under that.
  *
  * A hook never fails a session (ADR 0002): outside a project with a store, in a
- * work tree not wired for an agent whose hook is user-wide (Codex), on a resumed
- * session or another event it prints nothing, and any error becomes a one-line
+ * work tree not wired for an agent whose hook is user-wide (Codex), on a resumed or
+ * forked session or another event it prints nothing, and any error becomes a one-line
  * context saying why the memory could not be loaded. A payload that does not parse
  * is reported only where the process's working directory holds a store wired for the
  * agent; elsewhere the hook prints nothing.
@@ -33,8 +33,11 @@ export type HookPart = (typeof HOOK_PARTS)[number];
 export const HOOK_CONTEXT_MAX_CHARS = 10_000;
 
 const SESSION_START = "SessionStart";
-/** A resumed session already holds what its start injected. */
-const RESUME_SOURCE = "resume";
+/** A resumed or forked (Codex) session's history already holds what its start injected. */
+const SKIPPED_SOURCES: ReadonlySet<string | undefined> = new Set([
+  "resume",
+  "fork",
+]);
 
 /** The fields of a hook payload mdmem reads; all three agents send them. */
 interface HookPayload {
@@ -243,7 +246,7 @@ async function hookContext(request: HookRequest): Promise<string | undefined> {
   }
   if (
     payload.hookEventName !== SESSION_START ||
-    payload.source === RESUME_SOURCE
+    SKIPPED_SOURCES.has(payload.source)
   ) {
     return undefined;
   }

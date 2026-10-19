@@ -54,9 +54,9 @@ const HOOK_TIMEOUT = 10;
 
 const commands = hookCommands(ID);
 
-// No matcher: mdmem hook skips a resumed session itself. additionalContextLimit 0
-// lifts Codex's cap of about 2,500 tokens per context, past which it replaces the
-// context with a preview and a temp-file path.
+// No matcher: mdmem hook skips a resumed or forked session itself.
+// additionalContextLimit 0 lifts Codex's cap of about 2,500 tokens per context, past
+// which it replaces the context with a preview and a temp-file path.
 const HOOK_GROUP = {
   hooks: commands.map((command) => ({
     type: "command",

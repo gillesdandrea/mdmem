@@ -31,7 +31,7 @@ import {
   projectStatus,
 } from "../src/adapters/report.ts";
 import { checkSummary, reindex } from "../src/core/check.ts";
-import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
+import { HOOK_CONTEXT_MAX_CHARS, HOOK_PARTS } from "../src/core/hook.ts";
 import { claudeProjectDir, importMarker } from "../src/core/import.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import {
@@ -1743,7 +1743,7 @@ describe("hook", () => {
     });
   });
 
-  test("it prints nothing without a store, on resume, or for another event", async () => {
+  test("it prints nothing without a store, on resume or fork, or for another event", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
       // a temp home stops the walk for a store, whatever holds a .memory/ above the temp dir
@@ -1757,13 +1757,16 @@ describe("hook", () => {
       await withCliProject((root) => {
         for (const payload of [
           { ...startPayload(root), source: "resume" },
+          { ...startPayload(root), source: "fork" },
           { cwd: root, hook_event_name: "UserPromptSubmit" },
         ]) {
-          expect(runHookCli(root, "protocol", payload)).toEqual({
-            code: 0,
-            out: "",
-            err: "",
-          });
+          for (const part of HOOK_PARTS) {
+            expect(runHookCli(root, part, payload)).toEqual({
+              code: 0,
+              out: "",
+              err: "",
+            });
+          }
         }
       });
     } finally {
@@ -1788,7 +1791,7 @@ describe("hook", () => {
     });
   });
 
-  test("Bob's and Codex's hooks inject both parts through the CLI, Codex's in a project whose .codex/config.toml registers the server", async () => {
+  test("Bob's and Codex's hooks inject both parts through the CLI, Codex's in a project whose .codex/config.toml registers the server, and nothing in a forked Codex session", async () => {
     await withCliProject(async (root, store) => {
       await seedMemories(store, 1);
       // Codex's hook speaks only where .codex/config.toml registers the server
@@ -1806,6 +1809,15 @@ describe("hook", () => {
         expect(injected(hook.out)).toBe(
           `Memory store: ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
         );
+      }
+      // the same project wired for Codex: a forked Codex session gets neither part
+      const fork = { ...startPayload(root), source: "fork" };
+      for (const part of HOOK_PARTS) {
+        expect(runHookCli(root, part, fork, "codex")).toEqual({
+          code: 0,
+          out: "",
+          err: "",
+        });
       }
     });
   });
