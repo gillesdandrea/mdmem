@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 
 import { z } from "zod";
 
-import { OUTSIDE_PROJECT_LINE } from "../src/adapters/adapter.ts";
+import { MCP_SERVER, OUTSIDE_PROJECT_LINE } from "../src/adapters/adapter.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -179,6 +179,46 @@ describe("claude-code wiring", () => {
       const after = await claudeCodeAdapter.status(ctx);
       expect(after.wired).toBe(false);
       expect(after.entries.some(({ present }) => present)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("enable refuses autoMemoryEnabled: true, naming the key, and writes nothing", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      const settingsText = '{\n  "autoMemoryEnabled": true\n}\n';
+      await mkdir(join(root, ".claude"));
+      await writeFile(join(root, CLAUDE_SETTINGS), settingsText, "utf-8");
+
+      await expect(claudeCodeAdapter.enable(ctx, {})).rejects.toThrow(
+        new RefusalError(
+          `${CLAUDE_SETTINGS}: autoMemoryEnabled holds a value that is not mdmem's, so mdmem will not overwrite it: remove it or set it to false, then run the command again`
+        )
+      );
+      expect(await readText(join(root, CLAUDE_SETTINGS))).toBe(settingsText);
+      expect(existsSync(join(root, MCP_CONFIG))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a hook of mdmem's with a timeout added counts as wired, is not added again, and disable removes it", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      await wire(claudeCodeAdapter.enable(ctx, {}));
+      const path = join(root, CLAUDE_SETTINGS);
+      const settings = JSON.parse((await readText(path)) ?? "{}");
+      settings.hooks.SessionStart[0].hooks[0].timeout = 30;
+      const edited = `${JSON.stringify(settings, null, 2)}\n`;
+      await writeFile(path, edited, "utf-8");
+
+      expect(await wired(claudeCodeAdapter, ctx)).toBe(true);
+      await wire(claudeCodeAdapter.enable(ctx, {}));
+      expect(await readText(path)).toBe(edited);
+
+      await wire(claudeCodeAdapter.disable(ctx, {}));
+      expect(existsSync(path)).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -372,6 +412,80 @@ describe("bob wiring", () => {
       );
       expect(existsSync(join(root, BOB_SETTINGS))).toBe(false);
       expect(existsSync(join(root, BOB_MCP))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a hook group and server of mdmem's edited by hand count as wired, are kept by enable, and disable removes them", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      await wire(bobAdapter.enable(ctx, {}));
+      const settingsPath = join(root, BOB_SETTINGS);
+      const mcpPath = join(root, BOB_MCP);
+      const settings = JSON.parse((await readText(settingsPath)) ?? "{}");
+      settings.hooks.SessionStart[0].hooks[0].disabled = true;
+      settings.hooks.SessionStart[0].hooks[1].timeout = 30;
+      const settingsText = `${JSON.stringify(settings, null, 2)}\n`;
+      const mcp = {
+        mcpServers: { mdmem: { ...MCP_SERVER, alwaysAllow: ["memory_view"] } },
+      };
+      const mcpText = `${JSON.stringify(mcp, null, 2)}\n`;
+      await writeFile(settingsPath, settingsText, "utf-8");
+      await writeFile(mcpPath, mcpText, "utf-8");
+
+      expect(await wired(bobAdapter, ctx)).toBe(true);
+      await wire(bobAdapter.enable(ctx, {}));
+      expect(await readText(settingsPath)).toBe(settingsText);
+      expect(await readText(mcpPath)).toBe(mcpText);
+
+      await wire(bobAdapter.disable(ctx, {}));
+      expect(existsSync(settingsPath)).toBe(false);
+      expect(existsSync(mcpPath)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a hook group missing one of mdmem's handlers is not wired, enable puts back only that handler, and disable removes the one left", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      await wire(bobAdapter.enable(ctx, {}));
+      const path = join(root, BOB_SETTINGS);
+      const settings = JSON.parse((await readText(path)) ?? "{}");
+      settings.hooks.SessionStart[0].hooks.shift();
+      await writeFile(path, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+
+      const status = await bobAdapter.status(ctx);
+      expect(status.wired).toBe(false);
+      expect(status.problems[0]).toStartWith("IBM Bob: missing SessionStart");
+      await wire(bobAdapter.enable(ctx, {}));
+      const restored = JSON.parse((await readText(path)) ?? "{}");
+      expect(restored.hooks.SessionStart).toEqual([BOB_HOOK_GROUP]);
+
+      await writeFile(path, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+      await wire(bobAdapter.disable(ctx, {}));
+      expect(existsSync(path)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("disable keeps the user's handler in mdmem's hook group, and the file", async () => {
+    const { root, ctx } = await tempProject();
+    try {
+      await wire(bobAdapter.enable(ctx, {}));
+      const path = join(root, BOB_SETTINGS);
+      const settings = JSON.parse((await readText(path)) ?? "{}");
+      const mine = { type: "command", command: "echo mine" };
+      settings.hooks.SessionStart[0].hooks.push(mine);
+      await writeFile(path, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+
+      await wire(bobAdapter.disable(ctx, {}));
+      const left = { matcher: BOB_HOOK_GROUP.matcher, hooks: [mine] };
+      expect(await readText(path)).toBe(
+        `${JSON.stringify({ hooks: { SessionStart: [left] } }, null, 2)}\n`
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -626,6 +740,62 @@ describe("codex wiring", () => {
       );
       expect(existsSync(hooksPath)).toBe(false);
       expect(await readText(join(root, CODEX_CONFIG))).toBe("model = \n");
+    } finally {
+      await Promise.all(
+        [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
+      );
+    }
+  });
+
+  test("a server table and global hook group of mdmem's edited by hand count as wired, are kept by enable, and disable removes them", async () => {
+    const shared = await realpath(
+      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
+    );
+    const group = {
+      hooks: CODEX_HOOK_GROUP.hooks.map((handler) => ({
+        ...handler,
+        timeout: 30,
+      })),
+    };
+    const hooksText = `${JSON.stringify({ hooks: { SessionStart: [group] } }, null, 2)}\n`;
+    const toml = `model = "x"\n\n${CODEX_SECTION}startup_timeout_sec = 30\nenv = { FOO = "bar" }\n`;
+    const { root, ctx, hooksPath } = await codexProject(join(shared, "home"), {
+      hooks: hooksText,
+      toml,
+    });
+    try {
+      expect(await wired(codexAdapter, ctx)).toBe(true);
+      await wire(codexAdapter.enable(ctx, {}));
+      expect(await readText(hooksPath)).toBe(hooksText);
+      expect(await readText(join(root, CODEX_CONFIG))).toBe(toml);
+
+      await wire(codexAdapter.disable(ctx, { global: true }));
+      expect(await readText(join(root, CODEX_CONFIG))).toBe('model = "x"\n');
+      expect(existsSync(hooksPath)).toBe(false);
+    } finally {
+      await Promise.all(
+        [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
+      );
+    }
+  });
+
+  test("enable refuses a [mcp_servers.mdmem] with another command, naming the file and the table, before the hook is written", async () => {
+    const shared = await realpath(
+      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
+    );
+    const toml =
+      '[mcp_servers.mdmem]\ncommand = "bun"\nargs = ["run", "/dev/mdmem/src/cli/index.ts", "mcp"]\n';
+    const { root, ctx, hooksPath } = await codexProject(join(shared, "home"), {
+      toml,
+    });
+    try {
+      await expect(codexAdapter.enable(ctx, {})).rejects.toThrow(
+        new RefusalError(
+          `${CODEX_CONFIG}: [mcp_servers.mdmem] holds a value that is not mdmem's, so mdmem will not overwrite it: remove or rename it, or set its command to "mdmem" and its args to ["mcp"], then run the command again`
+        )
+      );
+      expect(existsSync(hooksPath)).toBe(false);
+      expect(await readText(join(root, CODEX_CONFIG))).toBe(toml);
     } finally {
       await Promise.all(
         [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
@@ -1301,6 +1471,38 @@ describe("cli", () => {
     }
   });
 
+  test("enable refuses an mcpServers.mdmem that runs mdmem another way, writing nothing, and disable leaves it", async () => {
+    await withCliProject(async (root) => {
+      const env = {
+        HOME: join(root, "home"),
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+      };
+      const mcp = {
+        mcpServers: {
+          mdmem: {
+            type: "stdio",
+            command: "bun",
+            args: ["run", "/dev/mdmem/src/cli/index.ts", "mcp"],
+          },
+        },
+      };
+      const mcpText = `${JSON.stringify(mcp, null, 2)}\n`;
+      await writeFile(join(root, MCP_CONFIG), mcpText, "utf-8");
+
+      const enable = runCliWith(root, ["enable", "claude-code"], env);
+      expect(enable.code).toBe(1);
+      expect(enable.err).toBe(
+        `mdmem: ${MCP_CONFIG}: mcpServers.mdmem holds a value that is not mdmem's, so mdmem will not overwrite it: remove or rename it, or set its command to "mdmem" and its args to ["mcp"], then run the command again\n`
+      );
+      expect(await readText(join(root, MCP_CONFIG))).toBe(mcpText);
+      expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
+
+      const disable = runCliWith(root, ["disable", "claude-code"], env);
+      expect(disable.code).toBe(0);
+      expect(await readText(join(root, MCP_CONFIG))).toBe(mcpText);
+    });
+  });
+
   test("enable checks every agent name and plans every agent before writing any", async () => {
     await withCliProject(async (root, store) => {
       const home = join(root, "home");
@@ -1638,12 +1840,12 @@ describe("hook", () => {
       );
       expect(injected(extended.out)).toBe(getMemoryProtocol());
 
-      // disable keeps a table that is not mdmem's own, so the hook is not called silent
+      // disable keeps a table that is not mdmem's own (another command), so the hook is not called silent
       const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex") };
       expect(runCliWith(root, ["enable", "codex"], env).code).toBe(0);
       await writeFile(
         join(root, CODEX_CONFIG),
-        '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\nstartup_timeout_sec = 20\n',
+        '[mcp_servers.mdmem]\ncommand = "mdmem-dev"\nargs = ["mcp"]\n',
         "utf-8"
       );
       const disable = runCliWith(root, ["disable", "codex"], env);

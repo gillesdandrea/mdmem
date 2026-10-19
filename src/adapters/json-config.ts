@@ -4,9 +4,9 @@ import { dirname, isAbsolute, join } from "node:path";
 
 import { isObject, valueAt } from "../core/object.ts";
 import type { PlainObject } from "../core/object.ts";
-import { RefusalError } from "../core/refusal.ts";
+import { heldKeyRefusal, RefusalError } from "../core/refusal.ts";
 import { lineEndingOf, messageOf } from "../core/text.ts";
-import type { WiringEntry, WiringMode } from "./adapter.ts";
+import type { KeyIdentity, WiringEntry, WiringMode } from "./adapter.ts";
 
 /**
  * mdmem's entries in an agent's JSON config files, merged in and taken out without
@@ -20,13 +20,30 @@ import type { WiringEntry, WiringMode } from "./adapter.ts";
 
 export type JsonObject = PlainObject;
 
+/** A key mdmem would write that holds a value that is not mdmem's, and the fix a refusal names. */
+export interface HeldKey {
+  key: string;
+  fix: string;
+}
+
 /** One mdmem entry in a JSON document: how to tell it is there, add it, and remove exactly it. */
 export interface JsonEntry {
   label: string;
   has: (doc: JsonObject) => boolean;
+  /**
+   * Called only when `has` is false: the key the entry would overwrite and the
+   * fix to name, when that key holds a value that is not mdmem's; adding is then
+   * refused. Undefined when nothing is in the way.
+   */
+  heldKey?: (doc: JsonObject) => HeldKey | undefined;
   /** Called only when `has` is false. */
   add: (doc: JsonObject) => void;
-  /** Called only when `has` is true; prunes the objects and arrays it leaves empty. */
+  /**
+   * For an entry of several parts, whether some part is there: removing then
+   * takes out what is left. Absent for an entry of one part, which `has` answers.
+   */
+  hasPart?: (doc: JsonObject) => boolean;
+  /** Called only when `hasPart` (else `has`) is true; prunes the objects and arrays it leaves empty. */
   remove: (doc: JsonObject) => void;
 }
 
@@ -85,16 +102,33 @@ function splitPath(path: readonly string[]): [string[], string] {
   return [path.slice(0, -1), path.at(-1) ?? ""];
 }
 
-/** The entry that sets the key at `path` to `value`; it is mdmem's only while it holds that value. */
+/** The identity of a plain value: equal to it, and set to it to make room for mdmem's. */
+function valueIdentity(value: unknown): KeyIdentity {
+  return {
+    matches: (found) => Bun.deepEquals(found, value),
+    fix: `remove it or set it to ${JSON.stringify(value)}`,
+  };
+}
+
+/**
+ * The entry that sets the key at `path` to `value`; the key is mdmem's while
+ * `identity` matches what it holds (by default, while it equals `value`), and
+ * adding over another value is refused.
+ */
 export function valueEntry(
   label: string,
   path: readonly string[],
-  value: unknown
+  value: unknown,
+  identity: KeyIdentity = valueIdentity(value)
 ): JsonEntry {
   const [parentPath, key] = splitPath(path);
   return {
     label,
-    has: (doc) => Bun.deepEquals(valueAt(doc, path), value),
+    has: (doc) => identity.matches(valueAt(doc, path)),
+    heldKey: (doc) =>
+      valueAt(doc, path) === undefined
+        ? undefined
+        : { key: path.join("."), fix: identity.fix },
     add: (doc) => {
       objectAt(doc, parentPath)[key] = structuredClone(value);
     },
@@ -108,41 +142,158 @@ export function valueEntry(
   };
 }
 
-/** The entry that puts `item` in the array at `path`; every item equal to it is mdmem's. */
+/** Replace the array at `path` by `items`, deleting it, and the objects it leaves empty, when there are none. */
+function setItems(
+  doc: JsonObject,
+  path: readonly string[],
+  items: unknown[]
+): void {
+  const [parentPath, key] = splitPath(path);
+  const parent = valueAt(doc, parentPath);
+  if (!isObject(parent)) {
+    return;
+  }
+  if (items.length > 0) {
+    parent[key] = items;
+    return;
+  }
+  Reflect.deleteProperty(parent, key);
+  prune(doc, parentPath);
+}
+
+/** The array at `path`, created when missing; a value in the way that is not an array is an error. */
+function arrayAt(doc: JsonObject, path: readonly string[]): unknown[] {
+  const [parentPath, key] = splitPath(path);
+  const parent = objectAt(doc, parentPath);
+  const array = parent[key] ?? [];
+  if (!Array.isArray(array)) {
+    throw new TypeError(`"${path.join(".")}" is not an array`);
+  }
+  parent[key] = array;
+  return array;
+}
+
+/** The items of the array at `path`; none when it is missing or not an array. */
+function itemsAt(doc: JsonObject, path: readonly string[]): unknown[] {
+  const array = valueAt(doc, path);
+  return Array.isArray(array) ? array : [];
+}
+
+/** The entry that puts `item`, a plain value, in the array at `path`; every item equal to it is mdmem's, and the others are the user's. */
 export function arrayItemEntry(
   label: string,
   path: readonly string[],
   item: unknown
 ): JsonEntry {
-  const [parentPath, key] = splitPath(path);
+  const isItem = (value: unknown): boolean => Bun.deepEquals(value, item);
+  return {
+    label,
+    has: (doc) => itemsAt(doc, path).some(isItem),
+    add: (doc) => {
+      arrayAt(doc, path).push(structuredClone(item));
+    },
+    remove: (doc) => {
+      setItems(
+        doc,
+        path,
+        itemsAt(doc, path).filter((value) => !isItem(value))
+      );
+    },
+  };
+}
+
+/** A hook handler as mdmem writes it: the command it runs, beside the agent's other fields (type, timeout, …). */
+export interface HookHandler {
+  readonly command: string;
+  readonly [field: string]: unknown;
+}
+
+/** A hook group as mdmem writes it: its handlers, beside the agent's other fields (matcher, …). */
+export interface HookGroup {
+  readonly hooks: readonly HookHandler[];
+  readonly [field: string]: unknown;
+}
+
+/** The handlers of a hook group; none for an item that is not one. */
+function handlersOf(group: unknown): unknown[] {
+  return isObject(group) && Array.isArray(group.hooks) ? group.hooks : [];
+}
+
+/** The command a handler runs; undefined for an item that is not a handler. */
+function commandOf(handler: unknown): string | undefined {
+  return isObject(handler) && typeof handler.command === "string"
+    ? handler.command
+    : undefined;
+}
+
+/**
+ * The entry that puts `group`'s handlers in the hook groups at `path`. A handler
+ * is mdmem's when it runs one of `group`'s commands, whatever else the user added
+ * to it or to its group (timeout, disabled, matcher, …), and the entry is present
+ * while every command is run by a handler, in any group. Adding puts the missing
+ * handlers in the group that runs the others, or `group` itself when none does;
+ * removing takes mdmem's handlers out and drops a group only once it holds no
+ * handler, so the user's handlers stay.
+ */
+export function hookGroupEntry(
+  label: string,
+  path: readonly string[],
+  group: HookGroup
+): JsonEntry {
+  const commands = group.hooks.map(({ command }) => command);
+  const isMdmems = (handler: unknown): boolean => {
+    const command = commandOf(handler);
+    return command !== undefined && commands.includes(command);
+  };
+  const runCommands = (doc: JsonObject): Set<string | undefined> =>
+    new Set(
+      itemsAt(doc, path).flatMap((item) => handlersOf(item).map(commandOf))
+    );
   return {
     label,
     has: (doc) => {
-      const array = valueAt(doc, path);
-      return Array.isArray(array) && array.some((x) => Bun.deepEquals(x, item));
+      const run = runCommands(doc);
+      return commands.every((command) => run.has(command));
+    },
+    hasPart: (doc) => {
+      const run = runCommands(doc);
+      return commands.some((command) => run.has(command));
     },
     add: (doc) => {
-      const parent = objectAt(doc, parentPath);
-      const array = parent[key] ?? [];
-      if (!Array.isArray(array)) {
-        throw new TypeError(`"${path.join(".")}" is not an array`);
+      const run = runCommands(doc);
+      const groups = arrayAt(doc, path);
+      const own = groups.find((item) => handlersOf(item).some(isMdmems));
+      if (own === undefined) {
+        groups.push(structuredClone(group));
+        return;
       }
-      array.push(structuredClone(item));
-      parent[key] = array;
+      const handlers = handlersOf(own);
+      for (const [i, handler] of group.hooks.entries()) {
+        if (run.has(handler.command)) {
+          continue;
+        }
+        // Before the handler of a later part, so the parts keep mdmem's order.
+        const later = new Set(commands.slice(i + 1));
+        const at = handlers.findIndex((found) =>
+          later.has(commandOf(found) ?? "")
+        );
+        handlers.splice(
+          at === -1 ? handlers.length : at,
+          0,
+          structuredClone(handler)
+        );
+      }
     },
     remove: (doc) => {
-      const parent = valueAt(doc, parentPath);
-      const array = isObject(parent) ? parent[key] : undefined;
-      if (!(isObject(parent) && Array.isArray(array))) {
-        return;
-      }
-      const rest = array.filter((x) => !Bun.deepEquals(x, item));
-      if (rest.length > 0) {
-        parent[key] = rest;
-        return;
-      }
-      Reflect.deleteProperty(parent, key);
-      prune(doc, parentPath);
+      const groups = itemsAt(doc, path).flatMap((item) => {
+        const handlers = handlersOf(item);
+        if (!(isObject(item) && handlers.some(isMdmems))) {
+          return [item];
+        }
+        const rest = handlers.filter((handler) => !isMdmems(handler));
+        return rest.length === 0 ? [] : [{ ...item, hooks: rest }];
+      });
+      setItems(doc, path, groups);
     },
   };
 }
@@ -199,8 +350,14 @@ function changeEntries(
 ): string[] {
   const changed: string[] = [];
   for (const entry of entries) {
-    if (entry.has(doc) === (mode === "add")) {
+    const present =
+      mode === "add" ? entry.has(doc) : (entry.hasPart ?? entry.has)(doc);
+    if (present === (mode === "add")) {
       continue;
+    }
+    const held = mode === "add" ? entry.heldKey?.(doc) : undefined;
+    if (held !== undefined) {
+      throw heldKeyRefusal(file, held.key, held.fix);
     }
     try {
       if (mode === "add") {
@@ -222,7 +379,8 @@ function changeEntries(
 /**
  * Plan adding (or removing) every entry of `files`, reading each file but writing
  * none; a file is deleted when removing leaves it an empty object. Throws a
- * RefusalError for a file that is not a JSON object, or whose shape is in the way.
+ * RefusalError for a file that is not a JSON object, whose shape is in the way,
+ * or where adding would overwrite a value that is not mdmem's.
  */
 export function planConfigs(
   root: string,

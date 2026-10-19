@@ -10,6 +10,7 @@
 import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookAgent, HookPart } from "../core/hook.ts";
 import type { ImportPreference } from "../core/import.ts";
+import { isObject } from "../core/object.ts";
 import type { MemoryStore } from "../core/store.ts";
 
 export interface AdapterContext {
@@ -98,6 +99,25 @@ export interface AgentStatus {
 
 /** The mdmem MCP server, as every agent's config registers it (Claude Code's adds its transport type). */
 export const MCP_SERVER = { command: "mdmem", args: ["mcp"] };
+
+/**
+ * What makes a value at a key mdmem owns mdmem's, whatever else the user added to
+ * it, and how the user makes room for mdmem's when the key holds another value.
+ */
+export interface KeyIdentity {
+  matches: (value: unknown) => boolean;
+  /** The fix a refusal of the other value names, such as "remove it or set it to false". */
+  fix: string;
+}
+
+/** An MCP server entry is mdmem's when it runs MCP_SERVER's command and args; its other fields (type, env, timeouts, …) are the user's. */
+export const MCP_SERVER_IDENTITY: KeyIdentity = {
+  matches: (value) =>
+    isObject(value) &&
+    value.command === MCP_SERVER.command &&
+    Bun.deepEquals(value.args, MCP_SERVER.args),
+  fix: `remove or rename it, or set its command to ${JSON.stringify(MCP_SERVER.command)} and its args to ${JSON.stringify(MCP_SERVER.args)}`,
+};
 
 /** The command of the agent's session-start hook that injects `part`. */
 export function hookCommand(agent: HookAgent, part: HookPart): string {

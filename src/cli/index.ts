@@ -518,8 +518,9 @@ Usage: mdmem <command> [options]
                             mdmem MCP server; codex: add its session-start hooks to ~/.codex/hooks.json
                             ($CODEX_HOME when set), once per user, and the mdmem MCP server to
                             .codex/config.toml); refused in a bare repository or the folder holding
-                            one; an unknown agent, a file that does not parse or an import conflict
-                            stops it with no file written
+                            one; an unknown agent, a file that does not parse, a key of mdmem's
+                            holding something else (another mcpServers.mdmem, autoMemoryEnabled:
+                            true) or an import conflict stops it with no file written
   disable <agent…> | --all [--global]
                             Remove exactly mdmem's entries from an agent's files (leaves the store,
                             needs none); --all takes the agents found on this machine;

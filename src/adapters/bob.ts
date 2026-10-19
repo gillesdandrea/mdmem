@@ -8,6 +8,7 @@ import {
   hookCommands,
   hooksLabel,
   MCP_SERVER,
+  MCP_SERVER_IDENTITY,
   missingHooksProblem,
   outsideProjectPlan,
 } from "./adapter.ts";
@@ -19,7 +20,7 @@ import type {
   WiringPlan,
 } from "./adapter.ts";
 import {
-  arrayItemEntry,
+  hookGroupEntry,
   configStatus,
   configValue,
   describePlan,
@@ -59,7 +60,7 @@ const HOOK_GROUP = {
   })),
 };
 
-const HOOK_ENTRY = arrayItemEntry(
+const HOOK_ENTRY = hookGroupEntry(
   hooksLabel(commands),
   ["hooks", "SessionStart"],
   HOOK_GROUP
@@ -73,7 +74,12 @@ const FILES: readonly JsonConfigFile[] = [
   {
     file: MCP_CONFIG,
     entries: [
-      valueEntry("mcpServers.mdmem", ["mcpServers", "mdmem"], MCP_SERVER),
+      valueEntry(
+        "mcpServers.mdmem",
+        ["mcpServers", "mdmem"],
+        MCP_SERVER,
+        MCP_SERVER_IDENTITY
+      ),
     ],
   },
 ];

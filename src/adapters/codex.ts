@@ -7,6 +7,7 @@ import {
   hookCommands,
   hooksLabel,
   MCP_SERVER,
+  MCP_SERVER_IDENTITY,
   missingHooksProblem,
   OUTSIDE_PROJECT_LINE,
 } from "./adapter.ts";
@@ -18,7 +19,7 @@ import type {
   WiringPlan,
 } from "./adapter.ts";
 import {
-  arrayItemEntry,
+  hookGroupEntry,
   configStatus,
   describePlan,
   planConfigs,
@@ -69,6 +70,7 @@ const SERVER_ENTRY: TomlTableEntry = {
   file: MCP_CONFIG,
   path: ["mcp_servers", "mdmem"],
   value: MCP_SERVER,
+  identity: MCP_SERVER_IDENTITY,
 };
 
 /** Codex's home: CODEX_HOME when set, else ~/.codex. */
@@ -87,7 +89,7 @@ function hooksFile(ctx: AdapterContext): JsonConfigFile {
   return {
     file: join(codexHome(ctx), "hooks.json"),
     entries: [
-      arrayItemEntry(
+      hookGroupEntry(
         hooksLabel(commands),
         ["hooks", "SessionStart"],
         HOOK_GROUP

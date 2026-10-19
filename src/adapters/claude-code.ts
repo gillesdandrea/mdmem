@@ -16,6 +16,7 @@ import {
   hookCommand,
   hooksLabel,
   MCP_SERVER,
+  MCP_SERVER_IDENTITY,
   missingHooksProblem,
   outsideProjectPlan,
 } from "./adapter.ts";
@@ -29,6 +30,7 @@ import type {
 } from "./adapter.ts";
 import {
   arrayItemEntry,
+  hookGroupEntry,
   configStatus,
   configValue,
   describePlan,
@@ -63,7 +65,7 @@ const DISABLE_HOOKS_KEY = "disableAllHooks";
 
 function hookEntry(part: HookPart): JsonEntry {
   const command = hookCommand(ID, part);
-  return arrayItemEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
+  return hookGroupEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
     matcher: HOOK_MATCHER,
     hooks: [{ type: "command", command }],
   });
@@ -87,7 +89,14 @@ const FILES: readonly JsonConfigFile[] = [
   },
   {
     file: MCP_CONFIG,
-    entries: [valueEntry("mcpServers.mdmem", ["mcpServers", "mdmem"], SERVER)],
+    entries: [
+      valueEntry(
+        "mcpServers.mdmem",
+        ["mcpServers", "mdmem"],
+        SERVER,
+        MCP_SERVER_IDENTITY
+      ),
+    ],
   },
 ];
 

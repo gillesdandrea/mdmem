@@ -6,9 +6,9 @@ import { parse, patch, stringify } from "@decimalturn/toml-patch";
 
 import { isObject, valueAt } from "../core/object.ts";
 import type { PlainObject } from "../core/object.ts";
-import { RefusalError } from "../core/refusal.ts";
+import { heldKeyRefusal, RefusalError } from "../core/refusal.ts";
 import { LINE_BREAK_RE, lineEndingOf, messageOf } from "../core/text.ts";
-import type { WiringMode } from "./adapter.ts";
+import type { KeyIdentity, WiringMode } from "./adapter.ts";
 import type { PlannedFile } from "./json-config.ts";
 
 /**
@@ -19,8 +19,9 @@ import type { PlannedFile } from "./json-config.ts";
  * user's text is kept byte for byte; removing goes through toml-patch, which
  * keeps other comments and formatting but drops the comment lines directly above
  * the removed table, inside it and after it, and those directly above the table
- * after it, with the blank lines around them. A file that is not valid TOML, or
- * whose shape is in the way, is refused before anything is written.
+ * after it, with the blank lines around them. A file that is not valid TOML,
+ * whose shape is in the way, or whose table at the path is not mdmem's, is
+ * refused before anything is written.
  */
 
 export interface TomlTableEntry {
@@ -29,14 +30,16 @@ export interface TomlTableEntry {
   file: string;
   /** The table's key path, each key a bare TOML key. */
   path: readonly string[];
-  /** The table mdmem keeps there; it is mdmem's only while it holds exactly this. */
+  /** The table mdmem writes there. */
   value: Record<string, unknown>;
+  /** What makes the table at the path mdmem's, whatever else the user added to it. */
+  identity: KeyIdentity;
 }
 
 type TomlObject = PlainObject;
 
 function has(doc: TomlObject, entry: TomlTableEntry): boolean {
-  return Bun.deepEquals(valueAt(doc, entry.path), entry.value);
+  return entry.identity.matches(valueAt(doc, entry.path));
 }
 
 /**
@@ -144,7 +147,8 @@ function setTable(doc: TomlObject, entry: TomlTableEntry): void {
 /**
  * Plan adding (or removing) the table, reading its file but writing nothing; the
  * file is deleted when removing leaves it blank. Throws a RefusalError for a file
- * that is not valid TOML, or whose shape is in the way.
+ * that is not valid TOML, whose shape is in the way, or where adding would
+ * overwrite a value that is not mdmem's.
  */
 export async function planTomlTable(
   root: string,
@@ -158,6 +162,9 @@ export async function planTomlTable(
     return unchanged;
   }
   if (mode === "add") {
+    if (valueAt(doc, entry.path) !== undefined) {
+      throw heldKeyRefusal(entry.file, entry.label, entry.identity.fix);
+    }
     const text = raw ?? "";
     const appended = appendSection(text, entry);
     if (appended !== null) {

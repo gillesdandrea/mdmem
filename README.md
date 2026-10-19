@@ -239,6 +239,15 @@ Claude saved while its auto memory was back on: `disable` names the marker, and
 deleting it makes the next `enable` import again. `mdmem status` lists each
 entry as present or missing.
 
+A hook stays mdmem's while it runs mdmem's command, and the server while it runs
+`mdmem mcp`, so a field you add to either (a hook's `timeout`, say) counts as
+wired, is kept by `enable` and goes with the entry on `disable`. A handler of
+your own in mdmem's hook group stays: `disable` takes out only mdmem's handlers,
+and the group goes once it holds no other. A key holding something else, such
+as an `mcpServers.mdmem` running another command (`bun run …/src/cli/index.ts
+mcp` included) or `"autoMemoryEnabled": true`, makes `enable` refuse before it
+writes anything, naming the file and the key; `disable` leaves that key alone.
+
 Claude Code ignores the `permissions.allow` entry in `.claude/settings.json`
 until you accept the folder's trust dialog once.
 
@@ -273,6 +282,9 @@ Commit both files: they wire Bob for everyone working in the repository, and
 everyone then needs `mdmem` on PATH. `mdmem disable bob` removes exactly these
 entries, along with an object or array they leave empty, and deletes a file that
 held nothing else. `mdmem status` lists each entry as present or missing.
+Entries you edit stay mdmem's, as for Claude Code: a handler you set `disabled`
+or give another `timeout` in, or an `alwaysAllow` added to the server, is kept by
+`enable`, and an `mcpServers.mdmem` running another command makes it refuse.
 
 Bob runs workspace hooks and MCP servers only in a trusted folder; in an
 untrusted one neither runs. Bob also reads both `.bob/settings.json` (the
@@ -301,8 +313,11 @@ was:
 
   mdmem appends this table at the end of the file, so the rest of the file is
   kept byte for byte. When that would not be valid TOML (the file defines
-  `mcp_servers` as an inline table, or already holds a different `mdmem`
-  server), mdmem rewrites the value in place instead.
+  `mcp_servers` as an inline table), mdmem adds the server to that table in
+  place instead. A `[mcp_servers.mdmem]` running `mdmem mcp` is mdmem's whatever
+  else you add to it (`env`, `env_vars`, `startup_timeout_sec`); one running
+  another command makes `enable` refuse, naming the file and the table, and
+  `disable` leaves it.
 
 The hook is global because Codex ties a hook's approval to the absolute path of
 the file that declares it: a hook in each worktree's `.codex/hooks.json` would
@@ -310,7 +325,8 @@ need approving in every worktree. Codex asks you to review the new hook once, at
 its next start or in `/hooks`. Codex also ties the approval to the group's
 position in `hooks.SessionStart` and to its content, so adding or removing a
 `SessionStart` group before mdmem's in that file, or editing mdmem's, makes
-Codex ask again.
+Codex ask again; an edited group still runs mdmem's commands, so `enable` does
+not add a second one.
 Once trusted, it runs in every project and
 worktree, and prints nothing outside a project with a store or in a work tree
 whose `.codex/config.toml` does not register the mdmem server. Running

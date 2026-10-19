@@ -10,3 +10,18 @@ export class RefusalError extends Error {
     this.name = "RefusalError";
   }
 }
+
+/**
+ * The refusal of writing mdmem's value at `key` in `file`, which already holds a
+ * value that is not mdmem's: overwriting it would lose the user's entry. `fix`
+ * says how to make room for mdmem's.
+ */
+export function heldKeyRefusal(
+  file: string,
+  key: string,
+  fix: string
+): RefusalError {
+  return new RefusalError(
+    `${file}: ${key} holds a value that is not mdmem's, so mdmem will not overwrite it: ${fix}, then run the command again`
+  );
+}
