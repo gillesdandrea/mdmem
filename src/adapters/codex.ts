@@ -10,6 +10,7 @@ import {
   MCP_SERVER_IDENTITY,
   missingHooksProblem,
   OUTSIDE_PROJECT_LINE,
+  unreadableRefusal,
 } from "./adapter.ts";
 import type {
   AdapterContext,
@@ -151,11 +152,10 @@ export const codexAdapter: AdapterFor<typeof ID> = {
     const kept: string[] = [];
     const warnings: string[] = [];
     if (!options.global) {
-      const { entries, warnings: unread } = await configStatus(
-        ctx.projectRoot,
-        [file]
-      );
-      warnings.push(...unread);
+      const { entries, unreadable } = await configStatus(ctx.projectRoot, [
+        file,
+      ]);
+      warnings.push(...unreadable.map(unreadableRefusal));
       const removeIt = `\`mdmem disable ${ID} --global\` removes it.`;
       // A server table other than mdmem's own is kept, and the hook still runs beside it.
       const silenced =
@@ -197,28 +197,38 @@ export const codexAdapter: AdapterFor<typeof ID> = {
     const server = await tomlTableStatus(ctx.projectRoot, SERVER_ENTRY);
     const hooks = await configStatus(ctx.projectRoot, [hooksFile(ctx)]);
     const entries = [
-      { label: SERVER_ENTRY.label, file: MCP_CONFIG, present: server.present },
+      {
+        label: SERVER_ENTRY.label,
+        file: MCP_CONFIG,
+        present: server.present,
+        ...(server.unreadable === undefined ? {} : { unreadable: true }),
+      },
       ...hooks.entries,
     ];
     // The global hook alone does not wire this project: it is shared by every project.
     const enabled = server.present;
-    // Without CODEX_HOME, the hooks file read may not be the one Codex reads.
+    // Without CODEX_HOME, the hooks file read may not be the one Codex reads, so it stays a status warning.
     const hooksKnown = !ctx.unknownEnv?.includes(CODEX_HOME_ENV);
-    const warnings = [
-      ...(server.warning === undefined ? [] : [server.warning]),
-      ...hooks.warnings,
+    const unreadable = [
+      ...(server.unreadable === undefined ? [] : [server.unreadable]),
+      ...(hooksKnown ? hooks.unreadable : []),
     ];
-    return agentStatus(codexAdapter, { entries, enabled, warnings }, () => ({
-      problems: hooksKnown
-        ? missingHooksProblem(
-            codexAdapter,
-            hooks.entries,
-            () => HOOK_PARTS.length
-          )
-        : [],
-      notes: [
-        `${TITLE} reads ${MCP_CONFIG} only in a trusted folder, and runs the global hook only once you have reviewed it: mdmem does not check either.`,
-      ],
-    }));
+    const warnings = hooksKnown ? [] : hooks.unreadable.map(unreadableRefusal);
+    return agentStatus(
+      codexAdapter,
+      { entries, enabled, unreadable, warnings },
+      () => ({
+        problems: hooksKnown
+          ? missingHooksProblem(
+              codexAdapter,
+              hooks.entries,
+              () => HOOK_PARTS.length
+            )
+          : [],
+        notes: [
+          `${TITLE} reads ${MCP_CONFIG} only in a trusted folder, and runs the global hook only once you have reviewed it: mdmem does not check either.`,
+        ],
+      })
+    );
   },
 };

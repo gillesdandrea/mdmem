@@ -84,12 +84,12 @@ const FILES: readonly JsonConfigFile[] = [
   },
 ];
 
-/** `disableWorkspaceHooks: true` in the workspace settings drops every workspace hook, mdmem's included. */
+/** `disableWorkspaceHooks: true` in the workspace settings drops every workspace hook, mdmem's included; a settings file that cannot be read is reported as such. */
 async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
   const disabled = await configValue(ctx.projectRoot, SETTINGS, [
     "disableWorkspaceHooks",
   ]);
-  return disabled === true
+  return "value" in disabled && disabled.value === true
     ? [
         `${TITLE}: ${SETTINGS} sets disableWorkspaceHooks to true, so Bob runs none of the workspace's hooks and its sessions start without the memory protocol and the index — remove it`,
       ]
@@ -155,11 +155,11 @@ export const bobAdapter: AdapterFor<typeof ID> = {
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
-    const { entries, warnings } = await configStatus(ctx.projectRoot, FILES);
+    const { entries, unreadable } = await configStatus(ctx.projectRoot, FILES);
     const enabled = entries.some(({ present }) => present);
     return agentStatus(
       bobAdapter,
-      { entries, enabled, warnings },
+      { entries, enabled, unreadable, warnings: [] },
       async () => ({
         problems: [
           ...missingHooksProblem(bobAdapter, entries, ({ label }) =>

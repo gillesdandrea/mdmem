@@ -853,26 +853,47 @@ describe("codex wiring", () => {
     }
   });
 
-  test("status and disable warn about a config.toml or hooks.json they cannot read", async () => {
+  test("status reports a config.toml it cannot read as a problem, and a hooks.json only in a project wired for Codex", async () => {
     const shared = await realpath(
       await mkdtemp(join(tmpdir(), "mdmem-codex-"))
     );
-    const { ctx, root } = await codexProject(join(shared, "home"), {
+    const { ctx, root, hooksPath } = await codexProject(join(shared, "home"), {
       hooks: "{ not json",
       toml: "model = \n",
     });
+    const hooksUnreadable = `${hooksPath} is not valid JSON (JSON Parse error: Expected '}')`;
     try {
       const status = await codexAdapter.status(ctx);
-      expect(status.wired).toBe(false);
-      expect(status.warnings).toHaveLength(2);
-      expect(status.warnings[0]).toContain(CODEX_CONFIG);
-      expect(status.warnings[0]).not.toContain("\n");
-      expect(status.warnings[1]).toContain("hooks.json");
+      expect(status.enabled).toBe(false);
+      // one line, as the refusal is
+      expect(status.problems).toEqual([
+        `Codex CLI: ${CODEX_CONFIG} is not valid TOML (Error parsing TOML (1, 1): Expected value, reached EOF): fix it, then run the check again`,
+      ]);
+      // the hooks file is user-wide: a project not wired for Codex only warns of it
+      expect(status.warnings).toEqual([
+        `${hooksUnreadable}: fix it, then run the command again`,
+      ]);
 
-      await writeFile(join(root, CODEX_CONFIG), 'model = "x"\n', "utf-8");
+      await writeFile(join(root, CODEX_CONFIG), CODEX_SECTION, "utf-8");
+      const enabled = await codexAdapter.status(ctx);
+      expect(enabled.problems).toEqual([
+        `Codex CLI: ${hooksUnreadable}: fix it, then run the check again`,
+      ]);
+      expect(enabled.warnings).toEqual([]);
+      // where CODEX_HOME cannot be known, the hooks file stays a warning
+      const unknown = await codexAdapter.status({
+        ...ctx,
+        unknownEnv: ["CODEX_HOME"],
+      });
+      expect(unknown.problems).toEqual([]);
+      expect(unknown.warnings).toEqual([
+        `${hooksUnreadable}: fix it, then run the command again`,
+      ]);
+
       const disabled = await wire(codexAdapter.disable(ctx, {}));
-      expect(disabled.warnings).toHaveLength(1);
-      expect(disabled.warnings[0]).toContain("hooks.json");
+      expect(disabled.warnings).toEqual([
+        `${hooksUnreadable}: fix it, then run the command again`,
+      ]);
     } finally {
       await Promise.all(
         [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
@@ -2256,6 +2277,104 @@ describe("status and check", () => {
         "Claude Code: .claude/settings.json sets disableAllHooks to true, so Claude Code runs no hooks and its sessions start without the memory protocol and the index — remove it",
         "IBM Bob: .bob/settings.json sets disableWorkspaceHooks to true, so Bob runs none of the workspace's hooks and its sessions start without the memory protocol and the index — remove it",
         `Codex CLI: missing SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index" (${hooksPath}), so its sessions start without what those hooks inject — run \`mdmem enable codex\``,
+      ]);
+    });
+  });
+
+  test("the check reports a project config file it cannot read as one problem in place of that file's own, wired or not", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      await writeFile(join(root, CLAUDE_SETTINGS), "{ broken", "utf-8");
+      const unreadable = `Claude Code: ${CLAUDE_SETTINGS} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`;
+      expect(await projectProblems(ctx)).toEqual([unreadable]);
+      const status = await projectStatus(ctx);
+      expect(status.wiringProblems).toEqual([unreadable]);
+      expect(status.agents.flatMap(({ warnings }) => warnings)).toEqual([]);
+
+      // a readable local settings file that sets a key still decides, since Claude Code reads it before the broken one
+      const local = join(root, ".claude/settings.local.json");
+      await writeFile(
+        local,
+        JSON.stringify({ autoMemoryEnabled: true, disableAllHooks: true }),
+        "utf-8"
+      );
+      expect(await projectProblems(ctx)).toEqual([
+        unreadable,
+        "Claude Code: .claude/settings.local.json sets disableAllHooks to true, so Claude Code runs no hooks and its sessions start without the memory protocol and the index — remove it",
+        `Claude Code's auto memory is on: .claude/settings.local.json sets autoMemoryEnabled to true, overriding .claude/settings.json, ${AUTO_MEMORY_CONSEQUENCE} — remove it from .claude/settings.local.json`,
+      ]);
+
+      // with .mcp.json gone the project is no longer wired for Claude Code, and the file is still reported
+      await rm(join(root, MCP_CONFIG));
+      await rm(local);
+      expect(await projectProblems(ctx)).toEqual([unreadable]);
+
+      // an unreadable local settings file is a problem of its own, before the committed one
+      await writeFile(local, "[]", "utf-8");
+      expect(await projectProblems(ctx)).toEqual([
+        "Claude Code: .claude/settings.local.json does not hold a JSON object: fix it, then run the check again",
+        unreadable,
+      ]);
+    });
+  });
+
+  test("doctor exits 1 for a Bob settings file it cannot read, in a project never wired for Bob", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      await wire(bobAdapter.disable(ctx, {}));
+      await mkdir(join(root, ".bob"), { recursive: true });
+      await writeFile(join(root, BOB_SETTINGS), "{ broken", "utf-8");
+      const doctor = runCliWith(root, ["doctor"], {
+        HOME: ctx.home,
+        PATH: ctx.env.PATH ?? "",
+        CLAUDE_CONFIG_DIR: ctx.env.CLAUDE_CONFIG_DIR ?? "",
+        CODEX_HOME: ctx.env.CODEX_HOME ?? "",
+      });
+      expect(doctor.out).toBe(
+        `Found 1 problem(s):\n  - IBM Bob: ${BOB_SETTINGS} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again\n`
+      );
+      expect(doctor.code).toBe(1);
+    });
+  });
+
+  test("doctor exits 1 with a one-line problem for a .codex/config.toml it cannot read", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      await writeFile(join(root, CODEX_CONFIG), "model = \n", "utf-8");
+      const doctor = runCliWith(root, ["doctor"], {
+        HOME: ctx.home,
+        PATH: ctx.env.PATH ?? "",
+        CLAUDE_CONFIG_DIR: ctx.env.CLAUDE_CONFIG_DIR ?? "",
+        CODEX_HOME: ctx.env.CODEX_HOME ?? "",
+      });
+      expect(doctor.out).toBe(
+        `Found 1 problem(s):\n  - Codex CLI: ${CODEX_CONFIG} is not valid TOML (Error parsing TOML (1, 1): Expected value, reached EOF): fix it, then run the check again\n`
+      );
+      expect(doctor.code).toBe(1);
+    });
+  });
+
+  test("the check reports Claude Code's user settings it cannot read only in a project wired for Claude Code", async () => {
+    await withWiredRepo(async ({ ctx }) => {
+      const user = join(ctx.env.CLAUDE_CONFIG_DIR ?? "", "settings.json");
+      await mkdir(dirname(user), { recursive: true });
+      await writeFile(user, "[]", "utf-8");
+      expect(await projectProblems(ctx)).toEqual([
+        `Claude Code: ${user} does not hold a JSON object: fix it, then run the check again`,
+      ]);
+      await wire(claudeCodeAdapter.disable(ctx, {}));
+      expect(await projectProblems(ctx)).toEqual([]);
+    });
+  });
+
+  test("a project at the home directory reports Claude Code's settings it cannot read once, as the project's", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      await writeFile(join(root, CLAUDE_SETTINGS), "{ broken", "utf-8");
+      const atHome = {
+        ...ctx,
+        home: root,
+        env: { ...ctx.env, CLAUDE_CONFIG_DIR: undefined },
+      };
+      const status = await claudeCodeAdapter.status(atHome);
+      expect(status.problems).toEqual([
+        `Claude Code: ${CLAUDE_SETTINGS} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`,
       ]);
     });
   });

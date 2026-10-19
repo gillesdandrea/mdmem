@@ -6,7 +6,13 @@ import { isObject, valueAt } from "../core/object.ts";
 import type { PlainObject } from "../core/object.ts";
 import { heldKeyRefusal, RefusalError } from "../core/refusal.ts";
 import { lineEndingOf, messageOf } from "../core/text.ts";
-import type { KeyIdentity, WiringEntry, WiringMode } from "./adapter.ts";
+import { unreadableRefusal } from "./adapter.ts";
+import type {
+  KeyIdentity,
+  UnreadableFile,
+  WiringEntry,
+  WiringMode,
+} from "./adapter.ts";
 
 /**
  * mdmem's entries in an agent's JSON config files, merged in and taken out without
@@ -309,7 +315,12 @@ function configPath(root: string, file: string): string {
   return isAbsolute(file) ? file : join(root, file);
 }
 
-async function readConfig(root: string, file: string): Promise<ReadConfig> {
+/** A config file as read: its document (empty for a file that does not exist), or why it cannot be read. */
+type ConfigRead =
+  | { path: string; raw: string | undefined; doc: JsonObject }
+  | { path: string; unreadable: UnreadableFile };
+
+async function tryReadConfig(root: string, file: string): Promise<ConfigRead> {
   const path = configPath(root, file);
   const raw = existsSync(path) ? await readFile(path, "utf-8") : undefined;
   if (raw === undefined || raw.trim().length === 0) {
@@ -319,17 +330,24 @@ async function readConfig(root: string, file: string): Promise<ReadConfig> {
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new RefusalError(
-      `${file} is not valid JSON (${messageOf(error)}): fix it, then run the command again`,
-      { cause: error }
-    );
+    const reason = `is not valid JSON (${messageOf(error)})`;
+    return { path, unreadable: { file, reason } };
   }
   if (!isObject(parsed)) {
-    throw new RefusalError(
-      `${file} does not hold a JSON object: fix it, then run the command again`
-    );
+    return {
+      path,
+      unreadable: { file, reason: "does not hold a JSON object" },
+    };
   }
   return { path, raw, doc: parsed };
+}
+
+async function readConfig(root: string, file: string): Promise<ReadConfig> {
+  const read = await tryReadConfig(root, file);
+  if ("unreadable" in read) {
+    throw new RefusalError(unreadableRefusal(read.unreadable));
+  }
+  return read;
 }
 
 /** `doc` as JSON, with `raw`'s indent, line ending and final newline, or a new file's. */
@@ -444,44 +462,50 @@ export function describePlan(
   });
 }
 
-/** Each entry of `files`, present or not; a file that cannot be read as a JSON object holds none, and a warning names it. */
+/**
+ * Each entry of `files`, present or not, and the files that exist but cannot be
+ * read as a JSON object, whose entries count as missing and are marked unreadable.
+ */
 export async function configStatus(
   root: string,
   files: readonly JsonConfigFile[]
-): Promise<{ entries: WiringEntry[]; warnings: string[] }> {
+): Promise<{ entries: WiringEntry[]; unreadable: UnreadableFile[] }> {
   const read = await Promise.all(
-    files.map(async ({ file }) => {
-      try {
-        const { doc } = await readConfig(root, file);
-        return { doc };
-      } catch (error) {
-        return { doc: {}, warning: messageOf(error) };
-      }
-    })
+    files.map(({ file }) => tryReadConfig(root, file))
   );
-  const entries = files.flatMap(({ file, entries: fileEntries }, i) =>
-    fileEntries.map((entry) => ({
+  const entries = files.flatMap(({ file, entries: fileEntries }, i) => {
+    const found = read[i];
+    const doc = found !== undefined && "doc" in found ? found.doc : undefined;
+    return fileEntries.map((entry) => ({
       label: entry.label,
       file,
-      present: entry.has(read[i]?.doc ?? {}),
-    }))
+      present: doc !== undefined && entry.has(doc),
+      ...(doc === undefined ? { unreadable: true } : {}),
+    }));
+  });
+  const unreadable = read.flatMap((found) =>
+    "unreadable" in found ? [found.unreadable] : []
   );
-  const warnings = read.flatMap(({ warning }) =>
-    warning === undefined ? [] : [warning]
-  );
-  return { entries, warnings };
+  return { entries, unreadable };
 }
 
-/** The value at `path` in a JSON config file; undefined when the file or the key is missing, or the file cannot be read as a JSON object. */
+/** A JSON config file's document (empty when the file does not exist), or why the file cannot be read. */
+export async function configDocument(
+  root: string,
+  file: string
+): Promise<{ doc: JsonObject } | { unreadable: UnreadableFile }> {
+  const read = await tryReadConfig(root, file);
+  return "unreadable" in read
+    ? { unreadable: read.unreadable }
+    : { doc: read.doc };
+}
+
+/** The value at `path` in a JSON config file (undefined when the file or the key is missing), or why the file cannot be read. */
 export async function configValue(
   root: string,
   file: string,
   path: readonly string[]
-): Promise<unknown> {
-  try {
-    const { doc } = await readConfig(root, file);
-    return valueAt(doc, path);
-  } catch {
-    return undefined;
-  }
+): Promise<{ value: unknown } | { unreadable: UnreadableFile }> {
+  const read = await configDocument(root, file);
+  return "unreadable" in read ? read : { value: valueAt(read.doc, path) };
 }

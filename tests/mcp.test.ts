@@ -671,6 +671,40 @@ describe("mcp server", () => {
     );
   });
 
+  test("memory_check reports an agent config file it cannot read, leaving out Codex's global hooks file under Codex without CODEX_HOME", async () => {
+    await withServer(async ({ client, store }) => {
+      const project = dirname(store.root);
+      await mkdir(join(project, ".claude"));
+      await writeFile(
+        join(project, ".claude/settings.json"),
+        "{ broken",
+        "utf-8"
+      );
+      const result = await client.callTool({
+        name: "memory_check",
+        arguments: {},
+      });
+      expect(result.isError).toBeFalsy();
+      expect(textOf(result)).toBe(
+        "Found 1 problem(s):\n  - Claude Code: .claude/settings.json is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again"
+      );
+    });
+    await withServer(
+      async (session) => {
+        const codexDir = join(dirname(session.store.root), "home/.codex");
+        await mkdir(codexDir, { recursive: true });
+        await writeFile(join(codexDir, "hooks.json"), "{ broken", "utf-8");
+        expect(await codexHookProblem(session)).toBe(false);
+        const result = await session.client.callTool({
+          name: "memory_check",
+          arguments: {},
+        });
+        expect(textOf(result)).not.toContain("hooks.json");
+      },
+      { clientName: "codex-mcp-client", env: codexlessEnv }
+    );
+  });
+
   test("the prompt consolidate is listed and returns the consolidation prompt for the store", async () => {
     await withServer(async ({ client, store }) => {
       const prompts = await client.listPrompts();

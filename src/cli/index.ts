@@ -504,8 +504,9 @@ Usage: mdmem <command> [options]
   consolidate               Print a prompt that has an agent consolidate the store
   doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
                             long pointers, dangling links, stale index, index over its size limit)
-                            and the agents' wiring (a session-start hook missing or switched off,
-                            Claude Code's auto memory still on, mdmem not on PATH)
+                            and the agents' wiring (a config file it cannot read, a session-start
+                            hook missing or switched off, Claude Code's auto memory still on, mdmem
+                            not on PATH)
   enable <agent…> | --all [--prefer claude|mdmem]
                             Wire an agent to the shared store, in files meant to be committed;
                             --all wires the agents found on this machine, by their command on

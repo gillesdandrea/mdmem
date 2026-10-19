@@ -7,6 +7,8 @@
  * Adapters are the only agent-specific code; everything else is agent-neutral.
  */
 
+import { isAbsolute } from "node:path";
+
 import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookAgent, HookPart } from "../core/hook.ts";
 import type { ImportPreference } from "../core/import.ts";
@@ -78,6 +80,21 @@ export interface WiringEntry {
   /** The file holding it, relative to the project root, or absolute when it lives outside the project. */
   file: string;
   present: boolean;
+  /** Its file exists but cannot be read, so the entry counts as missing and the check reports the file instead. */
+  unreadable?: boolean;
+}
+
+/** An agent config file that exists but cannot be read as the document mdmem expects. */
+export interface UnreadableFile {
+  /** Relative to the project root, or absolute when it lives outside the project. */
+  file: string;
+  /** Why, after the file's name: "is not valid JSON (<the parser's reason>)", "does not hold a JSON object", … */
+  reason: string;
+}
+
+/** The refusal of a file that cannot be read, as enable and disable raise it: fix it, then run the command again. */
+export function unreadableRefusal({ file, reason }: UnreadableFile): string {
+  return `${file} ${reason}: fix it, then run the command again`;
 }
 
 export interface AgentStatus {
@@ -89,9 +106,13 @@ export interface AgentStatus {
   /** The project is wired for the agent, wholly or in part: some of mdmem's own entries for the project are present. */
   enabled: boolean;
   entries: WiringEntry[];
-  /** What keeps the wiring of an enabled agent from working, as far as mdmem can see: the check reports each one. */
+  /**
+   * What keeps the wiring from working, as far as mdmem can see: the check reports
+   * each one. A project file of the agent's that cannot be read is one whether or
+   * not the project is enabled for the agent; everything else only when it is.
+   */
   problems: string[];
-  /** Status only, as warnings: a file that could not be read, so its entries count as missing, or a state that depends on where status runs. */
+  /** Status only, as warnings: a user-wide file that could not be read while the check leaves it out, or a state that depends on where status runs. */
   warnings: string[];
   /** Status only, under the agent: what the agent decides that mdmem cannot read, such as folder trust. */
   notes: string[];
@@ -151,36 +172,66 @@ export function commitLine(
 /** What an agent's status holds only when the project is enabled for it. */
 export interface EnabledStatus {
   problems: string[];
+  /** User-wide files read only for an enabled agent that cannot be read: a problem each, before `problems`. */
+  unreadable?: UnreadableFile[];
   /** After the warnings about the agent's files. */
   warnings?: string[];
   notes: string[];
 }
 
+/** The check's problem for an agent file that cannot be read: it replaces the problems of the entries and values in it. */
+function unreadableProblem(
+  adapter: Pick<Adapter, "title">,
+  { file, reason }: UnreadableFile
+): string {
+  return `${adapter.title}: ${file} ${reason}: fix it, then run the check again`;
+}
+
 /**
  * An agent's status from its entries: wired when every entry is present, and with
  * the problems, notes and further warnings of `whenEnabled`, which runs only when
- * the project is `enabled` for the agent.
+ * the project is `enabled` for the agent. Of the `unreadable` files, a project
+ * file is a problem whatever `enabled` says, since mdmem cannot tell what it
+ * wires; a user-wide file (an absolute path) is one only for an enabled agent, and
+ * a warning otherwise.
  */
 export async function agentStatus(
   adapter: Pick<Adapter, "id" | "title">,
   {
     entries,
     enabled,
+    unreadable,
     warnings,
-  }: { entries: WiringEntry[]; enabled: boolean; warnings: string[] },
+  }: {
+    entries: WiringEntry[];
+    enabled: boolean;
+    unreadable: readonly UnreadableFile[];
+    warnings: string[];
+  },
   whenEnabled: () => EnabledStatus | Promise<EnabledStatus>
 ): Promise<AgentStatus> {
   const more: EnabledStatus = enabled
     ? await whenEnabled()
     : { problems: [], notes: [] };
+  const reported = (file: UnreadableFile): boolean =>
+    enabled || !isAbsolute(file.file);
   return {
     id: adapter.id,
     title: adapter.title,
     wired: entries.every(({ present }) => present),
     enabled,
     entries,
-    problems: more.problems,
-    warnings: [...warnings, ...(more.warnings ?? [])],
+    problems: [
+      ...[...unreadable.filter(reported), ...(more.unreadable ?? [])].map(
+        (file) => unreadableProblem(adapter, file)
+      ),
+      ...more.problems,
+    ],
+    warnings: [
+      ...unreadable.filter((file) => !reported(file)).map(unreadableRefusal),
+      ...warnings,
+      ...(more.warnings ?? []),
+    ],
     notes: more.notes,
   };
 }
@@ -195,8 +246,9 @@ export function missingHooksProblem(
   entries: readonly WiringEntry[],
   hooksIn: (entry: WiringEntry) => number
 ): string[] {
+  // An entry in a file that cannot be read is reported as that file instead.
   const missing = entries.filter(
-    (entry) => hooksIn(entry) > 0 && !entry.present
+    (entry) => hooksIn(entry) > 0 && !entry.present && !entry.unreadable
   );
   if (missing.length === 0) {
     return [];

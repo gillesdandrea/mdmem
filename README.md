@@ -160,6 +160,18 @@ mdmem has no fallback, so `mdmem status` and the check (`mdmem doctor`,
 breaks saving or injection and that you can fix is a check problem: `doctor`
 lists it and exits 1, and `status` prints it as a warning.
 
+- An agent's config file that exists but cannot be read: not valid JSON or
+  TOML, or JSON that is not an object. A project file (`.claude/settings.json`,
+  `.claude/settings.local.json`, `.mcp.json`, `.bob/settings.json`,
+  `.bob/mcp.json`, `.codex/config.toml`) is reported whether or not the project
+  is wired for the agent, since mdmem cannot tell what it wires. A user-wide
+  file (Claude Code's user settings, Codex's global `hooks.json`) is reported
+  only for an agent the project is wired for; otherwise `status` warns of an
+  unreadable `hooks.json`, and `memory_check` called from Codex leaves it out
+  as it leaves out the global hook below. The problem names the file and why
+  it cannot be read, and replaces the missing entries and other problems that
+  file would give: fix it, then run the check again, since `mdmem enable`
+  refuses the file too.
 - A session-start hook missing for an agent the project is wired for, including
   Codex's global hook when `.codex/config.toml` registers the server.
   `memory_check` called from Codex leaves the global hook out unless `CODEX_HOME`

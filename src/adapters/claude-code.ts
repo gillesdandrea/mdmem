@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookPart } from "../core/hook.ts";
@@ -26,19 +26,20 @@ import type {
   AgentStatus,
   DisableOptions,
   EnableOptions,
+  UnreadableFile,
   WiringPlan,
 } from "./adapter.ts";
 import {
   arrayItemEntry,
   hookGroupEntry,
+  configDocument,
   configStatus,
-  configValue,
   describePlan,
   planConfigs,
   valueEntry,
   writeConfigs,
 } from "./json-config.ts";
-import type { JsonConfigFile, JsonEntry } from "./json-config.ts";
+import type { JsonConfigFile, JsonEntry, JsonObject } from "./json-config.ts";
 
 const ID = "claude-code";
 const TITLE = "Claude Code";
@@ -160,22 +161,46 @@ function userSettings(ctx: AdapterContext): string {
   return join(claudeConfigDir(ctx), "settings.json");
 }
 
+/** A settings file Claude Code reads, as read: its document, or why it cannot be read. */
+interface SettingsFile {
+  file: string;
+  read: { doc: JsonObject } | { unreadable: UnreadableFile };
+}
+
 /**
- * A setting as Claude Code reads it first: in the local project settings, then the
- * committed ones, then the user's, with the file that sets it; undefined when none
- * does. Managed settings and --settings are not read.
+ * Claude Code's settings files in the order it reads a setting: the local project
+ * settings, then the committed ones, then the user's. Managed settings and
+ * --settings are not read.
  */
-async function claudeSetting(
-  ctx: AdapterContext,
-  key: string
-): Promise<{ file: string; value: unknown } | undefined> {
+function readSettings(ctx: AdapterContext): Promise<SettingsFile[]> {
   const files = [SETTINGS_LOCAL, SETTINGS, userSettings(ctx)];
-  const values = await Promise.all(
-    files.map((file) => configValue(ctx.projectRoot, file, [key]))
+  return Promise.all(
+    files.map(async (file) => ({
+      file,
+      read: await configDocument(ctx.projectRoot, file),
+    }))
   );
-  const first = values.findIndex((value) => value !== undefined);
-  const file = files[first];
-  return file === undefined ? undefined : { file, value: values[first] };
+}
+
+/**
+ * A setting as Claude Code reads it first, with the file that sets it; undefined
+ * when none does, and "unknown" when a file read before the one setting it cannot
+ * be read, which the check reports in place of the setting.
+ */
+function claudeSetting(
+  settings: readonly SettingsFile[],
+  key: string
+): { file: string; value: unknown } | "unknown" | undefined {
+  for (const { file, read } of settings) {
+    if ("unreadable" in read) {
+      return "unknown";
+    }
+    const value = read.doc[key];
+    if (value !== undefined) {
+      return { file, value };
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -183,7 +208,10 @@ async function claudeSetting(
  * beside the store: forced on by the environment, or autoMemoryEnabled not false
  * where Claude Code reads it first.
  */
-async function autoMemoryProblem(ctx: AdapterContext): Promise<string[]> {
+function autoMemoryProblem(
+  ctx: AdapterContext,
+  settings: readonly SettingsFile[]
+): string[] {
   const on = "Claude Code's auto memory is on";
   const consequence =
     "so Claude also saves memories to its own directory, which no other agent reads";
@@ -196,8 +224,8 @@ async function autoMemoryProblem(ctx: AdapterContext): Promise<string[]> {
   if (forced !== undefined && ENV_TRUE.has(forced)) {
     return [];
   }
-  const setting = await claudeSetting(ctx, AUTO_MEMORY_KEY);
-  if (setting?.value === false) {
+  const setting = claudeSetting(settings, AUTO_MEMORY_KEY);
+  if (setting === "unknown" || setting?.value === false) {
     return [];
   }
   if (setting?.file === SETTINGS_LOCAL) {
@@ -211,9 +239,9 @@ async function autoMemoryProblem(ctx: AdapterContext): Promise<string[]> {
 }
 
 /** `disableAllHooks: true` where Claude Code reads it first drops every hook, mdmem's included. */
-async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
-  const setting = await claudeSetting(ctx, DISABLE_HOOKS_KEY);
-  return setting?.value === true
+function disabledHooksProblem(settings: readonly SettingsFile[]): string[] {
+  const setting = claudeSetting(settings, DISABLE_HOOKS_KEY);
+  return setting !== "unknown" && setting?.value === true
     ? [
         `${TITLE}: ${setting.file} sets ${DISABLE_HOOKS_KEY} to true, so Claude Code runs no hooks and its sessions start without the memory protocol and the index — remove it`,
       ]
@@ -288,26 +316,47 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
-    const { entries, warnings } = await configStatus(ctx.projectRoot, FILES);
+    const { entries, unreadable } = await configStatus(ctx.projectRoot, FILES);
+    // The local settings hold none of mdmem's entries, but Claude Code reads them first.
+    const local = await configDocument(ctx.projectRoot, SETTINGS_LOCAL);
     // autoMemoryEnabled: false alone may be the user's own choice, not mdmem's wiring.
     const enabled = entries.some(
       ({ label, present }) => present && label !== AUTO_MEMORY_LABEL
     );
     return agentStatus(
       claudeCodeAdapter,
-      { entries, enabled, warnings },
-      async () => ({
-        problems: [
-          ...missingHooksProblem(claudeCodeAdapter, entries, ({ label }) =>
-            HOOK_LABELS.has(label) ? 1 : 0
-          ),
-          ...(await disabledHooksProblem(ctx)),
-          ...(await autoMemoryProblem(ctx)),
+      {
+        entries,
+        enabled,
+        unreadable: [
+          ...("unreadable" in local ? [local.unreadable] : []),
+          ...unreadable,
         ],
-        notes: [
-          `${TITLE} runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,
-        ],
-      })
+        warnings: [],
+      },
+      async () => {
+        const settings = await readSettings(ctx);
+        const user = settings.at(-1)?.read;
+        // In a project at the home directory, the user settings are the project's, reported above.
+        const userIsProject =
+          resolve(ctx.projectRoot, SETTINGS) === resolve(userSettings(ctx));
+        return {
+          problems: [
+            ...missingHooksProblem(claudeCodeAdapter, entries, ({ label }) =>
+              HOOK_LABELS.has(label) ? 1 : 0
+            ),
+            ...disabledHooksProblem(settings),
+            ...autoMemoryProblem(ctx, settings),
+          ],
+          unreadable:
+            !userIsProject && user !== undefined && "unreadable" in user
+              ? [user.unreadable]
+              : [],
+          notes: [
+            `${TITLE} runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,
+          ],
+        };
+      }
     );
   },
 

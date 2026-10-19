@@ -8,7 +8,8 @@ import { isObject, valueAt } from "../core/object.ts";
 import type { PlainObject } from "../core/object.ts";
 import { heldKeyRefusal, RefusalError } from "../core/refusal.ts";
 import { LINE_BREAK_RE, lineEndingOf, messageOf } from "../core/text.ts";
-import type { KeyIdentity, WiringMode } from "./adapter.ts";
+import { unreadableRefusal } from "./adapter.ts";
+import type { KeyIdentity, UnreadableFile, WiringMode } from "./adapter.ts";
 import type { PlannedFile } from "./json-config.ts";
 
 /**
@@ -62,15 +63,24 @@ function parseTable(raw: string): TomlObject {
   return doc;
 }
 
-function parseToml(file: string, raw: string): TomlObject {
+/** The file as read: its document (empty for a file that does not exist), or why it cannot be read. */
+async function tryReadToml(
+  root: string,
+  file: string
+): Promise<
+  | { path: string; raw: string | undefined; doc: TomlObject }
+  | { path: string; unreadable: UnreadableFile }
+> {
+  const path = join(root, file);
+  const raw = existsSync(path) ? await readFile(path, "utf-8") : undefined;
+  if (raw === undefined) {
+    return { path, raw, doc: {} };
+  }
   try {
-    return parseTable(raw);
+    return { path, raw, doc: parseTable(raw) };
   } catch (error) {
-    const reason = parseErrorLine(messageOf(error));
-    throw new RefusalError(
-      `${file} is not valid TOML (${reason}): fix it, then run the command again`,
-      { cause: error }
-    );
+    const reason = `is not valid TOML (${parseErrorLine(messageOf(error))})`;
+    return { path, unreadable: { file, reason } };
   }
 }
 
@@ -78,9 +88,11 @@ async function readToml(
   root: string,
   file: string
 ): Promise<{ path: string; raw: string | undefined; doc: TomlObject }> {
-  const path = join(root, file);
-  const raw = existsSync(path) ? await readFile(path, "utf-8") : undefined;
-  return { path, raw, doc: raw === undefined ? {} : parseToml(file, raw) };
+  const read = await tryReadToml(root, file);
+  if ("unreadable" in read) {
+    throw new RefusalError(unreadableRefusal(read.unreadable));
+  }
+  return read;
 }
 
 /** Refuse when a key on the table's path holds something other than a table. */
@@ -183,17 +195,15 @@ export async function planTomlTable(
   };
 }
 
-/** Whether the table is there; a file that cannot be read as TOML holds none, and the warning names it. */
+/** Whether the table is there, or why its file cannot be read: it then holds none. */
 export async function tomlTableStatus(
   root: string,
   entry: TomlTableEntry
-): Promise<{ present: boolean; warning?: string }> {
-  try {
-    const { doc } = await readToml(root, entry.file);
-    return { present: has(doc, entry) };
-  } catch (error) {
-    return { present: false, warning: messageOf(error) };
-  }
+): Promise<{ present: boolean; unreadable?: UnreadableFile }> {
+  const read = await tryReadToml(root, entry.file);
+  return "unreadable" in read
+    ? { present: false, unreadable: read.unreadable }
+    : { present: has(read.doc, entry) };
 }
 
 /** Whether a table stands at the entry's path, whatever it holds; a file that cannot be read as TOML holds none. */
