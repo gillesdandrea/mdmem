@@ -336,7 +336,9 @@ export async function startMcpServer(): Promise<void> {
         store: storeParam,
         path: z
           .string()
-          .describe("the memory's path in the store, e.g. prefers-bun.md"),
+          .describe(
+            "the memory's path in the store, with no directory, e.g. prefers-bun.md"
+          ),
         if_version: z
           .string()
           .describe(

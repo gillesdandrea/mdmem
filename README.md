@@ -404,7 +404,7 @@ server with the same memory-store tools as Claude Code, plus three of its own:
 | `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
 | `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. |
 | `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. |
-| `memory_delete` | Delete a memory document at `path`. `MEMORY.md` is refused. |
+| `memory_delete` | Delete a memory document at `path`. `MEMORY.md` and paths inside a directory are refused. |
 | `memory_search` | List the memories containing a query, by path with their description. A memory that does not parse is skipped and named in a warning. |
 | `memory_check` | Check the store and the agents' wiring as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems. |
 

@@ -581,6 +581,25 @@ describe("mcp server", () => {
     });
   });
 
+  test("memory_delete refuses a nested path, leaving the file in place", async () => {
+    await withServer(async ({ client, store }) => {
+      await mkdir(join(store.root, "notes"));
+      await writeFile(join(store.root, "notes/draft.md"), "hi\n");
+      const result = await client.callTool({
+        name: "memory_delete",
+        arguments: {
+          path: "notes/draft.md",
+          if_version: await store.version("notes/draft.md"),
+        },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toContain(
+        "memories live at the top of the store, and nested files are never indexed or searched"
+      );
+      expect(store.exists("notes/draft.md")).toBe(true);
+    });
+  });
+
   test("memory_search lists matching memory documents by path with their description", async () => {
     await withServer(async ({ client, storeId }) => {
       await write(client, "uses-bun.md", memory("uses-bun", "Use bun."), "new");

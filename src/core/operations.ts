@@ -251,13 +251,18 @@ export interface VersionedWriteResult extends WriteResult {
   version: string;
 }
 
-/** Refuse a memory write whose path can't hold a memory, before touching the store. */
-export function assertMemoryPath(path: string): void {
+/** Refuse a path inside a directory, which writes and deletes alike never touch. */
+function assertTopLevelPath(path: string): void {
   if (path.includes("/") || path.includes("\\")) {
     throw new RefusalError(
       `Refused "${path}": memories live at the top of the store, and nested files are never indexed or searched; use a path with no directory`
     );
   }
+}
+
+/** Refuse a memory write whose path can't hold a memory, before touching the store. */
+export function assertMemoryPath(path: string): void {
+  assertTopLevelPath(path);
   if (isIndexPath(path)) {
     throw new RefusalError(
       `Refused "${path}": that is the index's path (${INDEX_FILE}), and mdmem keeps the index up to date from the memories; write a memory instead`
@@ -331,8 +336,9 @@ export async function writeDocument(
   };
 }
 
-/** Refuse deleting the index, before touching the store. */
-function assertNotIndexDelete(path: string): void {
+/** Refuse deleting a nested file or the index, before touching the store. */
+function assertDeletablePath(path: string): void {
+  assertTopLevelPath(path);
   if (isIndexPath(path)) {
     throw new RefusalError(
       `Refused "${path}": that is the index's path (${INDEX_FILE}), and mdmem keeps the index up to date from the memories, so it cannot be deleted`
@@ -342,14 +348,15 @@ function assertNotIndexDelete(path: string): void {
 
 /**
  * Delete a memory document under the store's version guard (`ifVersion` as in
- * `writeDocument`) and update the index. The index itself cannot be deleted.
+ * `writeDocument`) and update the index. The index itself cannot be deleted, nor a
+ * nested file, which `writeDocument` would not have written.
  */
 export async function deleteDocument(
   store: MemoryStore,
   path: string,
   ifVersion: string
 ): Promise<WriteResult> {
-  assertNotIndexDelete(path);
+  assertDeletablePath(path);
   if (!path.endsWith(".md") || !store.exists(path)) {
     throw new RefusalError(`No memory document at "${path}"`);
   }
@@ -398,8 +405,8 @@ export async function removeMemory(
   name: string
 ): Promise<WriteResult | null> {
   const file = memoryFileFor(name);
-  // Refuse the index before the read, which would create it if missing.
-  assertNotIndexDelete(file);
+  // Refuse a nested path and the index before the read, which would create the index if missing.
+  assertDeletablePath(file);
   const current = await findDocument(store, file);
   if (!current) {
     return null;

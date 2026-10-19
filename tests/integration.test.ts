@@ -1243,6 +1243,24 @@ describe("cli", () => {
     });
   });
 
+  test("delete refuses a nested file under .memory/, leaving it in place", async () => {
+    await withCliProject(async (root) => {
+      await mkdir(join(root, ".memory/notes"));
+      await writeFile(join(root, ".memory/notes/draft.md"), "hi\n");
+      const index = await readFile(join(root, ".memory/MEMORY.md"), "utf-8");
+      const del = runCli(root, "delete", "notes/draft");
+      expect(del.code).toBe(1);
+      expect(del.out).toBe("");
+      expect(del.err).toBe(
+        'mdmem: Refused "notes/draft.md": memories live at the top of the store, and nested files are never indexed or searched; use a path with no directory\n'
+      );
+      expect(existsSync(join(root, ".memory/notes/draft.md"))).toBe(true);
+      expect(await readFile(join(root, ".memory/MEMORY.md"), "utf-8")).toBe(
+        index
+      );
+    });
+  });
+
   test("add refuses a secret, naming its line and kind but never the secret", async () => {
     await withCliProject((root, store) => {
       const add = runCli(
