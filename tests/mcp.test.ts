@@ -737,6 +737,33 @@ describe("mcp server", () => {
       expect(
         message?.content.type === "text" && message.content.text
       ).toContain(`Memory store: \`${storeDir}\``);
+      expect(
+        message?.content.type === "text" && message.content.text
+      ).toContain("if you can search your own past sessions and need specific");
+    });
+  });
+
+  test("the prompt consolidate with an agent returns the CLI's text for that agent, and refuses an unknown one", async () => {
+    await withServer(async ({ client, store }) => {
+      // The server's environment, as withServer gave it: CODEX_HOME is not resolved through the tmpdir symlink.
+      const dir = dirname(store.root);
+      const prompt = await client.getPrompt({
+        name: "consolidate",
+        arguments: { agent: "codex" },
+      });
+      const cli = Bun.spawnSync(
+        [process.execPath, CLI, "consolidate", "--agent", "codex"],
+        { cwd: dir, env: { ...process.env, ...tempHomeEnv(dir) } }
+      );
+      const [message] = prompt.messages;
+      const text = message?.content.type === "text" && message.content.text;
+      expect(text).toBe(cli.stdout.toString());
+      expect(text).toContain(
+        `your past sessions are in \`${join(dir, "home", ".codex", "sessions")}/\``
+      );
+      await expect(
+        client.getPrompt({ name: "consolidate", arguments: { agent: "nope" } })
+      ).rejects.toThrow('unknown agent "nope". Known: claude-code, bob, codex');
     });
   });
 });

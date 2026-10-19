@@ -7,6 +7,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
 import { CODEX_HOME_ENV } from "../adapters/codex.ts";
+import { adapterIds, getAdapter, unknownAgent } from "../adapters/index.ts";
 import { adapterContext, checkProject } from "../adapters/report.ts";
 import { formatCheck, POINTER_MAX_CHARS } from "../core/check.ts";
 import {
@@ -354,19 +355,37 @@ export async function startMcpServer(): Promise<void> {
     {
       title: "Consolidate memory",
       description:
-        "A consolidation pass over the project's memory store: orient on the existing memories, gather recent signal, merge and correct memories, prune stale ones, and reconcile them with the project's instruction files.",
+        "A consolidation pass over the project's memory store: orient on the existing memories, gather recent signal, merge and correct memories, prune stale ones, and reconcile them with the project's instruction files. Pass agent to point it at that agent's past sessions of the project.",
+      argsSchema: z.object({
+        agent: z
+          .string()
+          .optional()
+          .describe(
+            `the agent running the pass (${adapterIds().join(", ")}): the prompt names where its past sessions of the project are`
+          ),
+      }),
     },
-    (): GetPromptResult => ({
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: getConsolidatePrompt(resolveStore().root),
+    ({ agent }): GetPromptResult => {
+      const adapter = agent === undefined ? undefined : getAdapter(agent);
+      if (agent !== undefined && adapter === undefined) {
+        throw new Error(unknownAgent(agent));
+      }
+      const store = resolveStore();
+      const history = adapter?.sessionHistory?.(
+        adapterContext(process.cwd(), store)
+      );
+      return {
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: getConsolidatePrompt(store.root, history),
+            },
           },
-        },
-      ],
-    })
+        ],
+      };
+    }
   );
 
   const transport = new StdioServerTransport();

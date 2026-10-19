@@ -30,6 +30,11 @@ export function adapterIds(): string[] {
   return REGISTRY.map((a) => a.id);
 }
 
+/** The refusal of an agent id no adapter has, naming the known ones. */
+export function unknownAgent(id: string): string {
+  return `unknown agent "${id}". Known: ${adapterIds().join(", ")}`;
+}
+
 /** An agent is found on this machine when its command is on PATH or its config directory, where the environment puts it, exists. */
 function isFound(
   adapter: Adapter,

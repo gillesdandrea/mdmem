@@ -92,7 +92,7 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem delete` (alias `rm`) `<name>` | Remove a memory by its name (or `<name>.md`) |
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
-| `mdmem consolidate` | Print the consolidation prompt (see below) |
+| `mdmem consolidate [--agent <agent>]` | Print the consolidation prompt; `--agent` points it at that agent's past sessions of the project (see below) |
 | `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring (see [What status and the check report](#what-status-and-the-check-report)). Exits 1 on a problem. A `[[link]]` to a memory not written yet is a note, not a problem: doctor lists it (`note: uses-bun.md links [[ts7-strict]], not written yet`) and exits 0 when notes are its only finding |
 | `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--all` wires the agents found on this machine (see below). `--prefer` settles a Claude Code import conflict, and is refused unless `claude-code` is among the agents. |
 | `mdmem disable <agent…> \| --all [--global]` | Remove exactly mdmem's entries from an agent's files (leaves the store); `--all` takes the agents found on this machine. Needs no store. Codex's hook in `~/.codex/hooks.json` stays unless `--global`. |
@@ -436,8 +436,26 @@ prompt for any agent, run when you ask for one. `mdmem consolidate` prints it, a
 the MCP server serves it as the prompt `consolidate`:
 
 ```bash
-codex "$(mdmem consolidate)"
+codex "$(mdmem consolidate --agent codex)"
 ```
+
+With `--agent` (the prompt's `agent` argument over MCP), the prompt tells the agent
+where its past sessions of the project are and how to search them:
+
+- `claude-code`: the `.jsonl` files in the project's directory under
+  `$CLAUDE_CONFIG_DIR/projects/` (`~/.claude/projects/` when unset), one per session.
+  The directory is named `$CLAUDE_CODE_PROJECT_DIR_NAME` when that is set, as
+  Claude Code names it.
+- `codex`: the `.jsonl` files under `$CODEX_HOME/sessions/` (`~/.codex/sessions/`
+  when unset), which hold every project's sessions, so the agent keeps only those
+  whose first-line `session_meta` record has a `cwd` in the project. Codex starts
+  the MCP server without `CODEX_HOME`, so the MCP prompt names `~/.codex/sessions/`
+  unless `CODEX_HOME` is passed to the server; `mdmem consolidate` reads
+  `CODEX_HOME` from your shell.
+- `bob`, or no agent: a generic line telling the agent to search its own past
+  sessions if it can.
+
+An unknown agent is refused.
 
 The agent orients on the store, looks for memories the code has drifted from,
 merges and dates what it learned, deletes stale memories, and reconciles feedback

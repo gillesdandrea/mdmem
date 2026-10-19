@@ -4,6 +4,7 @@ import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookPart } from "../core/hook.ts";
 import {
   claudeConfigDir,
+  claudeProjectDir,
   formatImport,
   importMarker,
   planClaudeImport,
@@ -253,6 +254,11 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
   command: "claude",
   configDir: claudeConfigDir,
   title: TITLE,
+  // One directory per project, where Claude Code keeps its memory directory too.
+  sessionHistory: ({ projectRoot, env, home }) => ({
+    dir: claudeProjectDir(projectRoot, { env, home }),
+    search: "grep the `.jsonl` files there, one per session of this project",
+  }),
 
   async enable(
     ctx: AdapterContext,

@@ -10,7 +10,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { z } from "zod";
@@ -1273,6 +1273,61 @@ describe("cli", () => {
       expect(consolidate.out).toBe(getConsolidatePrompt(storeDir));
       expect(consolidate.out).toContain(`Memory store: \`${storeDir}\``);
       expect(consolidate.out).toContain("## Phase 5 — Reconcile");
+      expect(consolidate.out).toContain(
+        "2. **Past sessions** — if you can search your own past sessions and need specific\n   context ("
+      );
+    });
+  });
+
+  test("consolidate --agent claude-code names the project's directory of Claude Code sessions", async () => {
+    await withCliProject((root) => {
+      const args = ["consolidate", "--agent", "claude-code"];
+      const key = root.replaceAll(/[^A-Za-z0-9]/gu, "-");
+      const fromEnv = runCliWith(root, args, {
+        CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+        CLAUDE_CODE_PROJECT_DIR_NAME: "",
+      });
+      expect(fromEnv.code).toBe(0);
+      expect(fromEnv.out).toContain(
+        `2. **Past sessions** — your past sessions are in \`${join(root, "claude-config", "projects", key)}/\`: grep the \`.jsonl\` files there, one per session of this project; when you need specific\n`
+      );
+      expect(fromEnv.out).not.toContain("if you can search");
+      const fromHome = runCliWith(root, args, {
+        CLAUDE_CONFIG_DIR: "",
+        CLAUDE_CODE_PROJECT_DIR_NAME: "",
+      });
+      expect(fromHome.out).toContain(
+        `\`${join(homedir(), ".claude", "projects", key)}/\``
+      );
+    });
+  });
+
+  test("consolidate --agent codex names Codex's sessions directory and how to keep the project's", async () => {
+    await withCliProject((root) => {
+      const args = ["consolidate", "--agent", "codex"];
+      const fromEnv = runCli(root, ...args);
+      expect(fromEnv.code).toBe(0);
+      expect(fromEnv.out).toContain(
+        `2. **Past sessions** — your past sessions are in \`${join(root, "codex-home", "sessions")}/\`: the \`YYYY/MM/DD/*.jsonl\` files there hold every project's sessions, so grep only those whose first line, a \`session_meta\` record, has a \`cwd\` of \`${root}\` or a folder under it; when you need specific\n`
+      );
+      const fromHome = runCliWith(root, args, { CODEX_HOME: "" });
+      expect(fromHome.out).toContain(
+        `\`${join(homedir(), ".codex", "sessions")}/\``
+      );
+    });
+  });
+
+  test("consolidate --agent bob keeps the generic line, and an unknown agent is refused", async () => {
+    await withCliProject((root) => {
+      const bob = runCli(root, "consolidate", "--agent", "bob");
+      expect(bob.code).toBe(0);
+      expect(bob.out).toBe(runCli(root, "consolidate").out);
+      const nope = runCli(root, "consolidate", "--agent", "nope");
+      expect(nope.code).toBe(1);
+      expect(nope.out).toBe("");
+      expect(nope.err).toBe(
+        'mdmem: unknown agent "nope". Known: claude-code, bob, codex\n'
+      );
     });
   });
 

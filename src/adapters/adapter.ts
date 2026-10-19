@@ -13,6 +13,7 @@ import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookAgent, HookPart } from "../core/hook.ts";
 import type { ImportPreference } from "../core/import.ts";
 import { isObject } from "../core/object.ts";
+import type { SessionHistory } from "../core/protocol.ts";
 import type { MemoryStore } from "../core/store.ts";
 
 export interface AdapterContext {
@@ -309,6 +310,15 @@ export interface Adapter {
    * removes.
    */
   projectWired?: (projectRoot: string) => Promise<boolean>;
+  /**
+   * Where the agent keeps its past sessions of the project at `projectRoot`, and how
+   * to search them, as the consolidation prompt names them: its directories resolved
+   * from the environment, as `configDir` resolves them. Absent for an agent whose
+   * history is not files to grep (Bob's database), which keeps the prompt's generic line.
+   */
+  readonly sessionHistory?: (
+    ctx: Pick<AdapterContext, "projectRoot" | "env" | "home">
+  ) => SessionHistory;
 }
 
 /** The adapter of agent `K`: its id is `K` itself, so a registry keyed by agent can check each key against its adapter. */

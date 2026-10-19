@@ -42,7 +42,7 @@ Look for new information worth persisting. Sources in rough priority order:
 
 1. **Memories that drifted** — memories that contradict something you see in the
    code now
-2. **Past sessions** — if you can search your own past sessions and need specific
+2. **Past sessions** — {{past_sessions}} need specific
    context (e.g., "what was the error message from yesterday's build failure?"),
    search them for narrow terms
 

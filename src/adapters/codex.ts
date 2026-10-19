@@ -104,6 +104,11 @@ export const codexAdapter: AdapterFor<typeof ID> = {
   command: "codex",
   configDir: codexHome,
   title: TITLE,
+  // Not split by project: a session file's first line, its session_meta record, holds the cwd it ran in.
+  sessionHistory: ({ projectRoot, env, home }) => ({
+    dir: join(codexHome({ env, home }), "sessions"),
+    search: `the \`YYYY/MM/DD/*.jsonl\` files there hold every project's sessions, so grep only those whose first line, a \`session_meta\` record, has a \`cwd\` of \`${projectRoot}\` or a folder under it`,
+  }),
 
   async enable(ctx: AdapterContext): Promise<WiringPlan> {
     // Plan both files before writing either, so an unparseable one refuses with nothing written.

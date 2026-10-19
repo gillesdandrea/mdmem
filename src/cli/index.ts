@@ -10,7 +10,12 @@ import type {
   AgentStatus,
   WiringPlan,
 } from "../adapters/adapter.ts";
-import { adapterIds, findAdapters, getAdapter } from "../adapters/index.ts";
+import {
+  adapterIds,
+  findAdapters,
+  getAdapter,
+  unknownAgent,
+} from "../adapters/index.ts";
 import {
   adapterContext,
   checkProject,
@@ -308,9 +313,7 @@ function resolveTargets(
     }
     // A name given twice is wired once: every plan reads the files as they are now.
     const adapters = [...new Set(positionals)].map(
-      (id) =>
-        getAdapter(id) ??
-        die(`unknown agent "${id}". Known: ${adapterIds().join(", ")}`)
+      (id) => getAdapter(id) ?? die(unknownAgent(id))
     );
     return { adapters };
   }
@@ -455,9 +458,19 @@ async function cmdDoctor(): Promise<void> {
   }
 }
 
-function cmdConsolidate(): void {
+function cmdConsolidate(args: string[]): void {
+  const { values } = parseArgs({
+    args,
+    options: { agent: { type: "string" } },
+    allowPositionals: false,
+  });
+  const adapter =
+    values.agent === undefined
+      ? undefined
+      : (getAdapter(values.agent) ?? die(unknownAgent(values.agent)));
   const store = resolveStore();
-  process.stdout.write(getConsolidatePrompt(store.root));
+  const history = adapter?.sessionHistory?.(context(store));
+  process.stdout.write(getConsolidatePrompt(store.root, history));
 }
 
 /** Run by an agent's session-start hook, never by hand; it always exits 0. */
@@ -501,7 +514,12 @@ Usage: mdmem <command> [options]
   delete | rm <name>        Remove a memory by its name (or <name>.md)
   search <query>            Find memories containing text
   reindex                   Bring MEMORY.md up to date with the memories, keeping its other lines
-  consolidate               Print a prompt that has an agent consolidate the store
+  consolidate [--agent <agent>]
+                            Print a prompt that has an agent consolidate the store; --agent points
+                            it at that agent's past sessions of the project (claude-code: its
+                            project directory in $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects;
+                            codex: the sessions in $CODEX_HOME/sessions or ~/.codex/sessions whose
+                            cwd is the project; bob keeps the generic line)
   doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
                             long pointers, stale index, index over its size limit) and the agents'
                             wiring (a config file it cannot read, a session-start hook missing or
@@ -562,7 +580,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   reindex: () => cmdReindex(),
   doctor: () => cmdDoctor(),
   check: () => cmdDoctor(),
-  consolidate: () => cmdConsolidate(),
+  consolidate: (args) => cmdConsolidate(args),
   enable: (args) => cmdWiring(args, "enable"),
   disable: (args) => cmdWiring(args, "disable"),
   status: () => cmdStatus(),
