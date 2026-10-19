@@ -503,10 +503,10 @@ Usage: mdmem <command> [options]
   reindex                   Bring MEMORY.md up to date with the memories, keeping its other lines
   consolidate               Print a prompt that has an agent consolidate the store
   doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
-                            long pointers, dangling links, stale index, index over its size limit)
-                            and the agents' wiring (a config file it cannot read, a session-start
-                            hook missing or switched off, Claude Code's auto memory still on, mdmem
-                            not on PATH)
+                            long pointers, stale index, index over its size limit) and the agents'
+                            wiring (a config file it cannot read, a session-start hook missing or
+                            switched off, Claude Code's auto memory still on, mdmem not on PATH);
+                            exits 1 on a problem; a [[link]] to a memory not written yet is a note
   enable <agent…> | --all [--prefer claude|mdmem]
                             Wire an agent to the shared store, in files meant to be committed;
                             --all wires the agents found on this machine, by their command on

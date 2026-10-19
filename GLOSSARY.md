@@ -33,7 +33,7 @@ A memory's one-line summary, used to decide relevance during recall.
 _Avoid_: summary, hook
 
 **Link**:
-A `[[name]]` in a memory's body that refers to another memory.
+A `[[name]]` in a memory's body that refers to another memory, which may not be written yet: such a link marks a memory worth writing, and is not a problem.
 _Avoid_: wikilink, reference (a memory type)
 
 ### Memory types
@@ -76,8 +76,12 @@ Writing a new memory, or updating an existing one in place of a duplicate.
 _Avoid_: record, remember
 
 **Check**:
-A pass over a project that reports every problem with its memory store's memories and index (an unparseable memory, a name that differs from its file name, two memory types that disagree, a secret, an over-long pointer, a dangling link, a stale or over-capacity index) and with its agents' wiring (a session-start hook that will not run, an agent's own memory still on, mdmem missing from PATH). `mdmem doctor` runs a check.
+A pass over a project that reports every problem with its memory store's memories and index (an unparseable memory, a name that differs from its file name, two memory types that disagree, a secret, an over-long pointer, a stale or over-capacity index) and with its agents' wiring (a session-start hook that will not run, an agent's own memory still on, mdmem missing from PATH), and that notes each link to a memory not written yet. `mdmem doctor` runs a check.
 _Avoid_: lint, validation, health check
+
+**Note**:
+A check's finding that is not a problem: a link to a memory not written yet. `mdmem doctor` lists each note and still exits 0 when notes are its only findings.
+_Avoid_: warning, problem
 
 **Consolidation**:
 A reflective pass over a memory store's memories that merges, corrects and prunes them. Claude Code calls one such pass a *dream*.

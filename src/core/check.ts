@@ -451,10 +451,12 @@ export async function refreshIndex(
   }
 }
 
-/** The result of a Check: how many memory files the store holds, and every problem found. */
+/** The result of a Check: how many memory files the store holds, every problem found, and its notes. */
 export interface Check {
   memoryCount: number;
   problems: string[];
+  /** Findings that are not problems: a link to a memory not written yet. */
+  notes: string[];
   /** Of the problems, how many memories do not parse. */
   unparseable: number;
   /** Of the problems, whether the index is stale against the memory files. */
@@ -507,24 +509,24 @@ function fileProblems(entry: LoadedMemory | BrokenMemory): string[] {
   return problems;
 }
 
-/** Problems with a parsed memory among the others: an over-long pointer, a dangling link. */
-function memoryProblems(
+/** A parsed memory's problem among the others: an over-long pointer. */
+function memoryProblems(loaded: LoadedMemory): string[] {
+  const pointerChars = [...pointerLine(pointerSource(loaded))].length;
+  return pointerChars > POINTER_MAX_CHARS
+    ? [
+        `${loaded.file}: its pointer is ${pointerChars} characters, over ${POINTER_MAX_CHARS} — shorten its description`,
+      ]
+    : [];
+}
+
+/** A parsed memory's notes: each memory not written yet that it links, once, which marks one worth writing. */
+function memoryNotes(
   loaded: LoadedMemory,
   known: ReadonlySet<string>
 ): string[] {
-  const problems: string[] = [];
-  const pointerChars = [...pointerLine(pointerSource(loaded))].length;
-  if (pointerChars > POINTER_MAX_CHARS) {
-    problems.push(
-      `${loaded.file}: its pointer is ${pointerChars} characters, over ${POINTER_MAX_CHARS} — shorten its description`
-    );
-  }
-  for (const name of linkNames(loaded.memory.body)) {
-    if (!known.has(name)) {
-      problems.push(`${loaded.file}: dangling [[${name}]]`);
-    }
-  }
-  return problems;
+  return [...new Set(linkNames(loaded.memory.body))]
+    .filter((name) => !known.has(name))
+    .map((name) => `${loaded.file} links [[${name}]], not written yet`);
 }
 
 /** The ways the index `current` is stale against the memory files, one problem each. */
@@ -552,7 +554,7 @@ function staleIndexProblems(
   );
 }
 
-/** Run a Check over the store: every problem with its memories and its index. It never writes. */
+/** Run a Check over the store: every problem with its memories and its index, and their notes. It never writes. */
 export async function checkStore(store: MemoryStore): Promise<Check> {
   const entries = await loadFiles(store);
   const { memories, broken } = splitLoad(entries);
@@ -568,13 +570,14 @@ export async function checkStore(store: MemoryStore): Promise<Check> {
   const indexOverLimit = capacity?.over ?? false;
   const problems = [
     ...entries.flatMap(fileProblems),
-    ...memories.flatMap((loaded) => memoryProblems(loaded, known)),
+    ...memories.flatMap(memoryProblems),
     ...stale,
     ...(indexOverLimit && capacity ? [capacity.message] : []),
   ];
   return {
     memoryCount: entries.length,
     problems,
+    notes: memories.flatMap((loaded) => memoryNotes(loaded, known)),
     unparseable: broken.length,
     staleIndex: stale.length > 0,
     indexOverLimit,
@@ -611,19 +614,28 @@ function countMemories(count: number): string {
   return count === 1 ? "1 memory" : `${count} memories`;
 }
 
+function countNotes(count: number): string {
+  return count === 1 ? "1 note" : `${count} notes`;
+}
+
 /**
  * A Check in one line, as `mdmem status` prints it: no problems, or how many, naming
  * the ones that break sharing (unparseable memories, a stale index, an index over
- * its limit), and where to see them all.
+ * its limit), then how many notes, and where to see them all.
  */
 export function checkSummary({
   problems,
+  notes,
   unparseable,
   staleIndex,
   indexOverLimit,
 }: Check): string {
   if (problems.length === 0) {
-    return "✓ no problems";
+    if (notes.length === 0) {
+      return "✓ no problems";
+    }
+    const them = notes.length === 1 ? "it" : "them";
+    return `✓ no problems, ${countNotes(notes.length)} — \`mdmem doctor\` lists ${them}`;
   }
   const kinds = [
     ...(unparseable > 0
@@ -641,16 +653,21 @@ export function checkSummary({
       : []),
   ];
   const among = kinds.length === 0 ? "" : `, among them ${kinds.join(", ")}`;
-  return `${problems.length} problem(s)${among} — \`mdmem doctor\` lists them`;
+  const plus = notes.length === 0 ? "" : `, plus ${countNotes(notes.length)}`;
+  return `${problems.length} problem(s)${among}${plus} — \`mdmem doctor\` lists them`;
 }
 
-/** A Check as both surfaces print it: the problems one per line, or the memory count and no problems. */
-export function formatCheck({ memoryCount, problems }: Check): string {
-  if (problems.length === 0) {
-    return `✓ ${countMemories(memoryCount)}, no problems`;
-  }
-  return [
-    `Found ${problems.length} problem(s):`,
-    ...problems.map((problem) => `  - ${problem}`),
-  ].join("\n");
+/**
+ * A Check as both surfaces print it: the problems one per line, or the memory count
+ * and no problems, then a line for each note.
+ */
+export function formatCheck({ memoryCount, problems, notes }: Check): string {
+  const head =
+    problems.length === 0
+      ? [`✓ ${countMemories(memoryCount)}, no problems`]
+      : [
+          `Found ${problems.length} problem(s):`,
+          ...problems.map((problem) => `  - ${problem}`),
+        ];
+  return [...head, ...notes.map((note) => `note: ${note}`)].join("\n");
 }

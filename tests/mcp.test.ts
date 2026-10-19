@@ -623,12 +623,25 @@ describe("mcp server", () => {
     });
   });
 
-  test("memory_check reports a problem as a finding, not an error", async () => {
+  test("memory_check reports a problem as a finding, not an error, and a link to a memory not written yet as a note", async () => {
     await withServer(async ({ client }) => {
       await write(
         client,
         "uses-bun.md",
         memory("uses-bun", "Use bun. See [[gone]]."),
+        "new"
+      );
+      await write(
+        client,
+        "long.md",
+        serializeMemory({
+          frontmatter: {
+            name: "long",
+            description: "x".repeat(150),
+            metadata: { type: "project" },
+          },
+          body: "Body.",
+        }),
         "new"
       );
 
@@ -638,7 +651,7 @@ describe("mcp server", () => {
       });
       expect(result.isError).toBeFalsy();
       expect(textOf(result)).toBe(
-        "Found 1 problem(s):\n  - uses-bun.md: dangling [[gone]]"
+        "Found 1 problem(s):\n  - long.md: its pointer is 170 characters, over 150 — shorten its description\nnote: uses-bun.md links [[gone]], not written yet"
       );
     });
   });

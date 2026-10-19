@@ -93,7 +93,7 @@ run `mdmem reindex` to refresh the index (or let the next `add`/MCP write do it)
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
 | `mdmem consolidate` | Print the consolidation prompt (see below) |
-| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, dangling `[[links]]`, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring (see [What status and the check report](#what-status-and-the-check-report)) |
+| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring (see [What status and the check report](#what-status-and-the-check-report)). Exits 1 on a problem. A `[[link]]` to a memory not written yet is a note, not a problem: doctor lists it (`note: uses-bun.md links [[ts7-strict]], not written yet`) and exits 0 when notes are its only finding |
 | `mdmem enable <agent…> \| --all [--prefer claude\|mdmem]` | Wire an agent to the shared store; running it again changes nothing. `--all` wires the agents found on this machine (see below). `--prefer` settles a Claude Code import conflict, and is refused unless `claude-code` is among the agents. |
 | `mdmem disable <agent…> \| --all [--global]` | Remove exactly mdmem's entries from an agent's files (leaves the store); `--all` takes the agents found on this machine. Needs no store. Codex's hook in `~/.codex/hooks.json` stays unless `--global`. |
 | `mdmem status` | Show the store, the check in one line, and each agent's wiring, entry by entry (present or missing), with the warnings and notes below |
@@ -196,7 +196,8 @@ The rest are `status` lines only, because they are your choice, depend on where
 `status` runs, or are something mdmem does not read:
 
 - `Check:`, the check in one line: no problems, or how many, naming unparseable
-  memories, a stale `MEMORY.md` and a `MEMORY.md` over its limit.
+  memories, a stale `MEMORY.md` and a `MEMORY.md` over its limit, then how many
+  notes (links to memories not written yet).
 - A note when git does not ignore `.memory/`. mdmem never edits `.gitignore`.
 - A warning when `status` runs below the checkout's root of a project wired for
   Bob: a Bob launched there reads neither `.bob/settings.json` nor
@@ -381,7 +382,8 @@ Use bun for scripts and tests.
 ```
 
 `feedback`/`project` memories add `**Why:**` and `**How to apply:**` lines; link
-related memories with `[[name]]`.
+related memories with `[[name]]`. A link may name a memory not written yet, as
+`[[ts7-strict]]` does here: it marks a memory worth writing.
 
 mdmem reads memories as loosely as Claude Code writes them: any non-empty name,
 the type under `metadata` or at the top level (`metadata.type` wins when both are
@@ -390,7 +392,7 @@ set), and unknown fields, which it keeps. What it writes (`add`, `edit`,
 kebab-case or snake_case, so a memory whose name differs from its file must have
 its name fixed before mdmem saves it. `doctor` reports a name that differs from
 its file name and two types that disagree; a `[[link]]` resolves to a memory's
-name or its file name.
+name or its file name, and one that resolves to neither is a note.
 
 ## MCP server
 

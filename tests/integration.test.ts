@@ -2363,6 +2363,30 @@ describe("status and check", () => {
     });
   });
 
+  test("doctor exits 0 when a link to a memory not written yet is its only finding, and lists it as a note", async () => {
+    await withWiredRepo(async ({ root, ctx, store }) => {
+      await store.create(
+        "uses-bun.md",
+        memoryText("uses-bun", "See [[ts7-strict]].")
+      );
+      await reindex(store);
+      const env = {
+        HOME: ctx.home,
+        PATH: ctx.env.PATH ?? "",
+        CLAUDE_CONFIG_DIR: ctx.env.CLAUDE_CONFIG_DIR ?? "",
+        CODEX_HOME: ctx.env.CODEX_HOME ?? "",
+      };
+      const doctor = runCliWith(root, ["doctor"], env);
+      expect(doctor.out).toBe(
+        "✓ 1 memory, no problems\nnote: uses-bun.md links [[ts7-strict]], not written yet\n"
+      );
+      expect(doctor.code).toBe(0);
+      expect(runCliWith(root, ["status"], env).out).toContain(
+        "Check: ✓ no problems, 1 note — `mdmem doctor` lists it\n"
+      );
+    });
+  });
+
   test("the check reports Claude Code's user settings it cannot read only in a project wired for Claude Code", async () => {
     await withWiredRepo(async ({ ctx }) => {
       const user = join(ctx.env.CLAUDE_CONFIG_DIR ?? "", "settings.json");
