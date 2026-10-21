@@ -170,10 +170,15 @@ lists it and exits 1, and `status` prints it as a warning.
   unreadable `hooks.json`, and `memory_check` called from Codex leaves it out
   as it leaves out the global hook below. The problem names the file and why
   it cannot be read, and replaces the missing entries and other problems that
-  file would give: fix it, then run the check again, since `mdmem enable`
-  refuses the file too. While a file that `mdmem enable` reads cannot be read,
-  the agent's other problems that `mdmem enable` fixes say to fix that file
-  first.
+  file would give: fix it, then run the check again. `mdmem enable` reads
+  Claude Code's `.claude/settings.json` and `.mcp.json`, Bob's
+  `.bob/settings.json` and `.bob/mcp.json`, and Codex's `.codex/config.toml`
+  and global `hooks.json`, and refuses any of them that cannot be read, so
+  while one cannot be read, the agent's other problems that `mdmem enable`
+  fixes say to fix that file first. It does not read
+  `.claude/settings.local.json` or Claude Code's user settings: while only
+  those cannot be read, the agent's other problems still say to run
+  `mdmem enable`.
 - A session-start hook missing for an agent the project is wired for, including
   Codex's global hook when `.codex/config.toml` registers the server.
   `memory_check` called from Codex leaves the global hook out unless `CODEX_HOME`
