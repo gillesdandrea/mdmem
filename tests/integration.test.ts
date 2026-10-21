@@ -4,6 +4,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -1604,15 +1605,17 @@ describe("cli", () => {
   test("enable checks every agent name and plans every agent before writing any", async () => {
     await withCliProject(async (root, store) => {
       const home = join(root, "home");
-      await Promise.all(
-        [".claude", ".bob", ".codex"].map((dir) =>
-          mkdir(join(home, dir), { recursive: true })
-        )
-      );
       const env = {
         HOME: home,
         CLAUDE_CONFIG_DIR: join(root, "claude-config"),
+        CODEX_HOME: join(root, "codex-home"),
       };
+      // every agent's config directory exists, so --all finds all three whatever is on PATH
+      await Promise.all(
+        [join(home, ".bob"), env.CLAUDE_CONFIG_DIR, env.CODEX_HOME].map((dir) =>
+          mkdir(dir, { recursive: true })
+        )
+      );
 
       const unknown = runCliWith(root, ["enable", "bob", "cursor"], env);
       expect(unknown.code).toBe(1);
@@ -1632,7 +1635,8 @@ describe("cli", () => {
       expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(false);
       expect(existsSync(join(root, MCP_CONFIG))).toBe(false);
       expect(existsSync(join(root, ".bob"))).toBe(false);
-      expect(existsSync(join(root, "codex-home"))).toBe(false);
+      expect(await readdir(join(home, ".bob"))).toEqual([]);
+      expect(await readdir(env.CODEX_HOME)).toEqual([]);
       expect(store.exists("note.md")).toBe(false);
       expect(existsSync(await importMarker(store, ctx))).toBe(false);
     });
