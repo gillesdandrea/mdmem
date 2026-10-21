@@ -14,6 +14,7 @@ import {
 import {
   agentStatus,
   commitLine,
+  enableAdvice,
   hookCommand,
   hooksLabel,
   MCP_SERVER,
@@ -235,7 +236,7 @@ function autoMemoryProblem(
     ];
   }
   return [
-    `${on}: ${AUTO_MEMORY_KEY} is not false in ${SETTINGS}, ${consequence} — run \`mdmem enable ${ID}\``,
+    `${on}: ${AUTO_MEMORY_KEY} is not false in ${SETTINGS}, ${consequence}${enableAdvice(ID)}`,
   ];
 }
 

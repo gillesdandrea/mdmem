@@ -180,6 +180,19 @@ export interface EnabledStatus {
   notes: string[];
 }
 
+/**
+ * How a check problem that `mdmem enable <agent>` fixes ends; while files that
+ * enable refuses on cannot be read, it says to fix them first.
+ */
+export function enableAdvice(
+  agent: HookAgent,
+  fixFirst: readonly string[] = []
+): string {
+  const fix =
+    fixFirst.length === 0 ? "" : `fix ${fixFirst.join(" and ")}, then `;
+  return ` — ${fix}run \`mdmem enable ${agent}\``;
+}
+
 /** The check's problem for an agent file that cannot be read: it replaces the problems of the entries and values in it. */
 function unreadableProblem(
   adapter: Pick<Adapter, "title">,
@@ -194,7 +207,9 @@ function unreadableProblem(
  * the project is `enabled` for the agent. Of the `unreadable` files, a project
  * file is a problem whatever `enabled` says, since mdmem cannot tell what it
  * wires; a user-wide file (an absolute path) is one only for an enabled agent, and
- * a warning otherwise.
+ * a warning otherwise. While a file holding the agent's entries, which enable
+ * reads and refuses on, cannot be read, each other problem ending in
+ * `enableAdvice` says to fix that file first.
  */
 export async function agentStatus(
   adapter: Pick<Adapter, "id" | "title">,
@@ -216,6 +231,23 @@ export async function agentStatus(
     : { problems: [], notes: [] };
   const reported = (file: UnreadableFile): boolean =>
     enabled || !isAbsolute(file.file);
+  const unreadableProblems = [
+    ...unreadable.filter(reported),
+    ...(more.unreadable ?? []),
+  ];
+  const entryFiles = new Set(entries.map(({ file }) => file));
+  const refusedByEnable = unreadableProblems
+    .map(({ file }) => file)
+    .filter((file) => entryFiles.has(file));
+  const advice = enableAdvice(adapter.id);
+  const problems =
+    refusedByEnable.length === 0
+      ? more.problems
+      : more.problems.map((problem) =>
+          problem.endsWith(advice)
+            ? `${problem.slice(0, -advice.length)}${enableAdvice(adapter.id, refusedByEnable)}`
+            : problem
+        );
   return {
     id: adapter.id,
     title: adapter.title,
@@ -223,10 +255,8 @@ export async function agentStatus(
     enabled,
     entries,
     problems: [
-      ...[...unreadable.filter(reported), ...(more.unreadable ?? [])].map(
-        (file) => unreadableProblem(adapter, file)
-      ),
-      ...more.problems,
+      ...unreadableProblems.map((file) => unreadableProblem(adapter, file)),
+      ...problems,
     ],
     warnings: [
       ...unreadable.filter((file) => !reported(file)).map(unreadableRefusal),
@@ -260,7 +290,7 @@ export function missingHooksProblem(
       ? "what that hook injects"
       : "what those hooks inject";
   return [
-    `${adapter.title}: missing ${where.join(", ")}, so its sessions start without ${injected} — run \`mdmem enable ${adapter.id}\``,
+    `${adapter.title}: missing ${where.join(", ")}, so its sessions start without ${injected}${enableAdvice(adapter.id)}`,
   ];
 }
 

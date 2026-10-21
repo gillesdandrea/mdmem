@@ -171,7 +171,9 @@ lists it and exits 1, and `status` prints it as a warning.
   as it leaves out the global hook below. The problem names the file and why
   it cannot be read, and replaces the missing entries and other problems that
   file would give: fix it, then run the check again, since `mdmem enable`
-  refuses the file too.
+  refuses the file too. While a file that `mdmem enable` reads cannot be read,
+  the agent's other problems that `mdmem enable` fixes say to fix that file
+  first.
 - A session-start hook missing for an agent the project is wired for, including
   Codex's global hook when `.codex/config.toml` registers the server.
   `memory_check` called from Codex leaves the global hook out unless `CODEX_HOME`

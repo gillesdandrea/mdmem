@@ -15,7 +15,11 @@ import { dirname, join } from "node:path";
 
 import { z } from "zod";
 
-import { MCP_SERVER, OUTSIDE_PROJECT_LINE } from "../src/adapters/adapter.ts";
+import {
+  enableAdvice,
+  MCP_SERVER,
+  OUTSIDE_PROJECT_LINE,
+} from "../src/adapters/adapter.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -2398,6 +2402,48 @@ describe("status and check", () => {
       expect(await projectProblems(ctx)).toEqual([
         "Claude Code: .claude/settings.local.json does not hold a JSON object: fix it, then run the check again",
         unreadable,
+      ]);
+    });
+  });
+
+  test("while a file enable reads cannot be read, the check's other problems say to fix it before running enable", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      await writeFile(
+        join(root, CLAUDE_SETTINGS),
+        JSON.stringify({ permissions: { allow: ["mcp__mdmem"] } }),
+        "utf-8"
+      );
+      await writeFile(join(root, MCP_CONFIG), "{ broken", "utf-8");
+      const problems = [
+        `Claude Code: ${MCP_CONFIG} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`,
+        `Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (${CLAUDE_SETTINGS}), SessionStart hook "mdmem hook claude-code index" (${CLAUDE_SETTINGS}), so its sessions start without what those hooks inject — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code\``,
+        `Claude Code's auto memory is on: autoMemoryEnabled is not false in ${CLAUDE_SETTINGS}, ${AUTO_MEMORY_CONSEQUENCE} — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code\``,
+      ];
+      const status = await claudeCodeAdapter.status(ctx);
+      expect(status.problems).toEqual(problems);
+      expect(await projectProblems(ctx)).toEqual(problems);
+      const project = await projectStatus(ctx);
+      expect(project.wiringProblems).toEqual(problems);
+      // No adapter reports two such files today; the advice joins them in order.
+      expect(enableAdvice("claude-code", [MCP_CONFIG, CLAUDE_SETTINGS])).toBe(
+        ` — fix ${MCP_CONFIG} and ${CLAUDE_SETTINGS}, then run \`mdmem enable claude-code\``
+      );
+    });
+  });
+
+  test("an unreadable local settings file, which enable does not read, leaves the other problems' enable advice as it is", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      const settings = join(root, CLAUDE_SETTINGS);
+      const claude = JSON.parse(await readFile(settings, "utf-8")) as {
+        hooks: { SessionStart: unknown[] };
+      };
+      claude.hooks.SessionStart = claude.hooks.SessionStart.slice(1);
+      await writeFile(settings, JSON.stringify(claude), "utf-8");
+      await writeFile(join(root, ".claude/settings.local.json"), "[]", "utf-8");
+      const status = await claudeCodeAdapter.status(ctx);
+      expect(status.problems).toEqual([
+        "Claude Code: .claude/settings.local.json does not hold a JSON object: fix it, then run the check again",
+        'Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (.claude/settings.json), so its sessions start without what that hook injects — run `mdmem enable claude-code`',
       ]);
     });
   });
