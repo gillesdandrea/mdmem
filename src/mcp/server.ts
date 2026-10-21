@@ -6,6 +6,7 @@ import type {
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 
+import packageJson from "../../package.json" with { type: "json" };
 import { CODEX_HOME_ENV } from "../adapters/codex.ts";
 import { adapterIds, getAdapter, unknownAgent } from "../adapters/index.ts";
 import { adapterContext, checkProject } from "../adapters/report.ts";
@@ -204,7 +205,7 @@ function unknownEnv(client: string | undefined): string[] {
 }
 
 export async function startMcpServer(): Promise<void> {
-  const server = new McpServer({ name: "mdmem", version: "0.1.0" });
+  const server = new McpServer({ name: "mdmem", version: packageJson.version });
 
   server.registerTool(
     "memory_list",
