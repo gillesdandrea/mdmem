@@ -1,20 +1,55 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
-import { parseFact, serializeFact } from "../src/core/fact.ts";
-import type { Fact } from "../src/core/fact.ts";
-import { reindex, renderIndex } from "../src/core/index.ts";
-import { saveFact } from "../src/core/operations.ts";
 import {
-  findProjectRoot,
-  findStoreRoot,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
+import {
+  checkStore,
+  checkSummary,
+  formatCheck,
+  reindex,
+} from "../src/core/check.ts";
+import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
+import {
+  claudeProjectDir,
+  claudeProjectKey,
+  formatImport,
+  importClaudeMemories,
+} from "../src/core/import.ts";
+import type { ImportOptions } from "../src/core/import.ts";
+import { parseMemory, serializeMemory } from "../src/core/memory.ts";
+import type { Memory, MemoryType } from "../src/core/memory.ts";
+import type { MemoryInput } from "../src/core/operations.ts";
+import {
+  deleteDocument,
+  removeMemory,
+  saveMemory,
+  searchMemories,
+  writeDocument,
+} from "../src/core/operations.ts";
+import {
+  getConsolidatePrompt,
+  getMemoryProtocol,
+} from "../src/core/protocol.ts";
+import { RefusalError } from "../src/core/refusal.ts";
+import { findSecrets } from "../src/core/secrets.ts";
+import {
+  locateStore,
   MemoryStore,
   VersionConflictError,
 } from "../src/core/store.ts";
+import { git, gitRepo } from "./git-fixture.ts";
 
-const sampleFact: Fact = {
+const sampleMemory: Memory = {
   frontmatter: {
     name: "prefers-bun",
     description: "Uses bun, not node, for this project",
@@ -23,16 +58,21 @@ const sampleFact: Fact = {
   body: "Use bun for scripts and tests.\n\n**Why:** the project standardized on it. [[ts7-strict]]",
 };
 
-describe("fact", () => {
+/** The frontmatter `parseMemory` reads from a file holding `frontmatter` and a body. */
+function parsedFrontmatter(frontmatter: string) {
+  return parseMemory(`---\n${frontmatter}\n---\nbody`).frontmatter;
+}
+
+describe("memory", () => {
   test("round-trips through serialize/parse", () => {
-    const parsed = parseFact(serializeFact(sampleFact));
-    expect(parsed).toEqual(sampleFact);
+    const parsed = parseMemory(serializeMemory(sampleMemory));
+    expect(parsed).toEqual(sampleMemory);
   });
 
-  test("saveFact writes frontmatter in semantic order — name, description, then type", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "memcli-"));
+  test("saveMemory writes frontmatter in semantic order — name, description, then type", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdmem-"));
     const store = new MemoryStore(dir);
-    await saveFact(store, {
+    await saveMemory(store, {
       name: "prefers-bun",
       description: "Uses bun",
       type: "feedback",
@@ -45,17 +85,54 @@ describe("fact", () => {
   });
 
   test("rejects a file with no frontmatter", () => {
-    expect(() => parseFact("just a body")).toThrow(/frontmatter/u);
+    expect(() => parseMemory("just a body")).toThrow(/frontmatter/u);
   });
 
-  test("rejects a non-kebab-case name — the filename derives from it", () => {
-    const bad = serializeFact(sampleFact).replace("prefers-bun", "Prefers Bun");
-    expect(() => parseFact(bad)).toThrow();
+  test("parses a memory as loosely as Claude Code writes one", () => {
+    expect(
+      parsedFrontmatter("name: prefers_bun\ndescription: d\ntype: user")
+    ).toEqual({
+      name: "prefers_bun",
+      description: "d",
+      type: "user",
+    });
+    expect(
+      parsedFrontmatter(
+        "name: Prefers Bun, always\ndescription: d\nmetadata:\n  type: user"
+      ).name
+    ).toBe("Prefers Bun, always");
+    const both = parsedFrontmatter(
+      "name: n\ndescription: d\ntype: user\nmetadata:\n  type: project"
+    );
+    expect(
+      parsedFrontmatter("name: n\ndescription: d\ntype: user\nmetadata:")
+    ).toEqual({ name: "n", description: "d", type: "user", metadata: null });
+    expect(both).toMatchObject({ type: "user", metadata: { type: "project" } });
+    expect(
+      parsedFrontmatter(
+        "name: n\ndescription: d\nmodified: 2026-10-01\noriginSessionId: abc\nmetadata:\n  type: user\n  node_type: memory"
+      )
+    ).toEqual({
+      name: "n",
+      description: "d",
+      modified: "2026-10-01",
+      originSessionId: "abc",
+      metadata: { type: "user", node_type: "memory" },
+    });
   });
 
-  test("rejects an unknown memory type — types drive the index sections", () => {
-    const bad = serializeFact(sampleFact).replace("feedback", "gossip");
-    expect(() => parseFact(bad)).toThrow();
+  test("rejects a memory with no type or an empty name", () => {
+    expect(() =>
+      parseMemory("---\nname: n\ndescription: d\n---\nbody")
+    ).toThrow("a memory type is required");
+    expect(() =>
+      parseMemory('---\nname: ""\ndescription: d\ntype: user\n---\nbody')
+    ).toThrow(/^name:/u);
+  });
+
+  test("rejects an unknown memory type", () => {
+    const bad = serializeMemory(sampleMemory).replace("feedback", "gossip");
+    expect(() => parseMemory(bad)).toThrow();
   });
 });
 
@@ -64,7 +141,7 @@ describe("MemoryStore", () => {
   let store: MemoryStore;
 
   beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "memcli-"));
+    dir = await mkdtemp(join(tmpdir(), "mdmem-"));
     store = new MemoryStore(dir);
   });
   afterEach(async () => {
@@ -74,13 +151,6 @@ describe("MemoryStore", () => {
   test("create then view returns the content", async () => {
     await store.create("a.md", "hello");
     expect(await store.view("a.md")).toBe("hello");
-  });
-
-  test("strReplace refuses a non-unique match, so edits can't hit the wrong line", async () => {
-    await store.create("a.md", "x\nx\n");
-    await expect(store.strReplace("a.md", "x", "y")).rejects.toThrow(
-      /not unique/u
-    );
   });
 
   test("ifVersion guard rejects a stale write — protects concurrent writers", async () => {
@@ -97,80 +167,1084 @@ describe("MemoryStore", () => {
   test("refuses to escape the store root", async () => {
     await expect(store.view("../secret")).rejects.toThrow(/escapes/u);
   });
+});
 
-  test("listFacts excludes the generated index", async () => {
-    await store.create("one.md", "1");
-    await store.create("MEMORY.md", "index");
-    expect(await store.listFacts()).toEqual(["one.md"]);
+/** A store whose next write to `path` is preceded by another writer's write of `rival`. */
+class RacedStore extends MemoryStore {
+  private readonly path: string;
+  private readonly rival: string;
+  private raced = false;
+
+  constructor(root: string, path: string, rival: string) {
+    super(root);
+    this.path = path;
+    this.rival = rival;
+  }
+
+  override async create(
+    path: string,
+    content: string,
+    ifVersion?: string
+  ): Promise<void> {
+    if (path === this.path && !this.raced) {
+      this.raced = true;
+      await super.create(path, this.rival);
+    }
+    await super.create(path, content, ifVersion);
+  }
+}
+
+/** A memory file's content: `name` with `description`, `type` and `body`. */
+function memoryText(
+  name: string,
+  {
+    description = `About ${name}`,
+    type = "project",
+    body = "b",
+  }: { description?: string; type?: MemoryType; body?: string } = {}
+): string {
+  return serializeMemory({
+    frontmatter: { name, description, metadata: { type } },
+    body,
+  });
+}
+
+const noteInput: MemoryInput = {
+  name: "note",
+  description: "A note",
+  type: "project",
+  body: "first",
+};
+
+describe("memory operations", () => {
+  let dir: string;
+  let store: MemoryStore;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "mdmem-"));
+    store = new MemoryStore(dir);
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("saveMemory refuses a name that already exists", async () => {
+    await saveMemory(store, noteInput);
+    await expect(
+      saveMemory(store, { ...noteInput, body: "second" })
+    ).rejects.toBeInstanceOf(VersionConflictError);
+    expect(await store.view("note.md")).toContain("first");
+  });
+
+  test("saveMemory with force overwrites an existing memory", async () => {
+    await saveMemory(store, noteInput);
+    await saveMemory(store, { ...noteInput, body: "second" }, { force: true });
+    expect(await store.view("note.md")).toContain("second");
+  });
+
+  test("saveMemory with force refuses a memory that changed between its read and its write", async () => {
+    await saveMemory(store, noteInput);
+    const raced = new RacedStore(dir, "note.md", "another writer's note");
+    await expect(
+      saveMemory(raced, { ...noteInput, body: "second" }, { force: true })
+    ).rejects.toBeInstanceOf(VersionConflictError);
+    expect(await store.view("note.md")).toBe("another writer's note");
+  });
+
+  test("removeMemory of a missing memory returns null", async () => {
+    expect(await removeMemory(store, "missing")).toBeNull();
+  });
+
+  test("deleteDocument refuses a nested path, leaving the file in place", async () => {
+    await mkdir(join(dir, "notes"));
+    await writeFile(join(dir, "notes/draft.md"), "hi\n");
+    await expect(
+      deleteDocument(
+        store,
+        "notes/draft.md",
+        await store.version("notes/draft.md")
+      )
+    ).rejects.toThrow(
+      'Refused "notes/draft.md": memories live at the top of the store, and nested files are never indexed or searched; use a path with no directory'
+    );
+    expect(await readFile(join(dir, "notes/draft.md"), "utf-8")).toBe("hi\n");
+  });
+
+  test("deleteDocument refuses a path holding a backslash as nested, leaving the file in place", async () => {
+    // a legal top-level file name on POSIX, still refused as a write would refuse it
+    await writeFile(join(dir, "notes\\draft.md"), "hi\n");
+    await expect(
+      deleteDocument(
+        store,
+        "notes\\draft.md",
+        await store.version("notes\\draft.md")
+      )
+    ).rejects.toThrow(
+      /^Refused "notes\\draft\.md": memories live at the top of the store/u
+    );
+    expect(await readFile(join(dir, "notes\\draft.md"), "utf-8")).toBe("hi\n");
+  });
+
+  test("removeMemory refuses a nested name before reading, so the file stays and a missing index stays missing", async () => {
+    await mkdir(join(dir, "notes"));
+    await writeFile(join(dir, "notes/draft.md"), "hi\n");
+    await expect(removeMemory(store, "notes/draft")).rejects.toThrow(
+      /^Refused "notes\/draft\.md": memories live at the top of the store/u
+    );
+    expect(await readFile(join(dir, "notes/draft.md"), "utf-8")).toBe("hi\n");
+    expect(store.exists("MEMORY.md")).toBe(false);
+  });
+
+  test("writeDocument accepts a snake_case name equal to its file, stored byte for byte with its extra fields", async () => {
+    const content =
+      "---\nname: uses_bun\ndescription: Uses bun\nmodified: 2026-10-01\nmetadata:\n  type: feedback\n  node_type: memory\n---\n\nUse bun.\n";
+    await writeDocument(store, "uses_bun.md", content, "new");
+    expect(await store.view("uses_bun.md")).toBe(content);
+  });
+
+  test("writeDocument refuses a name that differs from its file, naming the expected name", async () => {
+    const content = memoryText("Uses bun, always");
+    await expect(
+      writeDocument(store, "uses_bun.md", content, "new")
+    ).rejects.toThrow(
+      'Refused "uses_bun.md": its name is "Uses bun, always", but a memory\'s name must equal its file name without .md ("uses_bun")'
+    );
+    expect(store.exists("uses_bun.md")).toBe(false);
+  });
+
+  test("writeDocument refuses a file name in neither kebab-case nor snake_case, before comparing the name", async () => {
+    await expect(
+      writeDocument(store, "My Note.md", memoryText("My Note"), "new")
+    ).rejects.toThrow(
+      'Refused "My Note.md": mdmem writes only memories named in kebab-case or snake_case (lowercase letters and digits, words joined by - or _), and "My Note" is neither'
+    );
+    await expect(
+      writeDocument(store, "Foo.md", memoryText("foo"), "new")
+    ).rejects.toThrow(/"Foo" is neither$/u);
+  });
+
+  // Regression test for mdmem-beh.12: memory.md opens MEMORY.md on a case-insensitive filesystem.
+  test("a memory named memory is refused by save and remove, on every filesystem", async () => {
+    await saveMemory(store, noteInput);
+    // With the index gone, a read before the refusal would regenerate it.
+    await rm(join(store.root, "MEMORY.md"));
+    const named = { ...noteInput, name: "memory" };
+    const indexRefusal = /^Refused "memory\.md": that is the index's path/u;
+    await expect(saveMemory(store, named)).rejects.toThrow(indexRefusal);
+    await expect(saveMemory(store, named, { force: true })).rejects.toThrow(
+      indexRefusal
+    );
+    await expect(removeMemory(store, "memory")).rejects.toThrow(indexRefusal);
+    expect(store.exists("MEMORY.md")).toBe(false);
+    expect(await store.listFiles()).toEqual(["note.md"]);
   });
 });
+
+/** Write `count` project memories named m-0, m-1, … with `description`. */
+async function seedMemories(
+  store: MemoryStore,
+  count: number,
+  description = "d"
+): Promise<void> {
+  await Promise.all(
+    Array.from({ length: count }, (_, i) =>
+      store.create(`m-${i}.md`, memoryText(`m-${i}`, { description }))
+    )
+  );
+}
+
+/** The problems a Check of `store` finds. */
+async function problemsOf(store: MemoryStore): Promise<string[]> {
+  const { problems } = await checkStore(store);
+  return problems;
+}
+
+/** An index as Claude Code writes one: a title, sections, titled pointers, prose. */
+const CLAUDE_INDEX = [
+  "# Project memory",
+  "",
+  "## How we work",
+  "- [Bun, not node](prefers-bun.md) — run everything with bun",
+  "",
+  "Prose that is not a pointer, linking [a doc](docs/guide.md).",
+  "",
+].join("\n");
+
+const BROKEN_MEMORY_PROBLEM =
+  "broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`";
 
 describe("index", () => {
-  test("renderIndex groups by type in fixed order and omits the index file", () => {
-    const out = renderIndex([
-      {
-        file: "z-fact.md",
-        frontmatter: {
-          name: "z-fact",
-          description: "z",
-          metadata: { type: "reference" },
-        },
-      },
-      {
-        file: "a-fact.md",
-        frontmatter: {
-          name: "a-fact",
-          description: "a",
-          metadata: { type: "user" },
-        },
-      },
-    ]);
-    expect(out).toContain("## User");
-    expect(out).toContain("## Reference");
-    // user section precedes reference section
-    expect(out.indexOf("## User")).toBeLessThan(out.indexOf("## Reference"));
-    expect(out).toContain("- [a-fact](a-fact.md) — a");
-  });
+  let dir: string;
+  let store: MemoryStore;
 
-  test("empty store renders a placeholder, not an empty file", () => {
-    expect(renderIndex([])).toContain("_No memories yet._");
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "mdmem-"));
+    store = new MemoryStore(dir);
   });
-
-  test("reindex names a broken fact and its problem in one line", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "memcli-"));
-    const store = new MemoryStore(dir);
-    const bad = serializeFact(sampleFact).replace("prefers-bun", "Prefers Bun");
-    await store.create("prefers-bun.md", bad);
-    await expect(reindex(store)).rejects.toThrow(
-      /^prefers-bun\.md: unparseable — name: name must be kebab-case/u
-    );
+  afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  test("reindex writes MEMORY.md derived from fact frontmatter", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "memcli-"));
-    const store = new MemoryStore(dir);
-    await store.create("prefers-bun.md", serializeFact(sampleFact));
+  test("an empty store's index is empty", async () => {
+    await reindex(store);
+    expect(await store.view("MEMORY.md")).toBe("");
+  });
+
+  test("a write keeps a Claude-style index as it is, appending the new memory's pointer", async () => {
+    await store.create("prefers-bun.md", serializeMemory(sampleMemory));
+    await store.create("MEMORY.md", CLAUDE_INDEX);
+    await saveMemory(store, noteInput);
+    expect(await store.view("MEMORY.md")).toBe(
+      `${CLAUDE_INDEX}- [note](note.md) — A note\n`
+    );
+  });
+
+  test("saving a memory rewrites its pointer's description only when the description changed", async () => {
+    await store.create("prefers-bun.md", serializeMemory(sampleMemory));
+    await store.create("MEMORY.md", CLAUDE_INDEX);
+    const { version } = await writeDocument(
+      store,
+      "prefers-bun.md",
+      serializeMemory({ ...sampleMemory, body: "Use bun, always." }),
+      await store.version("prefers-bun.md")
+    );
+    expect(await store.view("MEMORY.md")).toBe(CLAUDE_INDEX);
+
+    await writeDocument(
+      store,
+      "prefers-bun.md",
+      serializeMemory({
+        ...sampleMemory,
+        frontmatter: { ...sampleMemory.frontmatter, description: "Bun only" },
+      }),
+      version
+    );
+    expect(await store.view("MEMORY.md")).toBe(
+      CLAUDE_INDEX.replace("— run everything with bun", "— Bun only")
+    );
+  });
+
+  test("saving a memory whose pointer has no description appends one", async () => {
+    await store.create("note.md", memoryText("note"));
+    await store.create("MEMORY.md", "- [My note](note.md)\n");
+    await saveMemory(store, noteInput, { force: true });
+    expect(await store.view("MEMORY.md")).toBe(
+      "- [My note](note.md) — A note\n"
+    );
+  });
+
+  test("reindex refreshes the description of a pointer in mdmem's form after a direct edit, and leaves another title's or one without the separator", async () => {
+    const hand = "- [hand](hand.md) - Written by hand\n";
+    await store.create("note.md", memoryText("note"));
+    await store.create("hand.md", memoryText("hand"));
+    await store.create("prefers-bun.md", serializeMemory(sampleMemory));
+    await store.create(
+      "MEMORY.md",
+      `- [note](note.md) — About note\n- [Bun, not node](prefers-bun.md) — run everything with bun\n${hand}`
+    );
+    await store.create(
+      "note.md",
+      memoryText("note", { description: "Edited by hand" })
+    );
+    await store.create(
+      "prefers-bun.md",
+      serializeMemory({
+        ...sampleMemory,
+        frontmatter: { ...sampleMemory.frontmatter, description: "Bun only" },
+      })
+    );
+    await reindex(store);
+    expect(await store.view("MEMORY.md")).toBe(
+      `- [note](note.md) — Edited by hand\n- [Bun, not node](prefers-bun.md) — run everything with bun\n${hand}`
+    );
+    const problems = await problemsOf(store);
+    expect(
+      problems.filter((problem) => problem.startsWith("MEMORY.md"))
+    ).toEqual([]);
+  });
+
+  test("saving a memory refreshes another memory's pointer in mdmem's form", async () => {
+    await store.create("other.md", memoryText("other"));
+    await store.create("MEMORY.md", "- [other](other.md) — old\n");
+    await saveMemory(store, noteInput);
+    expect(await store.view("MEMORY.md")).toBe(
+      "- [other](other.md) — About other\n- [note](note.md) — A note\n"
+    );
+  });
+
+  test("reindex drops duplicate and dangling pointers, and a delete drops the memory's pointer", async () => {
+    await store.create("note.md", memoryText("note"));
+    await store.create(
+      "MEMORY.md",
+      "# Index\n- [Note](note.md) — first\n- [gone](gone.md) — gone\n- [Note again](note.md) — second\n1. [Numbered](./note.md) — third\n"
+    );
+    await reindex(store);
+    expect(await store.view("MEMORY.md")).toBe(
+      "# Index\n- [Note](note.md) — first\n"
+    );
+    await removeMemory(store, "note");
+    expect(await store.view("MEMORY.md")).toBe("# Index\n");
+  });
+
+  test("reindex recognizes the pointers it writes, whatever the name and file name hold", async () => {
+    await store.create("bracket.md", memoryText("[WIP] thing\\ \nnext"));
+    await store.create("My Note.md", memoryText("My Note"));
+    await store.create("paren(x).md", memoryText("paren(x)"));
     await reindex(store);
     const index = await store.view("MEMORY.md");
-    expect(index).toContain("## Feedback");
-    expect(index).toContain("[prefers-bun](prefers-bun.md)");
-    // the index never lists itself
-    expect(index).not.toContain("[MEMORY]");
-    await rm(dir, { recursive: true, force: true });
+    expect(index).toBe(
+      [
+        "- [My Note](<My Note.md>) — About My Note",
+        "- [\\[WIP\\] thing\\\\ next](bracket.md) — About [WIP] thing\\ next",
+        "- [paren(x)](<paren(x).md>) — About paren(x)",
+        "",
+      ].join("\n")
+    );
+    await reindex(store);
+    expect(await store.view("MEMORY.md")).toBe(index);
+    const problems = await problemsOf(store);
+    expect(problems.filter((problem) => problem.includes("is stale"))).toEqual(
+      []
+    );
+  });
+
+  test("reindex keeps an index's CRLF line endings", async () => {
+    await seedMemories(store, 2);
+    await store.create("MEMORY.md", "# T\r\n- [M](m-0.md)\r\n");
+    await saveMemory(
+      store,
+      { name: "m-0", description: "new", type: "project", body: "b" },
+      { force: true }
+    );
+    expect(await store.view("MEMORY.md")).toBe(
+      "# T\r\n- [M](m-0.md) — new\r\n- [m-1](m-1.md) — d\r\n"
+    );
+  });
+
+  test("reindex keeps an unparseable memory's pointer, gives none to one without, and warns of both", async () => {
+    await store.create("broken.md", "no frontmatter");
+    await store.create("z-broken.md", "no frontmatter either");
+    await store.create("MEMORY.md", "- [Broken](broken.md) — kept\n");
+    expect(await reindex(store)).toEqual([
+      `${BROKEN_MEMORY_PROBLEM} (it keeps its pointer in MEMORY.md)`,
+      "z-broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (it has no pointer in MEMORY.md until it parses)",
+    ]);
+    expect(await store.view("MEMORY.md")).toBe(
+      "- [Broken](broken.md) — kept\n"
+    );
+  });
+
+  test("a memory file whose name holds a line break gets no pointer and a warning, so the index stays as it is, and is still scanned for secrets", async () => {
+    await writeFile(
+      join(store.root, "a\nb.md"),
+      memoryText("ab", { body: `Key: AKIA${"A".repeat(16)}` }),
+      "utf-8"
+    );
+    const warning =
+      '"a\\nb.md": its file name holds a line break, so mdmem skips it and it has no pointer in MEMORY.md — rename it';
+    expect(await reindex(store)).toEqual([warning]);
+    expect(await reindex(store)).toEqual([warning]);
+    // The bug was a save adding the file's pointer again on every write.
+    const input: MemoryInput = {
+      name: "c",
+      description: "d",
+      type: "project",
+      body: "b",
+    };
+    await saveMemory(store, input);
+    const index = await store.view("MEMORY.md");
+    await saveMemory(store, input, { force: true });
+    expect(await store.view("MEMORY.md")).toBe(index);
+    expect(index).toBe("- [c](c.md) — d\n");
+    expect(await problemsOf(store)).toEqual([
+      '"a\\nb.md": looks like it holds a secret at line 8 (AWS access key)',
+      warning,
+    ]);
+  });
+
+  test("a write that brings the index near its limit warns, naming its size and the limit", async () => {
+    // 60 pointers of about 147 characters, about 8,860 with their newlines: past 90% of 9,500.
+    await seedMemories(store, 59, "x".repeat(127));
+    const result = await saveMemory(store, {
+      name: "m-59",
+      description: "x".repeat(126),
+      type: "project",
+      body: "b",
+    });
+    expect(result.warnings).toEqual([
+      expect.stringMatching(
+        /^MEMORY\.md is at [\d,]+ characters, near its 9,500-character limit, the size a session-start hook can inject: past it, a session-start hook cannot inject all of it\. Shorten descriptions, or merge or delete memories\.$/u
+      ),
+    ]);
+  });
+
+  test("search answers from the memories that parse and warns of a broken one", async () => {
+    await store.create("broken.md", "no frontmatter about bun");
+    await store.create(
+      "uses-bun.md",
+      memoryText("uses-bun", { body: "Use bun." })
+    );
+    await store.create(
+      "uses-ts.md",
+      memoryText("uses-ts", { body: "Use TS." })
+    );
+    expect(await searchMemories(store, "BUN")).toEqual({
+      hits: [{ file: "uses-bun.md", description: "About uses-bun" }],
+      warnings: [BROKEN_MEMORY_PROBLEM],
+    });
   });
 });
 
-describe("location", () => {
-  test("findStoreRoot walks up to an existing .memory, else null", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "memcli-"));
-    expect(findStoreRoot(dir)).toBeNull();
-    const store = new MemoryStore(join(dir, ".memory"));
-    await store.create("x.md", "x");
-    const nested = join(dir, "a", "b");
-    expect(findStoreRoot(nested)).toBe(join(dir, ".memory"));
-    // mkdtemp dir has no marker -> itself
-    expect(findProjectRoot(dir)).toBe(dir);
+const FAKE_AWS_KEY = `AKIA${"A".repeat(16)}`;
+
+describe("check", () => {
+  let dir: string;
+  let store: MemoryStore;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "mdmem-"));
+    store = new MemoryStore(dir);
+  });
+  afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
+  });
+
+  test("a clean store has no problems, and its check says how many memories it holds", async () => {
+    await seedMemories(store, 2);
+    await reindex(store);
+    const check = await checkStore(store);
+    expect(check).toEqual({
+      memoryCount: 2,
+      problems: [],
+      notes: [],
+      unparseable: 0,
+      staleIndex: false,
+      indexOverLimit: false,
+    });
+    expect(formatCheck(check)).toBe("✓ 2 memories, no problems");
+    expect(checkSummary(check)).toBe("✓ no problems");
+  });
+
+  test("reports an unparseable memory", async () => {
+    await seedMemories(store, 1);
+    await reindex(store);
+    await store.create("broken.md", "no frontmatter");
+    const check = await checkStore(store);
+    expect(check).toEqual({
+      memoryCount: 2,
+      problems: [BROKEN_MEMORY_PROBLEM],
+      notes: [],
+      unparseable: 1,
+      staleIndex: false,
+      indexOverLimit: false,
+    });
+    expect(formatCheck(check)).toBe(
+      `Found 1 problem(s):\n  - ${BROKEN_MEMORY_PROBLEM}`
+    );
+    expect(checkSummary(check)).toBe(
+      "1 problem(s), among them 1 unparseable memory — `mdmem doctor` lists them"
+    );
+  });
+
+  test("reports a memory whose name differs from its file name", async () => {
+    await store.create("note.md", memoryText("other-note"));
+    await reindex(store);
+    expect(await problemsOf(store)).toEqual([
+      'note.md: name "other-note" ≠ filename',
+    ]);
+  });
+
+  test("reports a memory whose two types differ", async () => {
+    await store.create(
+      "note.md",
+      "---\nname: note\ndescription: d\ntype: user\nmetadata:\n  type: project\n---\nb\n"
+    );
+    await reindex(store);
+    expect(await problemsOf(store)).toEqual([
+      'note.md: metadata.type "project" ≠ type "user" — metadata.type wins; remove one',
+    ]);
+  });
+
+  test("reports a memory that holds a secret, by line and kind, never the secret", async () => {
+    await store.create(
+      "aws.md",
+      memoryText("aws", { body: `Key: ${FAKE_AWS_KEY}` })
+    );
+    await reindex(store);
+    expect(await problemsOf(store)).toEqual([
+      "aws.md: looks like it holds a secret at line 8 (AWS access key)",
+    ]);
+  });
+
+  test("reports a pointer over 150 characters, naming its memory", async () => {
+    await seedMemories(store, 1, "x".repeat(140));
+    await reindex(store);
+    expect(await problemsOf(store)).toEqual([
+      "m-0.md: its pointer is 158 characters, over 150 — shorten its description",
+    ]);
+  });
+
+  test("notes a link that matches neither a memory's name nor a file name as a memory not written yet, not a problem", async () => {
+    await store.create("free.md", memoryText("Free-text name"));
+    await store.create(
+      "note.md",
+      memoryText("note", {
+        body: "See [[free]] and [[gone_too]], then [[gone_too]] again.",
+      })
+    );
+    await reindex(store);
+    const check = await checkStore(store);
+    expect(check.problems).toEqual([
+      'free.md: name "Free-text name" ≠ filename',
+    ]);
+    expect(check.notes).toEqual([
+      "note.md links [[gone_too]], not written yet",
+    ]);
+    expect(formatCheck(check)).toBe(
+      'Found 1 problem(s):\n  - free.md: name "Free-text name" ≠ filename\nnote: note.md links [[gone_too]], not written yet'
+    );
+    expect(checkSummary(check)).toBe(
+      "1 problem(s), plus 1 note — `mdmem doctor` lists them"
+    );
+    await store.remove("free.md");
+    await reindex(store);
+    const notesOnly = await checkStore(store);
+    expect(formatCheck(notesOnly)).toBe(
+      "✓ 1 memory, no problems\nnote: note.md links [[free]], not written yet\nnote: note.md links [[gone_too]], not written yet"
+    );
+    expect(checkSummary(notesOnly)).toBe(
+      "✓ no problems, 2 notes — `mdmem doctor` lists them"
+    );
+  });
+
+  test("reports a memory without a pointer, a pointer to a missing file and a duplicate pointer", async () => {
+    await seedMemories(store, 2);
+    await store.create(
+      "MEMORY.md",
+      "- [m-0](m-0.md) — d\n- [gone](gone.md) — d\n- [again](m-0.md) — d\n"
+    );
+    expect(await problemsOf(store)).toEqual([
+      "MEMORY.md is stale: no pointer to m-1.md — run `mdmem reindex`",
+      "MEMORY.md is stale: a pointer to gone.md, which does not exist — run `mdmem reindex`",
+      "MEMORY.md is stale: more than one pointer to m-0.md — run `mdmem reindex`",
+    ]);
+    expect(checkSummary(await checkStore(store))).toBe(
+      "3 problem(s), among them a stale MEMORY.md — `mdmem doctor` lists them"
+    );
+    await reindex(store);
+    expect(await problemsOf(store)).toEqual([]);
+  });
+
+  test("reports a pointer titled with its memory's name whose description differs from the memory's, until reindex", async () => {
+    await seedMemories(store, 1);
+    await store.create("MEMORY.md", "- [m-0](m-0.md) — old\n");
+    expect(await problemsOf(store)).toEqual([
+      "MEMORY.md is stale: the pointer to m-0.md holds a description other than the memory's — run `mdmem reindex`",
+    ]);
+    await reindex(store);
+    expect(await problemsOf(store)).toEqual([]);
+  });
+
+  test("reports an index over 9,500 characters, and none just under", async () => {
+    await seedMemories(store, 1);
+    await reindex(store);
+    const index = await store.view("MEMORY.md");
+    const prose = (chars: number) =>
+      `${"p".repeat(chars - [...index].length - 1)}\n`;
+    await store.create("MEMORY.md", `${index}${prose(9500)}`);
+    expect(await problemsOf(store)).toEqual([]);
+    await store.create("MEMORY.md", `${index}${prose(9501)}`);
+    const check = await checkStore(store);
+    expect(checkSummary(check)).toBe(
+      "1 problem(s), among them MEMORY.md over its 9,500-character limit — `mdmem doctor` lists them"
+    );
+    expect(check.problems).toEqual([
+      "MEMORY.md is at 9,501 characters, over its 9,500-character limit, the size a session-start hook can inject: a session-start hook cannot inject all of it. Shorten descriptions, or merge or delete memories.",
+    ]);
+  });
+});
+
+describe("templates", () => {
+  test("the memory protocol renders every placeholder and stays under one hook entry's cap", () => {
+    const protocol = getMemoryProtocol();
+    expect(protocol).not.toContain("{{");
+    expect(protocol).toContain("9,500 characters");
+    expect([...protocol].length).toBeLessThan(HOOK_CONTEXT_MAX_CHARS);
+  });
+
+  test("the consolidation prompt renders with no leftover placeholder", () => {
+    const prompt = getConsolidatePrompt("/project/.memory");
+    expect(prompt).not.toContain("{{");
+    expect(prompt).toContain("Memory store: `/project/.memory`");
+  });
+});
+
+describe("secrets", () => {
+  test("finds a secret assigned to a prefixed, env-style key", () => {
+    const text = [
+      ["DB_PASSWORD=", "hunter2", "hunter2"].join(""),
+      ["GITHUB_TOKEN=", "abcdef", "123456"].join(""),
+      ["AWS_SECRET_ACCESS_KEY=", "wJalrXUtnFEMI", "K7MDENG"].join(""),
+    ].join("\n");
+    expect(findSecrets(text)).toEqual([
+      { line: 1, kind: "secret in an assignment" },
+      { line: 2, kind: "secret in an assignment" },
+      { line: 3, kind: "secret in an assignment" },
+    ]);
+  });
+  test("leaves paths and hyphenated sk- words alone", () => {
+    const text = [
+      ["Run from repo root (pwd", ": /Users/me/dev)"].join(""),
+      "Use sk-learn-compatible-estimators everywhere",
+    ].join("\n");
+    expect(findSecrets(text)).toEqual([]);
+  });
+});
+
+/** Setting up nested submodules spawns many git processes; give it room past bun's 5s default. */
+const NESTED_SUBMODULE_TIMEOUT_MS = 20_000;
+
+describe("location", () => {
+  let tmp = "";
+  beforeEach(async () => {
+    tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-loc-")));
+  });
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  /** Make the directory `parts` under the temp dir and return its path. */
+  async function dir(...parts: string[]): Promise<string> {
+    const path = join(tmp, ...parts);
+    await mkdir(path, { recursive: true });
+    return path;
+  }
+
+  test("a checkout, its linked worktrees and subdirectories share the main checkout's store", async () => {
+    const repo = await dir("repo");
+    await gitRepo(repo);
+    git(repo, "worktree", "add", "-q", join(tmp, "wt"), "-b", "wt");
+    const deep = await dir("repo", "pkg", "deep");
+    // inside git, a .memory lower down is ignored
+    await dir("repo", "pkg", ".memory");
+
+    expect(locateStore(repo)).toEqual({
+      root: repo,
+      dir: join(repo, ".memory"),
+      exists: false,
+    });
+    await dir("repo", ".memory");
+    for (const start of [repo, join(tmp, "wt"), deep]) {
+      expect(locateStore(start)).toEqual({
+        root: repo,
+        dir: join(repo, ".memory"),
+        exists: true,
+      });
+    }
+  });
+
+  test(
+    "a submodule, nested or not, uses its outermost superproject's store",
+    async () => {
+      const inner = await dir("inner");
+      await gitRepo(inner);
+      const child = await dir("child");
+      await gitRepo(child);
+      git(child, "submodule", "-q", "add", inner, "inner");
+      git(child, "commit", "-q", "-m", "add inner");
+      const repo = await dir("repo");
+      await gitRepo(repo);
+      git(repo, "submodule", "-q", "add", child, "mod");
+      git(repo, "submodule", "-q", "update", "--init", "--recursive");
+      const inMod = await dir("repo", "mod", "src");
+
+      for (const start of [
+        join(repo, "mod"),
+        inMod,
+        join(repo, "mod", "inner"),
+      ]) {
+        expect(locateStore(start).root).toBe(repo);
+      }
+    },
+    NESTED_SUBMODULE_TIMEOUT_MS
+  );
+
+  test("a bare repository at <dir>/.git keys <dir>, a bare x.git keys itself", async () => {
+    const repo = await dir("repo");
+    await gitRepo(repo);
+    const outer = await dir("outer");
+    git(tmp, "clone", "-q", "--bare", repo, join(outer, ".git"));
+    git(
+      join(outer, ".git"),
+      "worktree",
+      "add",
+      "-q",
+      join(outer, "w1"),
+      "main"
+    );
+    git(tmp, "clone", "-q", "--bare", repo, join(tmp, "x.git"));
+
+    expect(locateStore(join(outer, "w1")).root).toBe(outer);
+    expect(locateStore(outer).root).toBe(outer);
+    expect(locateStore(join(tmp, "x.git")).root).toBe(join(tmp, "x.git"));
+  });
+
+  // The no-git tests stop the walk at the temp dir, so a stray .memory above it cannot leak in.
+  test("without git, the first .memory above, else the working directory", async () => {
+    const start = await dir("proj", "a", "b");
+    expect(locateStore(start, tmp)).toEqual({
+      root: start,
+      dir: join(start, ".memory"),
+      exists: false,
+    });
+    await dir("proj", ".memory");
+    expect(locateStore(start, tmp)).toEqual({
+      root: join(tmp, "proj"),
+      dir: join(tmp, "proj", ".memory"),
+      exists: true,
+    });
+  });
+
+  test("without git, the walk stops before the home directory", async () => {
+    const home = await dir("home");
+    await dir("home", ".memory");
+    await dir(".memory");
+    const start = await dir("home", "a", "b");
+
+    expect(locateStore(start, home)).toEqual({
+      root: start,
+      dir: join(start, ".memory"),
+      exists: false,
+    });
+  });
+});
+
+// A recorded fixture: the keys Claude Code 2.1.302 gave these paths in a real
+// `claude -p` run, made where that run happened. The assertions are pure functions
+// of the strings, so no such directory is needed; the long keys' hashes depend on
+// the whole path, which is why the paths are kept as they were.
+const PROBE_DIR =
+  "/private/tmp/claude-501/-Users-gilles-dev-gillesdandrea-mdmem/d3ecf71b-9e90-4787-a0b7-1df9538cf0b6/scratchpad";
+const PROBE_KEY =
+  "-private-tmp-claude-501--Users-gilles-dev-gillesdandrea-mdmem-d3ecf71b-9e90-4787-a0b7-1df9538cf0b6-scratchpad";
+
+function claudeMemoryText(
+  name: string,
+  description: string,
+  extra = ""
+): string {
+  return `---\nname: ${name}\ndescription: ${description}\nmetadata:\n  type: project${extra}\n---\n\nBody of ${name}.\n`;
+}
+
+async function put(dir: string, file: string, content: string) {
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, file), content, "utf-8");
+}
+
+/** Every file directly in `dir`, by name, with its content. */
+async function snapshot(dir: string): Promise<Record<string, string>> {
+  const files = await readdir(dir);
+  const sorted = files.toSorted();
+  const contents = await Promise.all(
+    sorted.map((file) => readFile(join(dir, file), "utf-8"))
+  );
+  return Object.fromEntries(sorted.map((file, i) => [file, contents[i] ?? ""]));
+}
+
+describe("import from Claude Code", () => {
+  let tmp = "";
+  let repo = "";
+  let home = "";
+  let store: MemoryStore;
+  let options: ImportOptions;
+
+  beforeEach(async () => {
+    tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-import-")));
+    repo = join(tmp, "repo");
+    home = join(tmp, "home");
+    await mkdir(repo);
+    await gitRepo(repo);
+    store = new MemoryStore(join(repo, ".memory"));
+    await reindex(store);
+    options = { home, env: {} };
+  });
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  /** The Claude memory directory of `path`'s key under the temp home. */
+  function claudeDir(path = repo): string {
+    return join(home, ".claude", "projects", claudeProjectKey(path), "memory");
+  }
+
+  test("the key mirrors Claude Code's encoding, and the environment can override the directory and the key", () => {
+    expect(claudeProjectKey("/private/tmp/x/main")).toBe("-private-tmp-x-main");
+    expect(claudeProjectKey("/srv/repos/bare.git")).toBe("-srv-repos-bare-git");
+    expect(claudeProjectKey(`${PROBE_DIR}/key probe_a.b~c+d@e(f)#é`)).toBe(
+      `${PROBE_KEY}-key-probe-a-b-c-d-e-f---`
+    );
+    expect(claudeProjectKey(`${PROBE_DIR}/emo😀x`)).toBe(`${PROBE_KEY}-emo--x`);
+    // Over 200 characters: cut, then a hash, positive and negative before Math.abs.
+    expect(
+      claudeProjectKey(
+        `${PROBE_DIR}/longprobe/${"a".repeat(124)}/${"b".repeat(44)}`
+      )
+    ).toBe(`${PROBE_KEY}-longprobe-${"a".repeat(80)}-xi76tx`);
+    expect(claudeProjectKey(`${PROBE_DIR}/longneg0/${"c".repeat(150)}`)).toBe(
+      `${PROBE_KEY}-longneg0-${"c".repeat(81)}-tpx2ye`
+    );
+
+    expect(claudeProjectDir("/w/p", { home: "/h", env: {} })).toBe(
+      "/h/.claude/projects/-w-p"
+    );
+    expect(
+      claudeProjectDir("/w/p", {
+        home: "/h",
+        env: {
+          CLAUDE_CONFIG_DIR: "/cfg",
+          CLAUDE_CODE_PROJECT_DIR_NAME: "mine",
+        },
+      })
+    ).toBe("/cfg/projects/mine");
+  });
+
+  test("copies files found only in Claude's directory, as they are, and keeps identical ones once, ignoring Claude's modified stamp", async () => {
+    expect(await importClaudeMemories(store, options)).toMatchObject({
+      sources: [],
+      copied: [],
+    });
+
+    await store.create("shared.md", claudeMemoryText("shared", "Both have it"));
+    await put(
+      claudeDir(),
+      "shared.md",
+      claudeMemoryText(
+        "shared",
+        "Both have it",
+        "\n  modified: 2026-10-03T21:25:42.279Z"
+      )
+    );
+    const loose = claudeMemoryText("Loose Name", "Breaks the write rules");
+    await put(claudeDir(), "Loose Name.md", loose);
+
+    const result = await importClaudeMemories(store, options);
+
+    expect(result.copied).toEqual([
+      { file: "Loose Name.md", from: claudeDir() },
+    ]);
+    expect(result.collapsed).toEqual(["shared.md"]);
+    expect(result.merged).toBe(true);
+    expect(await store.view("Loose Name.md")).toBe(loose);
+    expect(await store.view("shared.md")).toBe(
+      claudeMemoryText("shared", "Both have it")
+    );
+  });
+
+  test("refuses on same-name files with different content, listing each, and changes nothing", async () => {
+    await store.create("a.md", claudeMemoryText("a", "Store's a"));
+    await store.create("b.md", claudeMemoryText("b", "Store's b"));
+    await reindex(store);
+    await put(claudeDir(), "a.md", claudeMemoryText("a", "Claude's a"));
+    // The same file on a filesystem that ignores case, so a conflict everywhere.
+    await put(claudeDir(), "B.md", claudeMemoryText("b", "Claude's b"));
+    await put(claudeDir(), "c.md", claudeMemoryText("c", "Claude's c"));
+    const before = await snapshot(store.root);
+
+    const refused = importClaudeMemories(store, options);
+
+    await expect(refused).rejects.toThrow(RefusalError);
+    await expect(refused).rejects.toThrow(
+      /a\.md: .* differs from .*; --prefer claude or --prefer mdmem settles it[\s\S]*b\.md: [\s\S]*Ways past it/u
+    );
+    // Claude's directories never change, so after an agent's merge only --prefer mdmem gets past the conflict.
+    await expect(refused).rejects.toThrow(
+      `have an agent merge Claude's versions into the store: run \`mdmem consolidate\` and point it at ${claudeDir()}; then run \`mdmem enable claude-code --prefer mdmem\` to keep the merged files`
+    );
+    expect(await snapshot(store.root)).toEqual(before);
+    expect(await readdir(dirname(claudeDir()))).toEqual(["memory"]);
+  });
+
+  test("--prefer mdmem keeps the store's file, --prefer claude takes Claude's and its description", async () => {
+    await store.create("a.md", claudeMemoryText("a", "Store's a"));
+    await store.create("MEMORY.md", "");
+    await put(claudeDir(), "a.md", claudeMemoryText("a", "Claude's a"));
+    await put(claudeDir(), "MEMORY.md", "- [A](a.md) — Claude's pointer\n");
+
+    const kept = await importClaudeMemories(store, {
+      ...options,
+      prefer: "mdmem",
+    });
+    expect(kept.kept).toEqual(["a.md"]);
+    expect(kept.backup).toBeUndefined();
+    expect(await store.view("a.md")).toBe(claudeMemoryText("a", "Store's a"));
+    // Claude's pointer describes Claude's version, so a kept file does not take it.
+    expect(await store.view("MEMORY.md")).toBe("");
+
+    const replaced = await importClaudeMemories(store, {
+      ...options,
+      prefer: "claude",
+    });
+    expect(replaced.replaced).toEqual([{ file: "a.md", from: claudeDir() }]);
+    expect(await store.view("a.md")).toBe(claudeMemoryText("a", "Claude's a"));
+    expect(await store.view("MEMORY.md")).toBe("- [A](a.md) — Claude's a\n");
+  });
+
+  test("folds in a worktree's own Claude key; two keys that disagree are refused unless --prefer mdmem keeps the store's file", async () => {
+    const worktree = join(tmp, "wt");
+    git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
+    await put(claudeDir(), "a.md", claudeMemoryText("a", "From the key"));
+    await put(
+      claudeDir(worktree),
+      "b.md",
+      claudeMemoryText("b", "From the worktree")
+    );
+
+    const result = await importClaudeMemories(store, options);
+
+    expect(result.sources).toEqual([claudeDir(), claudeDir(worktree)]);
+    expect(result.copied).toEqual([
+      { file: "a.md", from: claudeDir() },
+      { file: "b.md", from: claudeDir(worktree) },
+    ]);
+    expect(formatImport(result)).toContain(`    ${claudeDir(worktree)}`);
+
+    await put(claudeDir(), "c.md", claudeMemoryText("c", "One"));
+    await put(claudeDir(worktree), "c.md", claudeMemoryText("c", "Two"));
+    await expect(
+      importClaudeMemories(store, { ...options, prefer: "claude" })
+    ).rejects.toThrow(
+      /c\.md: Claude's directories hold different versions .*; no --prefer settles it until the store holds its own c\.md/u
+    );
+    expect(store.exists("c.md")).toBe(false);
+
+    // With the store holding the file too, only --prefer mdmem settles it.
+    await store.create("c.md", claudeMemoryText("c", "Store's"));
+    await expect(
+      importClaudeMemories(store, { ...options, prefer: "claude" })
+    ).rejects.toThrow(/c\.md: .*; only --prefer mdmem settles it/u);
+    const kept = await importClaudeMemories(store, {
+      ...options,
+      prefer: "mdmem",
+    });
+    expect(kept.kept).toEqual(["c.md"]);
+  });
+
+  test("honours CLAUDE_CONFIG_DIR and CLAUDE_CODE_PROJECT_DIR_NAME for the sources and the backup", async () => {
+    await store.create("mine.md", claudeMemoryText("mine", "Mine"));
+    const config = join(tmp, "config");
+    const named = join(config, "projects", "named", "memory");
+    await put(named, "a.md", claudeMemoryText("a", "From the named key"));
+    // Ignored: the home directory's ~/.claude is not where Claude Code keeps it.
+    await put(claudeDir(), "b.md", claudeMemoryText("b", "Under the home"));
+
+    const result = await importClaudeMemories(store, {
+      ...options,
+      env: { CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PROJECT_DIR_NAME: "named" },
+      now: new Date("2026-10-17T16:45:03.123Z"),
+    });
+
+    expect(result.sources).toEqual([named]);
+    expect(result.copied).toEqual([{ file: "a.md", from: named }]);
+    expect(result.backup).toBe(
+      join(dirname(named), "mdmem-backup-2026-10-17T16-45-03-123Z", "mdmem")
+    );
+    expect(store.exists("b.md")).toBe(false);
+  });
+
+  test("reads the key of the store's real path when it is reached through a symlink", async () => {
+    const link = join(tmp, "link");
+    await symlink(repo, link);
+    await put(claudeDir(), "a.md", claudeMemoryText("a", "At the real key"));
+
+    const result = await importClaudeMemories(
+      new MemoryStore(join(link, ".memory")),
+      options
+    );
+
+    expect(result.copied).toEqual([{ file: "a.md", from: claudeDir() }]);
+  });
+
+  test("reports what it leaves in Claude's directories and the secrets it copies", async () => {
+    await put(claudeDir(), "notes.txt", "Not a memory");
+    const empty = await importClaudeMemories(store, options);
+    expect(formatImport(empty)).toEqual([
+      "No Claude Code memories for this project: nothing to import.",
+      "Not memory files, left in Claude's directories:",
+      `    notes.txt (from ${claudeDir()})`,
+    ]);
+
+    await put(
+      claudeDir(),
+      "key.md",
+      claudeMemoryText("key", "Holds a key").replace(
+        "Body of key.",
+        ["api_key = ", "abcdef", "123456"].join("")
+      )
+    );
+    const result = await importClaudeMemories(store, options);
+
+    expect(result.warnings).toEqual([
+      expect.stringMatching(
+        /^key\.md: imported as it is, .* secret at line 8/u
+      ),
+    ]);
+    expect(formatImport(result)).toContain(
+      "These directories can be deleted once you no longer need the entries left in them, which are nowhere else:"
+    );
+  });
+
+  test("the index keeps the store's lines and gains Claude's pointer lines, reconciled", async () => {
+    await store.create("mine.md", claudeMemoryText("mine", "Mine"));
+    await store.create("MEMORY.md", "# Mine\n\n- [My title](mine.md) — mine\n");
+    await put(claudeDir(), "theirs.md", claudeMemoryText("theirs", "Theirs"));
+    await put(
+      claudeDir(),
+      "bare.md",
+      claudeMemoryText("bare", "No pointer in Claude's index")
+    );
+    await put(
+      claudeDir(),
+      "MEMORY.md",
+      "# Claude\n- [Their title](theirs.md) — their hook\n- [Gone](gone.md) — dangling\n- [Dup](mine.md) — theirs\n"
+    );
+
+    await importClaudeMemories(store, options);
+
+    expect(await store.view("MEMORY.md")).toBe(
+      "# Mine\n\n- [My title](mine.md) — mine\n- [Their title](theirs.md) — their hook\n- [bare](bare.md) — No pointer in Claude's index\n"
+    );
+  });
+
+  test("backs the store up first, never changes Claude's directory, and a second run does nothing", async () => {
+    await store.create("mine.md", claudeMemoryText("mine", "Mine"));
+    await reindex(store);
+    const original = await snapshot(store.root);
+    await put(claudeDir(), "theirs.md", claudeMemoryText("theirs", "Theirs"));
+    await put(claudeDir(), "MEMORY.md", "- [theirs](theirs.md) — Theirs\n");
+    const claudeBefore = await snapshot(claudeDir());
+
+    const first = await importClaudeMemories(store, {
+      ...options,
+      now: new Date("2026-10-17T16:45:03.123Z"),
+    });
+
+    expect(first.backup).toBe(
+      join(
+        dirname(claudeDir()),
+        "mdmem-backup-2026-10-17T16-45-03-123Z",
+        "mdmem"
+      )
+    );
+    expect(await snapshot(first.backup ?? "")).toEqual(original);
+    expect(await snapshot(claudeDir())).toEqual(claudeBefore);
+    const imported = await snapshot(store.root);
+
+    const second = await importClaudeMemories(store, options);
+
+    expect(second.copied).toEqual([]);
+    expect(second.backup).toBeUndefined();
+    expect(await snapshot(store.root)).toEqual(imported);
+    expect(formatImport(second)[0]).toContain("nothing to import");
+    expect(await readdir(dirname(claudeDir()))).toHaveLength(2);
   });
 });
