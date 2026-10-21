@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The memory protocol injected at session start is less than half its size:
-  about 4,500 characters instead of 9,700, and a test holds it at 6,000 at
+  about 4,200 characters instead of 9,700, and a test holds it at 6,000 at
   most, about three times Claude Code's own memory block, since every wired
   agent reads it at every session start, `/clear` and compaction. It keeps the
   memory format and the four types, the index rule, recall, what to save and

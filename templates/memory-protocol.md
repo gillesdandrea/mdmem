@@ -42,8 +42,7 @@ written yet marks one worth writing.
 which mdmem keeps up to date after every save and delete through it: shape it
 through the memories; never write it. Keep each pointer under ~{{pointer_max_chars}}
 characters and the index under {{index_max_chars}} characters, past which its end is
-cut off at session start; when a save or delete warns that it is near or over its
-limit, merge or delete stale memories and shorten descriptions.
+cut off at session start.
 
 ## Recall
 
