@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The memory protocol injected at session start is less than half its size:
+  about 4,500 characters instead of 9,700, and a test holds it at 6,000 at
+  most, about three times Claude Code's own memory block, since every wired
+  agent reads it at every session start, `/clear` and compaction. It keeps the
+  memory format and the four types, the index rule, recall, what to save and
+  what not to, the MCP save loop (`if_version` with `new`, and a conflict
+  returning the current content and version), the no-tools fallback (read the
+  store's files, write a memory then `mdmem reindex`) and consolidation, and
+  now names `memory_list` and `memory_check`. Gone are the per-type "when to
+  save" and "how to use" guidance, the reply-by-reply save checklist and the
+  "ignore memory" and "forget" paragraphs; keeping a memory's name, description
+  and type in step with its body moved to the consolidation prompt.
+
 ## [0.2.0] - 2026-10-21
 
 The first tagged release. Version 0.1.0 was never tagged, so this release covers

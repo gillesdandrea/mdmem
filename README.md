@@ -47,10 +47,12 @@ any agent is visible to all of them.
     [Codex CLI](#codex-cli) below.
 
   The memory protocol adapts Claude Code's own memory instructions to the shared
-  store: the memory types, when to save and what not to, checking a recalled
-  memory before acting on it, and saving through the MCP tools (writing files
-  directly only when an agent lacks them). Its text lives in
-  `templates/memory-protocol.md` and is easy to edit.
+  store: the memory format and types, what to save and what not to, checking a
+  recalled memory before acting on it, and saving through the MCP tools (writing
+  files directly only when an agent lacks them). Its text lives in
+  `templates/memory-protocol.md` and is easy to edit; a test keeps it at 6,000
+  characters at most, about three times Claude Code's own memory block, since
+  every wired agent reads it at every session start, `/clear` and compaction.
 - **Two surfaces, one core:** a CLI for humans/scripts and setup, and an MCP
   server for agents that prefer tool calls.
 

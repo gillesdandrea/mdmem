@@ -39,6 +39,7 @@ import {
 import {
   getConsolidatePrompt,
   getMemoryProtocol,
+  PROTOCOL_MAX_CHARS,
 } from "../src/core/protocol.ts";
 import { RefusalError } from "../src/core/refusal.ts";
 import { findSecrets } from "../src/core/secrets.ts";
@@ -770,6 +771,30 @@ describe("templates", () => {
     expect(protocol).not.toContain("{{");
     expect(protocol).toContain("9,500 characters");
     expect([...protocol].length).toBeLessThan(HOOK_CONTEXT_MAX_CHARS);
+  });
+
+  test("the memory protocol stays within its cap, about three times Claude Code's memory block, and keeps its rules", () => {
+    const protocol = getMemoryProtocol();
+    expect([...protocol].length).toBeLessThanOrEqual(PROTOCOL_MAX_CHARS);
+    for (const needle of [
+      "memory_list",
+      "memory_search",
+      "memory_check",
+      "memory_read",
+      "memory_write",
+      "memory_delete",
+      "`if_version` set to `new`",
+      "`user`",
+      "`feedback`",
+      "`project`",
+      "`reference`",
+      "`MEMORY.md` is the index",
+      "never write it",
+      "`mdmem reindex`",
+      "returns the current content and version",
+    ]) {
+      expect(protocol).toContain(needle);
+    }
   });
 
   test("the consolidation prompt renders with no leftover placeholder", () => {

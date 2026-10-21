@@ -17,6 +17,15 @@ import { INDEX_MAX_CHARS, POINTER_MAX_CHARS } from "./check.ts";
  */
 type TemplateName = "memory-protocol" | "consolidate";
 
+/**
+ * The rendered memory protocol's size cap, in code points: about three times Claude
+ * Code's own memory block (2,102 characters in its system prompt on 2026-10-21). Every
+ * wired agent reads the protocol at every session start, clear and compaction, so it
+ * stays near Claude's block plus what mdmem adds: the index rule, the MCP save loop
+ * and the no-tools fallback.
+ */
+export const PROTOCOL_MAX_CHARS = 6000;
+
 const PLACEHOLDER_RE = /\{\{(?<key>[^{}]*)\}\}/gu;
 
 const cache = new Map<TemplateName, string>();

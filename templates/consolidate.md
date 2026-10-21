@@ -61,6 +61,8 @@ Focus on:
   remain interpretable after time passes
 - Deleting contradicted memories — if the code disproves a memory, delete it, or
   correct the memory
+- Keeping each memory's name, description and type in step with its body, and the
+  memories organized by topic, not by date
 
 ## Phase 4 — Prune
 
