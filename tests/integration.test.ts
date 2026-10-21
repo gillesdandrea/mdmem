@@ -2486,6 +2486,33 @@ describe("status and check", () => {
     });
   });
 
+  test("doctor exits 1 and says to fix an unreadable .mcp.json before running enable", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      await writeFile(
+        join(root, CLAUDE_SETTINGS),
+        JSON.stringify({ permissions: { allow: ["mcp__mdmem"] } }),
+        "utf-8"
+      );
+      await writeFile(join(root, MCP_CONFIG), "{ broken", "utf-8");
+      const doctor = runCliWith(root, ["doctor"], {
+        HOME: ctx.home,
+        PATH: ctx.env.PATH ?? "",
+        CLAUDE_CONFIG_DIR: ctx.env.CLAUDE_CONFIG_DIR ?? "",
+        CODEX_HOME: ctx.env.CODEX_HOME ?? "",
+      });
+      expect(doctor.out).toBe(
+        [
+          "Found 3 problem(s):",
+          `  - Claude Code: ${MCP_CONFIG} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`,
+          `  - Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (${CLAUDE_SETTINGS}), SessionStart hook "mdmem hook claude-code index" (${CLAUDE_SETTINGS}), so its sessions start without what those hooks inject — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code\``,
+          `  - Claude Code's auto memory is on: autoMemoryEnabled is not false in ${CLAUDE_SETTINGS}, ${AUTO_MEMORY_CONSEQUENCE} — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code\``,
+          "",
+        ].join("\n")
+      );
+      expect(doctor.code).toBe(1);
+    });
+  });
+
   test("doctor exits 0 when a link to a memory not written yet is its only finding, and lists it as a note", async () => {
     await withWiredRepo(async ({ root, ctx, store }) => {
       await store.create(
