@@ -11,26 +11,19 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { INDEX_FILE, pointerTarget, reindex } from "./check.ts";
-import type { SavedMemory } from "./check.ts";
 import { worktreePaths } from "./git.ts";
-import { parseMemory } from "./memory.ts";
-import { RefusalError } from "./refusal.ts";
 import { describeSecrets, findSecrets } from "./secrets.ts";
 import type { MemoryStore } from "./store.ts";
 import { realDir, STORE_DIR } from "./store.ts";
 import { LINE_BREAK_RE, lineEndingOf } from "./text.ts";
 
 /**
- * The one-time import of Claude Code's auto memory into a project's store (ADR 0003):
- * once Claude Code is wired, its own memory is off, so the memories it already holds
- * for the repository move into `.memory/`. The merge is mechanical: it compares files,
- * not meaning, refuses on a real conflict before changing anything, and backs the
- * store up before it writes. Claude's directories are only read.
+ * The one-time import of Claude Code's auto memory into a project's store (ADR 0003,
+ * ADR 0004): once Claude Code is wired, its own memory is off, so the memories it
+ * already holds for the repository move into `.memory/` when that store is created.
+ * The merge is mechanical: it compares files, not meaning, never refuses, and backs
+ * an existing store up before it writes. Claude's directories are only read.
  */
-
-/** Which side's file an import takes on a same-name conflict between Claude and the store. */
-export const IMPORT_PREFERENCES = ["claude", "mdmem"] as const;
-export type ImportPreference = (typeof IMPORT_PREFERENCES)[number];
 
 /** Where Claude Code's directories are: its config directory comes from the environment, else the home directory. */
 export interface ClaudeEnvironment {
@@ -39,7 +32,6 @@ export interface ClaudeEnvironment {
 }
 
 export interface ImportOptions extends ClaudeEnvironment {
-  prefer?: ImportPreference;
   /** The time the backup is named after. */
   now?: Date;
 }
@@ -56,15 +48,17 @@ export interface ImportResult {
   sources: string[];
   /** Files that were in Claude's directories only, now in the store. */
   copied: ImportedFile[];
-  /** The store's files replaced by Claude's on a conflict (`--prefer claude`). */
-  replaced: ImportedFile[];
-  /** The store's files kept over Claude's on a conflict (`--prefer mdmem`). */
-  kept: string[];
+  /**
+   * Claude's versions of a file that differ from the one the store holds or took
+   * (the store's own, else the first Claude directory's): not imported, so they
+   * are only in Claude's directories.
+   */
+  leftBehind: ImportedFile[];
   /** Files held by more than one place with the same content, kept once. */
   collapsed: string[];
   /** Entries of Claude's directories that are not memory files (a regular `*.md` file other than the index), left where they are. */
   skipped: ImportedFile[];
-  /** The copy of the store taken before anything was written; unset when nothing was, or the store did not exist yet. */
+  /** The copy of the store taken before anything was written; unset when nothing was, or the store did not exist when the import was planned. */
   backup?: string;
   /** Whether memories from more than one place now sit together, so a consolidation may find duplicates. */
   merged: boolean;
@@ -242,12 +236,10 @@ function sameMemory(a: string, b: string): boolean {
   return a === b || comparable(a) === comparable(b);
 }
 
-/** How one file name is resolved, or the conflict that stops the import. */
+/** How one file name is resolved: copied from Claude, or the store's file kept; either way, Claude's other versions are left behind. */
 type Resolution =
-  | { kind: "copy"; copy: Copy; collapsed: boolean }
-  | { kind: "replace"; copy: Copy }
-  | { kind: "keep"; collapsed: boolean }
-  | { kind: "conflict"; problem: string };
+  | { kind: "copy"; copy: Copy; collapsed: boolean; leftBehind: Copy[] }
+  | { kind: "keep"; collapsed: boolean; leftBehind: Copy[] };
 
 /** Claude's copies of one file, with the same content (bar `modified:`) kept once, in source order. */
 function distinctCopies(copies: readonly Copy[]): Copy[] {
@@ -266,88 +258,38 @@ function storePath(store: MemoryStore, file: string): string {
 
 /**
  * Decide what becomes of `file`, held by the store as `stored` (undefined when it
- * is not there) and by Claude's directories as `copies`. Two Claude directories
- * that disagree are a conflict `--prefer` cannot settle, unless `--prefer mdmem`
- * keeps the store's file over both.
+ * is not there) and by Claude's directories as `copies`. The store's file wins,
+ * else the first Claude directory's (the repository's own key comes first); every
+ * other version is left in Claude's directories, so nothing is lost and nothing
+ * refuses: the import runs as a store is created, inside a write that must land.
  */
 function resolveFile(
-  store: MemoryStore,
   file: string,
   stored: string | undefined,
-  copies: readonly Copy[],
-  prefer: ImportPreference | undefined
+  copies: readonly Copy[]
 ): Resolution {
   const distinct = distinctCopies(copies);
-  const [first] = distinct;
+  const [first, ...others] = distinct;
   if (first === undefined) {
     throw new Error(
       `${file}: resolved with no Claude copy; a file is resolved only when some Claude directory holds it`
     );
   }
-  const placesHolding = copies.length + (stored === undefined ? 0 : 1);
-  if (
-    stored !== undefined &&
-    distinct.every((c) => sameMemory(c.raw, stored))
-  ) {
-    return { kind: "keep", collapsed: true };
-  }
-  if (stored !== undefined && prefer === "mdmem") {
-    return { kind: "keep", collapsed: false };
-  }
-  if (distinct.length > 1) {
-    const where = distinct.map((c) => join(c.from, c.file)).join(", ");
+  const collapsed = copies.length > distinct.length;
+  if (stored !== undefined) {
+    const leftBehind = distinct.filter((c) => !sameMemory(c.raw, stored));
     return {
-      kind: "conflict",
-      problem:
-        stored === undefined
-          ? `${file}: Claude's directories hold different versions (${where}); no --prefer settles it until the store holds its own ${file}`
-          : `${file}: Claude's directories hold different versions (${where}), not all matching ${storePath(store, file)}; only --prefer mdmem settles it, keeping the store's file`,
+      kind: "keep",
+      collapsed: collapsed || leftBehind.length < distinct.length,
+      leftBehind,
     };
   }
-  if (stored === undefined) {
-    return { kind: "copy", copy: first, collapsed: placesHolding > 1 };
-  }
-  if (prefer === "claude") {
-    return { kind: "replace", copy: first };
-  }
-  return {
-    kind: "conflict",
-    problem: `${file}: ${storePath(store, file)} differs from ${join(first.from, first.file)}; --prefer claude or --prefer mdmem settles it`,
-  };
-}
-
-function refusal(
-  conflicts: readonly string[],
-  store: MemoryStore,
-  sources: readonly string[]
-): RefusalError {
-  return new RefusalError(
-    [
-      `Refused to import Claude Code's memories: ${conflicts.length} file(s) conflict, and nothing was changed.`,
-      ...conflicts.map((conflict) => `  - ${conflict}`),
-      "Ways past it:",
-      // Claude's directories are never changed, so only --prefer mdmem gets past a conflict an agent merged.
-      `  - have an agent merge Claude's versions into the store: run \`mdmem consolidate\` and point it at ${sources.join(", ")}; then run \`mdmem enable claude-code --prefer mdmem\` to keep the merged files`,
-      "  - or pass the --prefer a conflict names: --prefer claude takes Claude's file, --prefer mdmem keeps the store's, on every conflict it settles",
-    ].join("\n")
-  );
+  return { kind: "copy", copy: first, collapsed, leftBehind: others };
 }
 
 async function readIfPresent(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, "utf-8");
-  } catch {
-    return undefined;
-  }
-}
-
-/** The description `raw` parses to, or undefined when it does not parse. */
-function descriptionOf(raw: string | undefined): string | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  try {
-    return parseMemory(raw).frontmatter.description;
   } catch {
     return undefined;
   }
@@ -472,65 +414,48 @@ interface Write extends ImportedFile {
   raw: string;
 }
 
-/** What an import will do, and the conflicts that stop it. */
+/** What an import will do. */
 interface ImportPlan extends Pick<
   ImportResult,
-  "copied" | "replaced" | "kept" | "collapsed"
+  "copied" | "leftBehind" | "collapsed"
 > {
-  conflicts: string[];
   writes: Write[];
-  /** The replaced memories, whose pointers take Claude's descriptions. */
-  saved: SavedMemory[];
+  /** The files whose store version was kept over a differing Claude version. */
+  kept: string[];
 }
 
 /** Resolve every file Claude's directories hold against the store; nothing is written. */
 function planImport(
-  store: MemoryStore,
   copiesByKey: ReadonlyMap<string, Copy[]>,
-  stored: ReadonlyMap<string, Stored>,
-  prefer: ImportPreference | undefined
+  stored: ReadonlyMap<string, Stored>
 ): ImportPlan {
   const plan: ImportPlan = {
-    conflicts: [],
     writes: [],
-    saved: [],
-    copied: [],
-    replaced: [],
     kept: [],
+    copied: [],
+    leftBehind: [],
     collapsed: [],
   };
   const byName = [...copiesByKey].toSorted(([a], [b]) => (a < b ? -1 : 1));
   for (const [key, copies] of byName) {
-    const previous = stored.get(key)?.raw;
     // A file keeps the store's spelling of its name, else the first Claude directory's.
     const file = stored.get(key)?.file ?? copies[0]?.file ?? key;
-    const resolution = resolveFile(store, file, previous, copies, prefer);
-    if (resolution.kind === "conflict") {
-      plan.conflicts.push(resolution.problem);
-      continue;
+    const resolution = resolveFile(file, stored.get(key)?.raw, copies);
+    plan.leftBehind.push(
+      ...resolution.leftBehind.map(({ from }) => ({ file, from }))
+    );
+    if (resolution.collapsed) {
+      plan.collapsed.push(file);
     }
     if (resolution.kind === "keep") {
-      (resolution.collapsed ? plan.collapsed : plan.kept).push(file);
+      if (resolution.leftBehind.length > 0) {
+        plan.kept.push(file);
+      }
       continue;
     }
     const imported = { file, from: resolution.copy.from };
     plan.writes.push({ ...imported, raw: resolution.copy.raw });
-    if (resolution.kind === "copy") {
-      plan.copied.push(imported);
-      if (resolution.collapsed) {
-        plan.collapsed.push(file);
-      }
-      continue;
-    }
-    plan.replaced.push(imported);
-    const description = descriptionOf(resolution.copy.raw);
-    if (description !== undefined) {
-      plan.saved.push({
-        file,
-        description,
-        previousDescription: descriptionOf(previous),
-      });
-    }
+    plan.copied.push(imported);
   }
   return plan;
 }
@@ -588,9 +513,9 @@ export async function writeImportMarker(
 export type PlannedImport = () => Promise<ImportResult>;
 
 /**
- * Plan importClaudeMemories: read Claude's directories and the store, and throw the
- * refusal listing every conflict; the returned function does the writes and reports
- * them. Nothing is written until it is called.
+ * Plan importClaudeMemories: read Claude's directories and the store; the returned
+ * function does the writes and reports them. Nothing is written until it is called,
+ * and a store that does not exist yet when planned gets no backup.
  */
 export async function planClaudeImport(
   store: MemoryStore,
@@ -600,16 +525,13 @@ export async function planClaudeImport(
   const sources = await claudeSources(projectRoot, options);
   const { copiesByKey, skipped } = await readClaudeDirectories(sources);
   const stored = await storedMemories(store);
+  const existed = await isDirectory(store.root);
 
-  const { conflicts, writes, saved, ...outcome } = planImport(
-    store,
-    copiesByKey,
-    stored,
-    options.prefer
-  );
-  if (conflicts.length > 0) {
-    throw refusal(conflicts, store, sources);
-  }
+  const {
+    writes,
+    kept: keptFiles,
+    ...outcome
+  } = planImport(copiesByKey, stored);
   const result: ImportResult = {
     sources,
     ...outcome,
@@ -623,7 +545,7 @@ export async function planClaudeImport(
     sources.map((from) => readIfPresent(join(from, INDEX_FILE)))
   );
   // A kept file's pointer comes from the store's version, never Claude's.
-  const kept = new Set(outcome.kept);
+  const kept = new Set(keptFiles);
   const files = new Set([
     ...[...stored.values()]
       .map(({ file }) => file)
@@ -636,7 +558,9 @@ export async function planClaudeImport(
   }
 
   return async () => {
-    result.backup = await backUp(store, projectRoot, options);
+    result.backup = existed
+      ? await backUp(store, projectRoot, options)
+      : undefined;
     for (const { file, raw } of writes) {
       // oxlint-disable-next-line no-await-in-loop -- a few files, written in order
       await store.create(file, raw);
@@ -644,10 +568,7 @@ export async function planClaudeImport(
     if (pointers.length > 0) {
       await store.create(INDEX_FILE, appendLines(storeIndex, pointers));
     }
-    result.warnings = [
-      ...secretWarnings(writes),
-      ...(await reindex(store, saved)),
-    ];
+    result.warnings = [...secretWarnings(writes), ...(await reindex(store))];
     const fromSources = new Set(writes.map(({ from }) => from));
     result.merged =
       writes.length > 0 && (stored.size > 0 || fromSources.size > 1);
@@ -660,12 +581,12 @@ export async function planClaudeImport(
  * the memory directory at the repository's key and every other Claude project
  * directory of the repository's worktrees. A file in one place only is copied, files
  * with the same content (bar Claude's `modified:` stamp) are kept once, and a memory
- * that breaks mdmem's write rules is copied as it is. A same-name file with
- * different content is a conflict: every conflict is listed in one refusal, before
- * anything changes, unless `prefer` picks a side. Each source index's pointer lines
- * are appended after the store's, then the index is reconciled as `reindex` does.
- * The store is backed up before the first write; with nothing new, nothing is
- * written. Claude's directories are only read.
+ * that breaks mdmem's write rules is copied as it is. Of same-name files with
+ * different content, the store's is kept, else the first Claude directory's is
+ * copied, and the others are reported as left behind. Each source index's pointer
+ * lines are appended after the store's, then the index is reconciled as `reindex`
+ * does. An existing store is backed up before the first write; with nothing new,
+ * nothing is written. Claude's directories are only read.
  */
 export async function importClaudeMemories(
   store: MemoryStore,
@@ -684,17 +605,15 @@ const NOTHING_FOUND =
 
 /** An import's report as the CLI prints it, one line each; the CLI prints `warnings` itself. */
 export function formatImport(result: ImportResult): string[] {
-  const wrote =
-    result.backup !== undefined ||
-    result.copied.length > 0 ||
-    result.replaced.length > 0;
-  const found = wrote || result.kept.length > 0 || result.collapsed.length > 0;
+  const wrote = result.backup !== undefined || result.copied.length > 0;
+  const found =
+    wrote || result.leftBehind.length > 0 || result.collapsed.length > 0;
   const lines: string[] = [];
   if (!found) {
     lines.push(NOTHING_FOUND);
   } else if (!wrote) {
     lines.push(
-      result.kept.length > 0
+      result.leftBehind.length > 0
         ? `Nothing to import: ${STORE_DIR}/ keeps its own version of every file that differs.`
         : `Claude Code's memories are already in ${STORE_DIR}/: nothing to import.`
     );
@@ -704,12 +623,10 @@ export function formatImport(result: ImportResult): string[] {
   if (result.copied.length > 0) {
     lines.push(`Copied into ${STORE_DIR}/:`, ...fileList(result.copied));
   }
-  if (result.replaced.length > 0) {
-    lines.push("Replaced with Claude's version:", ...fileList(result.replaced));
-  }
-  if (result.kept.length > 0) {
+  if (result.leftBehind.length > 0) {
     lines.push(
-      `Kept ${STORE_DIR}/'s version over Claude's: ${result.kept.join(", ")}`
+      "Other versions, not imported, left in Claude's directories:",
+      ...fileList(result.leftBehind)
     );
   }
   if (result.collapsed.length > 0) {
@@ -725,7 +642,7 @@ export function formatImport(result: ImportResult): string[] {
     return lines;
   }
   const leftOnlyThere = [
-    ...(result.kept.length > 0 ? ["Claude's versions of the kept files"] : []),
+    ...(result.leftBehind.length > 0 ? ["the versions not imported"] : []),
     ...(result.skipped.length > 0 ? ["the entries left in them"] : []),
   ];
   lines.push(

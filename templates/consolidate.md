@@ -14,12 +14,8 @@ the memory format, the memory types, and what to save.
 Read anything: the code, the git history, your project instruction files. Change only
 memory documents in the memory store.
 
-When you are pointed at Claude Code's memory directories because
-`mdmem enable claude-code` refused its import, merge each memory they hold into the
-store's memory of the same file name, creating it under that file name when the
-store has none: `--prefer mdmem` keeps only a store file of the same name. End your
-summary by telling the user to run `mdmem enable claude-code --prefer mdmem`, which
-keeps the merged files.
+When you are pointed at the versions of a memory that the import left in Claude
+Code's memory directories, merge each into the store's memory of the same file name.
 
 Save through the mdmem MCP tools, always: `memory_list` lists the store,
 `memory_read` returns a memory document with its version, and `memory_write` and

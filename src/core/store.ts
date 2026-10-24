@@ -159,12 +159,15 @@ export class MemoryStore {
 
 /**
  * Where a project's store is: `root` is the project directory, `dir` its `.memory/`,
- * and `exists` whether that directory is there yet.
+ * `exists` whether that directory is there yet, and `inRepository` whether the
+ * project is a git repository, the only place a memory write creates a store
+ * (ADR 0004).
  */
 export interface StoreLocation {
   root: string;
   dir: string;
   exists: boolean;
+  inRepository: boolean;
 }
 
 function isDirectory(path: string): boolean {
@@ -175,9 +178,9 @@ function isDirectory(path: string): boolean {
   }
 }
 
-function storeAt(root: string): StoreLocation {
+function storeAt(root: string, inRepository: boolean): StoreLocation {
   const dir = join(root, STORE_DIR);
-  return { root, dir, exists: isDirectory(dir) };
+  return { root, dir, exists: isDirectory(dir), inRepository };
 }
 
 /** The real path of `path`, symlinks resolved; `path` resolved, when it cannot be (it does not exist, say). */
@@ -204,7 +207,7 @@ export function locateStore(
   const start = realDir(startDir);
   const repository = repositoryRoot(start);
   if (repository !== null) {
-    return storeAt(repository);
+    return storeAt(repository, true);
   }
   const stop = realDir(home);
   let dir = start;
@@ -212,7 +215,7 @@ export function locateStore(
     if (dir === stop && dir !== start) {
       break;
     }
-    const location = storeAt(dir);
+    const location = storeAt(dir, false);
     if (location.exists) {
       return location;
     }
@@ -222,5 +225,5 @@ export function locateStore(
     }
     dir = parent;
   }
-  return storeAt(start);
+  return storeAt(start, false);
 }

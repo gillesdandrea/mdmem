@@ -4,10 +4,11 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 
+import { GLOBAL_HOOK_FLAG } from "../adapters/adapter.ts";
 import type {
   Adapter,
-  AdapterContext,
   AgentStatus,
+  Scope,
   WiringPlan,
 } from "../adapters/adapter.ts";
 import {
@@ -19,19 +20,23 @@ import {
 import {
   adapterContext,
   checkProject,
-  disableContext,
+  creationLines,
   enableContext,
+  ensureStore,
+  formatProjectCheck,
+  IGNORE_NOTE,
+  locateContext,
   projectStatus,
 } from "../adapters/report.ts";
-import { checkSummary, formatCheck, reindex } from "../core/check.ts";
+import type { StoreCreation } from "../adapters/report.ts";
+import { checkSummary, reindex } from "../core/check.ts";
 import { HOOK_AGENTS, HOOK_PARTS, runHook } from "../core/hook.ts";
-import { IMPORT_PREFERENCES } from "../core/import.ts";
-import type { ImportPreference } from "../core/import.ts";
 import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import type { MemoryType } from "../core/memory.ts";
 import {
   assertMemoryPath,
-  initStore,
+  checkMemoryWrite,
+  memoryDocument,
   openStore,
   readDocument,
   readIndex,
@@ -44,7 +49,7 @@ import type { WriteResult } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
 import type { MemoryStore } from "../core/store.ts";
-import { STORE_DIR, VersionConflictError } from "../core/store.ts";
+import { VersionConflictError } from "../core/store.ts";
 import { messageOf } from "../core/text.ts";
 
 function print(msg = ""): void {
@@ -73,22 +78,14 @@ function resolveStore(): MemoryStore {
   return openStore(process.cwd());
 }
 
-function context(store: MemoryStore): AdapterContext {
-  return adapterContext(process.cwd(), store);
-}
-
-/** `enable --prefer`'s value, which settles an import conflict. */
-function preferOption(
-  value: string | boolean | undefined
-): ImportPreference | undefined {
-  if (value === undefined) {
-    return undefined;
+/** Print what creating the store did, its lines then its warnings; nothing when it existed. */
+function reportCreation(creation: StoreCreation): void {
+  for (const line of creationLines(creation)) {
+    print(line);
   }
-  const preference = IMPORT_PREFERENCES.find((p) => p === value);
-  return (
-    preference ??
-    die(`--prefer must be one of: ${IMPORT_PREFERENCES.join(", ")}`)
-  );
+  for (const warning of creation.warnings) {
+    warn(warning);
+  }
 }
 
 function isMemoryType(value: string | undefined): value is MemoryType {
@@ -98,16 +95,24 @@ function isMemoryType(value: string | undefined): value is MemoryType {
 }
 
 async function cmdInit(): Promise<void> {
-  const { store, created, ignored } = await initStore(process.cwd());
+  // The one way to create a store outside git (ADR 0004).
+  const { store, created, ignored, imported, warnings } = await ensureStore(
+    process.cwd(),
+    { outsideGit: true }
+  );
   print(
     created
       ? `Initialized memory store at ${store.root}`
       : `Memory store already exists at ${store.root}`
   );
+  for (const line of imported) {
+    print(line);
+  }
+  for (const warning of warnings) {
+    warn(warning);
+  }
   if (ignored === false) {
-    print(
-      `Note: git does not ignore ${STORE_DIR}/; ignoring or committing it is your choice.`
-    );
+    print(IGNORE_NOTE);
   }
   if (created) {
     print("Next: `mdmem enable --all` to wire up your agents.");
@@ -137,15 +142,16 @@ async function cmdAdd(args: string[]): Promise<void> {
     body = process.stdin.isTTY ? "" : await Bun.stdin.text();
   }
 
-  const store = resolveStore();
+  const input = { name, description, type: values.type, body: body.trim() };
+  // A refused memory creates no store.
+  const { file, content } = memoryDocument(input);
+  checkMemoryWrite(file, content);
+  const creation = await ensureStore(process.cwd());
+  reportCreation(creation);
   const force = values.force ?? false;
   let result: WriteResult;
   try {
-    result = await saveMemory(
-      store,
-      { name, description, type: values.type, body: body.trim() },
-      { force }
-    );
+    result = await saveMemory(creation.store, input, { force });
   } catch (error) {
     // Without --force the write insists on a new file; with it, a conflict means the memory changed mid-write.
     if (error instanceof VersionConflictError) {
@@ -341,9 +347,6 @@ function resolveTargets(
   };
 }
 
-/** The agent whose import `--prefer` settles. */
-const PREFER_AGENT = "claude-code";
-
 /** Plan every agent's enable or disable; the first refusal, in the agents' order, stops the run. */
 async function planWiring(
   adapters: readonly Adapter[],
@@ -362,44 +365,45 @@ async function cmdWiring(
   args: string[],
   mode: "enable" | "disable"
 ): Promise<void> {
-  // One table for both modes, so an option given to the wrong one gets mdmem's own refusal.
+  // The options 0.2.0 took are kept only to say what replaced them.
   const { values, positionals } = parseArgs({
     args,
     options: {
       all: { type: "boolean" },
-      prefer: { type: "string" },
+      project: { type: "boolean" },
       global: { type: "boolean" },
+      prefer: { type: "string" },
     },
     allowPositionals: true,
   });
-  if (mode === "disable" && values.prefer !== undefined) {
-    die("--prefer applies to `mdmem enable` only");
+  if (values.global !== undefined) {
+    die(
+      `--global is gone: \`mdmem ${mode}\` acts on the agents' user-wide files by default, and on the repository's with --project`
+    );
   }
-  if (mode === "enable" && values.global !== undefined) {
-    die("--global applies to `mdmem disable` only");
+  if (values.prefer !== undefined) {
+    die(
+      "--prefer is gone: Claude Code's memories are imported when a store is created, so they meet nothing to conflict with"
+    );
   }
-  const prefer = preferOption(values.prefer);
+  const scope: Scope = values.project ? "project" : "global";
   const { adapters, notice } = resolveTargets(values, positionals, mode);
   if (notice !== undefined) {
     print(notice);
   }
-  if (prefer !== undefined && !adapters.some(({ id }) => id === PREFER_AGENT)) {
-    die(
-      `--prefer settles the import of Claude Code's memories, so it applies only when ${PREFER_AGENT} is among the agents enabled`
-    );
-  }
   const cwd = process.cwd();
-  // enable needs a work tree and a store; disable needs neither.
-  const { ctx, outsideProject } =
-    mode === "enable"
-      ? { ctx: enableContext(cwd), outsideProject: false }
-      : disableContext(cwd);
+  // The project scope of enable needs a work tree, and creates a missing store; nothing else needs a store.
+  const ctx =
+    mode === "enable" ? enableContext(cwd, scope) : locateContext(cwd);
   // Plan every agent before writing any, so a refusal leaves every file as it was.
   const plans = await planWiring(adapters, (adapter) =>
-    mode === "enable"
-      ? adapter.enable(ctx, { prefer })
-      : adapter.disable(ctx, { global: values.global, outsideProject })
+    mode === "enable" ? adapter.enable(ctx, scope) : adapter.disable(ctx, scope)
   );
+  if (mode === "enable" && scope === "project" && adapters.length > 0) {
+    reportCreation(
+      await ensureStore(cwd, { importFor: adapters.map(({ id }) => id) })
+    );
+  }
   for (const plan of plans) {
     // oxlint-disable-next-line no-await-in-loop -- writes stay in argument order
     const result = await plan.write();
@@ -413,10 +417,13 @@ async function cmdWiring(
   }
 }
 
+/** An agent's wiring, one line per scope with its entries under it, then the agent's notes. */
 function printAgent(status: AgentStatus): void {
-  print(`  ${status.wired ? "✓" : "·"} ${status.title}`);
-  for (const { label, file, present } of status.entries) {
-    print(`      ${present ? "✓" : "· missing:"} ${label} (${file})`);
+  for (const { scope, wired, entries } of status.scopes) {
+    print(`  ${wired ? "✓" : "·"} ${status.title} (${scope})`);
+    for (const { label, file, present } of entries) {
+      print(`      ${present ? "✓" : "· missing:"} ${label} (${file})`);
+    }
   }
   for (const note of status.notes) {
     print(`      ${note}`);
@@ -424,16 +431,23 @@ function printAgent(status: AgentStatus): void {
 }
 
 async function cmdStatus(): Promise<void> {
-  const store = resolveStore();
-  const status = await projectStatus(context(store));
-  print(`Store: ${store.root}`);
-  // Counts the memories that parse; the check's line counts the broken ones.
-  print(`Memories: ${status.memoryCount}`);
+  const status = await projectStatus(locateContext(process.cwd()));
+  if (status.store === undefined) {
+    print(
+      "Store: none (no repository, and no .memory/ here or above): `mdmem init` creates one"
+    );
+  } else if (status.store.exists) {
+    print(`Store: ${status.store.dir}`);
+    // Counts the memories that parse; the check's line counts the broken ones.
+    print(`Memories: ${status.memoryCount}`);
+  } else {
+    print(
+      `Store: none yet; the first memory write (memory_write, \`mdmem add\`) creates ${status.store.dir}`
+    );
+  }
   print(`Check: ${checkSummary(status.check)}`);
   if (status.ignored === false) {
-    print(
-      `Note: git does not ignore ${STORE_DIR}/; ignoring or committing it is your choice.`
-    );
+    print(IGNORE_NOTE);
   }
   print("Agents:");
   for (const agent of status.agents) {
@@ -451,8 +465,8 @@ async function cmdStatus(): Promise<void> {
 }
 
 async function cmdDoctor(): Promise<void> {
-  const check = await checkProject(context(resolveStore()));
-  print(formatCheck(check));
+  const check = await checkProject(locateContext(process.cwd()));
+  print(formatProjectCheck(check));
   if (check.problems.length > 0) {
     process.exit(1);
   }
@@ -469,23 +483,30 @@ function cmdConsolidate(args: string[]): void {
       ? undefined
       : (getAdapter(values.agent) ?? die(unknownAgent(values.agent)));
   const store = resolveStore();
-  const history = adapter?.sessionHistory?.(context(store));
+  const { project, env, home } = adapterContext(process.cwd(), store);
+  const history =
+    project === undefined
+      ? undefined
+      : adapter?.sessionHistory?.({ projectRoot: project.root, env, home });
   process.stdout.write(getConsolidatePrompt(store.root, history));
 }
 
 /** Run by an agent's session-start hook, never by hand; it always exits 0. */
 async function cmdHook(args: string[]): Promise<void> {
-  const [agent = "", part = ""] = args;
+  const [agent = "", part = "", ...flags] = args;
   const output = await runHook({
     agent,
     part,
+    global: flags.includes(GLOBAL_HOOK_FLAG),
     readPayload: async () =>
       process.stdin.isTTY ? "" : await Bun.stdin.text(),
     cwd: process.cwd(),
-    // A hook declared outside the project (Codex's) runs only where the project is wired for it.
-    projectWired: async (hookAgent, projectRoot) => {
-      const check = getAdapter(hookAgent)?.projectWired;
-      return check === undefined ? true : await check(projectRoot());
+    // The agent decides where its hook stays silent: a global entry beside the project's own, Codex's where no config registers the server.
+    speaks: async (hookAgent, site) => {
+      const speaks = getAdapter(hookAgent)?.hookSpeaks;
+      return speaks === undefined
+        ? true
+        : await speaks({ env: process.env, home: homedir() }, site);
     },
   });
   if (output !== "") {
@@ -503,10 +524,13 @@ function usage(): void {
 
 Usage: mdmem <command> [options]
 
-  init                      Create .memory/ at the project's root (a repository's main checkout)
+  init                      Create .memory/ at the project's root (a repository's main checkout), and
+                            import Claude Code's memories into it when Claude Code is wired; the only
+                            way to create a store outside git
   add --type <t> --name <n> --description <d> [--body <text>] [--force]
                             Save a memory (body may be piped via stdin; --force overwrites an existing one,
-                            unless it changes while being saved)
+                            unless it changes while being saved); in a repository with no store yet,
+                            the first save creates it, as memory_write does
   list                      Print the memory index (MEMORY.md)
   read <name>               Print one memory by its name (or <name>.md), or the index (MEMORY.md)
   edit <name>               Edit a copy of a memory in $VISUAL/$EDITOR, then save it back; an invalid
@@ -522,41 +546,50 @@ Usage: mdmem <command> [options]
                             cwd is the project; bob keeps the generic line)
   doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
                             long pointers, stale index, index over its size limit) and the agents'
-                            wiring (a config file it cannot read, a session-start hook missing or
-                            switched off, Claude Code's auto memory still on, mdmem not on PATH);
-                            exits 1 on a problem; a [[link]] to a memory not written yet is a note
-  enable <agent…> | --all [--prefer claude|mdmem]
-                            Wire an agent to the shared store, in files meant to be committed;
-                            --all wires the agents found on this machine, by their command on
-                            PATH (claude, bob, codex) or config directory ($CLAUDE_CONFIG_DIR or
-                            ~/.claude, ~/.bob, $CODEX_HOME or ~/.codex)
-                            (claude-code: import Claude's memories once, turn its auto memory off,
-                            add its session-start hooks and the mdmem MCP server; --prefer settles
-                            an import conflict by keeping Claude's file or the store's, and needs
-                            claude-code among the agents; bob: add its session-start hooks and the
-                            mdmem MCP server; codex: add its session-start hooks to ~/.codex/hooks.json
-                            ($CODEX_HOME when set), once per user, and the mdmem MCP server to
-                            .codex/config.toml); refused in a bare repository or the folder holding
-                            one; an unknown agent, a file that does not parse, a key of mdmem's
-                            holding something else (another mcpServers.mdmem, autoMemoryEnabled:
-                            true) or an import conflict stops it with no file written
-  disable <agent…> | --all [--global]
-                            Remove exactly mdmem's entries from an agent's files (leaves the store,
-                            needs none); --all takes the agents found on this machine;
-                            codex keeps its global hook, then silent in the project, unless
-                            --global, which also removes it from ~/.codex/hooks.json (the only
-                            change disable makes outside a project)
-  status                    Show the store, the check in one line, whether git ignores .memory/, and
-                            each agent's wiring, entry by entry, with what mdmem cannot check (folder
-                            trust), a warning when Bob would be launched below the checkout's root,
-                            and one in a submodule of a wired project, whose wiring agents started
-                            in the submodule do not get
+                            wiring in both scopes (a config file it cannot read, a session-start hook
+                            missing or switched off, Claude Code's auto memory still on, mdmem not on
+                            PATH); with no store, or outside any project, the wiring alone; exits 1
+                            on a problem; a [[link]] to a memory not written yet is a note
+  enable <agent…> | --all [--project]
+                            Wire an agent to mdmem in the user-wide files it reads in every project
+                            (the global scope), or with --project in the repository's files, meant
+                            to be committed, creating its store if missing (refused in a bare
+                            repository or the folder holding one, and outside git without a store);
+                            --all wires the agents found on this machine, by their command on PATH
+                            (claude, bob, codex) or config directory ($CLAUDE_CONFIG_DIR or ~/.claude,
+                            ~/.bob, $CODEX_HOME or ~/.codex)
+                            (claude-code: turn its auto memory off, add its session-start hooks, the
+                            mdmem MCP server and its tools' permission, in ~/.claude/settings.json and
+                            ~/.claude.json ($CLAUDE_CONFIG_DIR when set), or .claude/settings.json and
+                            .mcp.json; bob: its session-start hooks and the mdmem MCP server, in
+                            ~/.bob/settings/settings.json and ~/.bob/settings/mcp.json, or
+                            .bob/settings.json and .bob/mcp.json; codex: its session-start hooks in
+                            ~/.codex/hooks.json ($CODEX_HOME when set) in both scopes, and the mdmem
+                            MCP server in ~/.codex/config.toml or .codex/config.toml); an unknown
+                            agent, a file that does not parse or a key of mdmem's holding something
+                            else (another mcpServers.mdmem, autoMemoryEnabled: true) stops it with no
+                            file written
+  disable <agent…> | --all [--project]
+                            Remove exactly mdmem's entries from an agent's user-wide files, or with
+                            --project from the repository's (leaves the store, needs none); --all
+                            takes the agents found on this machine; codex's hook serves both scopes,
+                            so the global scope removes it and --project keeps it
+  status                    Show the store (or that there is none yet), the check in one line,
+                            whether git ignores .memory/, and each agent's wiring in each scope, entry
+                            by entry, with what mdmem cannot check (folder trust), a warning when Bob
+                            would be launched below the checkout's root, and one in a submodule of a
+                            project whose files wire agents that agents started in the submodule do
+                            not get; outside any project, the global scope alone
   path                      Print the store directory
   mcp                       Run the MCP server over stdio (for agent tool-calls)
-  hook <agent> <part>       Run by an agent's session-start hook, not typed by hand: print the
+  hook <agent> <part> [--global]
+                            Run by an agent's session-start hook, not typed by hand: print the
                             memory protocol or the index as context to inject (agent: ${HOOK_AGENTS.join(", ")};
-                            part: ${HOOK_PARTS.join(", ")}); prints nothing outside a project with a store,
-                            nor for codex where .codex/config.toml does not register the mdmem server
+                            part: ${HOOK_PARTS.join(", ")}); speaks in every git repository, the index
+                            saying when no store exists yet, and outside git only where a store
+                            exists; a --global entry is silent where the project's own entry runs,
+                            and codex's where neither ~/.codex/config.toml nor .codex/config.toml
+                            registers the mdmem server
 
 Agents: ${adapterIds().join(", ")} (only agents with session-start hooks are supported)
 Memory types: ${MEMORY_TYPES.join(", ")}`);

@@ -7,8 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
+
+- `mdmem enable` without `--project` now writes each agent's user-wide files,
+  so the agent is wired in every repository on the machine (the global scope);
+  `mdmem enable --project` writes the repository's files, as 0.2.0's `enable`
+  did. `mdmem disable` mirrors it, and `disable --global` is gone: in the
+  global scope, `mdmem disable codex` removes Codex's hook and its user-wide
+  server. A repository 0.2.0 wired keeps working unchanged, as one wired in the
+  project scope.
+- `enable --prefer` is gone: Claude Code's memories are imported when a store
+  is created, which holds nothing they could conflict with, instead of by
+  `enable claude-code`. A store that already exists gets no import.
+
+### Added
+
+- Two wiring scopes (ADR 0004). The global scope writes Claude Code's
+  `~/.claude/settings.json` and the top-level `mcpServers` of `~/.claude.json`
+  (in `$CLAUDE_CONFIG_DIR` when set), Bob's `~/.bob/settings/settings.json` and
+  `~/.bob/settings/mcp.json`, and Codex's `~/.codex/hooks.json` and
+  `[mcp_servers.mdmem]` in `~/.codex/config.toml`. Its hook entries run
+  `mdmem hook <agent> <part> --global`, which stays silent where the project's
+  own entry for that part is present, so a repository wired in both scopes
+  gets the protocol and the index once. Codex keeps one hook for both scopes,
+  speaking where either config registers the server.
+- The store is created on the first save: in a git repository with no
+  `.memory/`, the first `memory_write` or `mdmem add` creates it with its
+  `MEMORY.md`, reporting its path, what the import copied, and whether git
+  ignores it. Until then the session-start hook speaks anyway, its index part
+  saying the store does not exist yet, and reads refuse, saying what creates
+  it. Outside git only `mdmem init` creates a store, and the hook speaks only
+  where one exists.
+- `mdmem status`, `mdmem doctor` and `memory_check` work without a store and
+  outside any repository, where they report the wiring alone, and list each
+  agent's wiring per scope.
+
 ### Changed
 
+- The import of Claude Code's memories never refuses: when Claude Code's
+  directories hold different versions of a file, the repository's own
+  directory's version is copied and the others are listed as left in Claude's
+  directories.
 - The memory protocol injected at session start is less than half its size:
   about 4,200 characters instead of 9,700, and a test holds it at 6,000 at
   most, about three times Claude Code's own memory block, since every wired

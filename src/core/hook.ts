@@ -6,20 +6,26 @@ import { isObject } from "./object.ts";
 import type { PlainObject } from "./object.ts";
 import { getMemoryProtocol } from "./protocol.ts";
 import { locateStore, MemoryStore } from "./store.ts";
+import type { StoreLocation } from "./store.ts";
 import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
 
 /**
- * What `mdmem hook <agent> <part>` prints. Each wired agent runs two session-start
- * hook entries (ADR 0003): one injects the memory protocol, the other the index with
- * the store's path and the Check's warnings. Claude Code caps one entry's context at
- * about 10,000 characters, so each part stays under that.
+ * What `mdmem hook <agent> <part> [--global]` prints. Each wired agent runs two
+ * session-start hook entries (ADR 0003): one injects the memory protocol, the other
+ * the index with the store's path and the Check's warnings. Claude Code caps one
+ * entry's context at about 10,000 characters, so each part stays under that.
  *
- * A hook never fails a session (ADR 0002): outside a project with a store, in a
- * work tree not wired for an agent whose hook is user-wide (Codex), on a resumed or
+ * The hook speaks in every git repository, store or not, and outside git only where
+ * a store exists (ADR 0004); in a repository with no store yet, the index part says
+ * the first memory_write creates it. `--global` marks the entries of the global
+ * scope, whose agent decides where they stay silent (where the project's own entries
+ * run, say).
+ *
+ * A hook never fails a session (ADR 0002): where it does not speak, on a resumed or
  * forked session or another event it prints nothing, and any error becomes a one-line
  * context saying why the memory could not be loaded. A payload that does not parse
- * is reported only where the process's working directory holds a store wired for the
- * agent; elsewhere the hook prints nothing.
+ * is reported only where the hook would speak from the process's working directory;
+ * elsewhere the hook prints nothing.
  */
 
 /** The supported agents, in the order mdmem lists them: only those with session-start hooks. The adapter registry is built from this list. */
@@ -191,44 +197,63 @@ async function indexContext(store: MemoryStore): Promise<string> {
   return assemble(head, block);
 }
 
+/** Where a hook runs, as the agent's adapter weighs whether it speaks there. */
+export interface HookSite {
+  /** The session's directory, from the payload's cwd. */
+  cwd: string;
+  /** The session's work tree, else the store's project directory; it runs git, so call it only when needed. */
+  projectRoot: () => string;
+  part: HookPart;
+  /** Whether the hook entry is the global scope's (`--global`). */
+  global: boolean;
+}
+
 /** What `mdmem hook` is asked to do, and where. */
 export interface HookRequest {
   /** The agent whose hook runs; one of HOOK_AGENTS. */
   agent: string;
   /** What to inject; one of HOOK_PARTS. */
   part: string;
+  /** Whether the hook entry carries `--global`, the global scope's marker. */
+  global: boolean;
   /** Reads the hook payload, the JSON the agent sends on stdin. */
   readPayload: () => Promise<string>;
   /** Where to resolve the store when the payload names no cwd or does not parse. */
   cwd: string;
   /**
-   * Whether the session's work tree (else the store's project directory) is wired
-   * for the agent; the hook stays silent where it is not. Only a user-wide hook
-   * (Codex's) can run in a project disable has unwired. `projectRoot` runs git, so
-   * it is called only for an agent that needs the check.
+   * Whether the agent's hook speaks at `site`, in a project where a hook may speak:
+   * a global entry stays silent where the project's own entries run, and Codex's
+   * one hook where no config registers the mdmem server.
    */
-  projectWired: (
-    agent: HookAgent,
-    projectRoot: () => string
-  ) => Promise<boolean>;
+  speaks: (agent: HookAgent, site: HookSite) => Promise<boolean>;
 }
 
-/** The directory of the store a session in `cwd` uses, or undefined when there is none or the project is not wired for the agent. */
-async function wiredStore(
+/** Where the store of a session in `cwd` is, or undefined where the hook stays silent. */
+async function sessionStore(
   request: HookRequest,
   cwd: string
-): Promise<string | undefined> {
+): Promise<StoreLocation | undefined> {
   const location = locateStore(cwd);
-  if (!location.exists) {
+  // Outside git, only an existing store makes a project (ADR 0004).
+  if (!(location.exists || location.inRepository)) {
     return undefined;
   }
   const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
-  // The work tree as `mdmem enable` wires it: the session's own, else the project's directory.
+  const part = oneOf(request.part, HOOK_PARTS, "part");
+  // The work tree as `mdmem enable --project` wires it: the session's own, else the project's directory.
   const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
-  if (!(await request.projectWired(agent, projectRoot))) {
-    return undefined;
-  }
-  return location.dir;
+  const speaks = await request.speaks(agent, {
+    cwd,
+    projectRoot,
+    part,
+    global: request.global,
+  });
+  return speaks ? location : undefined;
+}
+
+/** The index part in a repository with no store yet. */
+export function noStoreYetContext(dir: string): string {
+  return `Memory store: none yet; the first memory_write creates ${dir}/ with ${INDEX_FILE}.`;
 }
 
 /** The context to inject, or undefined when the hook stays silent. */
@@ -239,7 +264,7 @@ async function hookContext(request: HookRequest): Promise<string | undefined> {
     payload = parsePayload(text);
   } catch (error) {
     // With no payload to name the session's directory, the process's stands in: the error is reported only where the hook would have spoken.
-    if ((await wiredStore(request, request.cwd)) === undefined) {
+    if ((await sessionStore(request, request.cwd)) === undefined) {
       return undefined;
     }
     throw error;
@@ -250,17 +275,19 @@ async function hookContext(request: HookRequest): Promise<string | undefined> {
   ) {
     return undefined;
   }
-  const dir = await wiredStore(
+  const location = await sessionStore(
     request,
     resolve(request.cwd, payload.cwd ?? ".")
   );
-  if (dir === undefined) {
+  if (location === undefined) {
     return undefined;
   }
-  const part = oneOf(request.part, HOOK_PARTS, "part");
-  return part === "protocol"
-    ? getMemoryProtocol()
-    : await indexContext(new MemoryStore(dir));
+  if (request.part === "protocol") {
+    return getMemoryProtocol();
+  }
+  return location.exists
+    ? await indexContext(new MemoryStore(location.dir))
+    : noStoreYetContext(location.dir);
 }
 
 /**

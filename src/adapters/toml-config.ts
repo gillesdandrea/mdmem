@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { parse, patch, stringify } from "@decimalturn/toml-patch";
 
@@ -27,7 +27,7 @@ import type { PlannedFile } from "./json-config.ts";
 
 export interface TomlTableEntry {
   label: string;
-  /** Relative to the project root. */
+  /** Relative to the project root, or absolute for a file outside the project. */
   file: string;
   /** The table's key path, each key a bare TOML key. */
   path: readonly string[];
@@ -71,7 +71,7 @@ async function tryReadToml(
   | { path: string; raw: string | undefined; doc: TomlObject }
   | { path: string; unreadable: UnreadableFile }
 > {
-  const path = join(root, file);
+  const path = isAbsolute(file) ? file : join(root, file);
   const raw = existsSync(path) ? await readFile(path, "utf-8") : undefined;
   if (raw === undefined) {
     return { path, raw, doc: {} };

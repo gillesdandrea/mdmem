@@ -22,7 +22,7 @@ import {
   STORE_DIR,
   versionOf,
 } from "./store.ts";
-import type { DocumentInfo } from "./store.ts";
+import type { DocumentInfo, StoreLocation } from "./store.ts";
 import { messageOf } from "./text.ts";
 
 /**
@@ -35,42 +35,44 @@ import { messageOf } from "./text.ts";
  * by its path, and searchMemories searches the memories the Check module loads.
  */
 
-/** The store of the project holding `startDir` (store.ts's locateStore says where it is). */
+/**
+ * Why a project has no store to read, and what creates one: in a repository, the
+ * first memory write or `mdmem init`; outside git, only `mdmem init` (ADR 0004).
+ */
+export function noStoreRefusal(location: StoreLocation): RefusalError {
+  const creates = location.inRepository
+    ? `the first memory write (memory_write, \`mdmem add\`) creates it, or run \`mdmem init\``
+    : "run `mdmem init` in the project first";
+  return new RefusalError(
+    `No ${STORE_DIR}/ store for this project yet (looked for ${location.dir}): ${creates}`
+  );
+}
+
+/** The store of the project holding `startDir` (store.ts's locateStore says where it is); refused when it does not exist yet. */
 export function openStore(startDir: string): MemoryStore {
   const location = locateStore(startDir);
   if (!location.exists) {
-    throw new RefusalError(
-      `No ${STORE_DIR}/ store for this project (looked for ${location.dir}): run \`mdmem init\` in the project first`
-    );
+    throw noStoreRefusal(location);
   }
   return new MemoryStore(location.dir);
 }
 
-/** What `mdmem init` did: the project's store, whether init created it, and whether git ignores it. */
-export interface InitResult {
-  store: MemoryStore;
-  created: boolean;
-  /** Whether git ignores the store; undefined outside a git work tree. */
-  ignored: boolean | undefined;
+/**
+ * Create the store at `location`, with an empty index. It never edits
+ * `.gitignore`: whether to ignore or commit the store is the user's choice.
+ */
+export async function createStore(
+  location: StoreLocation
+): Promise<MemoryStore> {
+  await mkdir(location.dir, { recursive: true });
+  const store = new MemoryStore(location.dir);
+  await reindex(store);
+  return store;
 }
 
-/**
- * Create the store of the project holding `startDir`, with an empty index, unless it
- * exists. It never edits `.gitignore`: whether to ignore or commit the store is the
- * user's choice, so it only reports whether git ignores it.
- */
-export async function initStore(startDir: string): Promise<InitResult> {
-  const location = locateStore(startDir);
-  const store = new MemoryStore(location.dir);
-  if (!location.exists) {
-    await mkdir(location.dir, { recursive: true });
-    await reindex(store);
-  }
-  return {
-    store,
-    created: !location.exists,
-    ignored: isIgnoredByGit(location.root, STORE_DIR),
-  };
+/** Whether git ignores the store at `location`; undefined outside a git work tree. */
+export function storeIgnored(location: StoreLocation): boolean | undefined {
+  return isIgnoredByGit(location.root, STORE_DIR);
 }
 
 /**
@@ -298,20 +300,18 @@ function parseWrittenMemory(path: string, content: string): Memory {
 }
 
 /**
- * Write a whole memory document under the store's version guard: `ifVersion` is the
- * version last read or written at `path`, or `new` for a file that must not exist
- * yet. The content must parse as a memory named after its file, in kebab-case or
- * snake_case, and hold no secret; it is stored as given, unknown fields included.
- * Updates the index as `reindex` does (./check.ts).
+ * Refuse a memory write that no store would take, before touching any: the content
+ * must parse as a memory named after its file, in kebab-case or snake_case, and
+ * hold no secret. Returns the memory's frontmatter. A caller that creates the
+ * store on the write checks it first, so a refused write creates nothing.
  */
-export async function writeDocument(
-  store: MemoryStore,
+export function checkMemoryWrite(
   path: string,
-  content: string,
-  ifVersion: string
-): Promise<VersionedWriteResult> {
+  content: string
+): Memory["frontmatter"] {
   assertMemoryPath(path);
-  const { name, description } = parseWrittenMemory(path, content).frontmatter;
+  const { frontmatter } = parseWrittenMemory(path, content);
+  const { name } = frontmatter;
   const expected = path.slice(0, -".md".length);
   if (!MEMORY_NAME_RE.test(expected)) {
     throw new RefusalError(
@@ -324,6 +324,22 @@ export async function writeDocument(
     );
   }
   assertNoSecrets(path, content);
+  return frontmatter;
+}
+
+/**
+ * Write a whole memory document under the store's version guard: `ifVersion` is the
+ * version last read or written at `path`, or `new` for a file that must not exist
+ * yet. The content is checked as `checkMemoryWrite` checks it, and stored as given,
+ * unknown fields included. Updates the index as `reindex` does (./check.ts).
+ */
+export async function writeDocument(
+  store: MemoryStore,
+  path: string,
+  content: string,
+  ifVersion: string
+): Promise<VersionedWriteResult> {
+  const { description } = checkMemoryWrite(path, content);
   const previous = await previousDescription(store, path);
   await store.create(path, content, ifVersion);
   return {
@@ -364,6 +380,24 @@ export async function deleteDocument(
   return reindexAfterWrite(store, path);
 }
 
+/** The memory document `saveMemory` writes for `input`: its path and content. */
+export function memoryDocument(input: MemoryInput): {
+  file: string;
+  content: string;
+} {
+  return {
+    file: memoryFileName(input.name),
+    content: serializeMemory({
+      frontmatter: {
+        name: input.name,
+        description: input.description,
+        metadata: { type: input.type },
+      },
+      body: input.body,
+    }),
+  };
+}
+
 /**
  * Save a memory at `<name>.md` through `writeDocument`, which validates it and
  * refreshes the index. Without `force`, an existing memory is refused with a
@@ -375,15 +409,7 @@ export async function saveMemory(
   input: MemoryInput,
   { force = false }: { force?: boolean } = {}
 ): Promise<WriteResult> {
-  const file = memoryFileName(input.name);
-  const content = serializeMemory({
-    frontmatter: {
-      name: input.name,
-      description: input.description,
-      metadata: { type: input.type },
-    },
-    body: input.body,
-  });
+  const { file, content } = memoryDocument(input);
   // Refuse the path before the read, which would create a missing index.
   assertMemoryPath(file);
   const current = force ? await findDocument(store, file) : null;

@@ -1,30 +1,46 @@
 /**
- * An Adapter wires one agent to the project's memory store in that agent's own
- * files (ADR 0003): its session-start hooks and its registration of the mdmem MCP
- * server, plus whatever else the agent needs (Claude Code: its auto memory off and
- * its memories imported). Each adapter declares its entries; enable adds the
- * missing ones, disable removes exactly mdmem's, and status reports each one.
- * Adapters are the only agent-specific code; everything else is agent-neutral.
+ * An Adapter wires one agent to mdmem in that agent's own files, in one of two
+ * scopes (ADR 0003, ADR 0004): global, in its user-wide files, so it applies in
+ * every project; or project, in files committed with one repository. The wiring is
+ * its session-start hooks and its registration of the mdmem MCP server, plus
+ * whatever else the agent needs (Claude Code: its auto memory off, and its memories
+ * imported when a store is created). Each adapter declares its entries per scope;
+ * enable adds the missing ones, disable removes exactly mdmem's, and status reports
+ * each one. Adapters are the only agent-specific code; everything else is
+ * agent-neutral.
  */
 
 import { isAbsolute } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookAgent, HookPart } from "../core/hook.ts";
-import type { ImportPreference } from "../core/import.ts";
+import type { HookAgent, HookPart, HookSite } from "../core/hook.ts";
 import { isObject } from "../core/object.ts";
 import type { SessionHistory } from "../core/protocol.ts";
 import type { MemoryStore } from "../core/store.ts";
 
-export interface AdapterContext {
-  /** The work tree whose agent files are wired: the working directory's own checkout, else the store's project directory. */
-  projectRoot: string;
-  /** The project's memory store. */
+/** Where an agent's wiring lives (GLOSSARY.md): its user-wide files, or one repository's. */
+export const SCOPES = ["global", "project"] as const;
+export type Scope = (typeof SCOPES)[number];
+
+/** The project an adapter works in. */
+export interface ProjectContext {
+  /** The work tree whose project files are wired: the working directory's own checkout, else the store's project directory. */
+  root: string;
+  /** The project's memory store, which may not exist yet. */
   store: MemoryStore;
+}
+
+/** What an agent's user-wide files are resolved from. */
+export interface UserContext {
   /** The environment agents read their own directories from (`CLAUDE_CONFIG_DIR`, …). */
   env: Record<string, string | undefined>;
   /** The home directory agents keep their user-wide files under. */
   home: string;
+}
+
+export interface AdapterContext extends UserContext {
+  /** The project holding the working directory; undefined outside any project (no repository, no store), where only the global scope applies. */
+  project?: ProjectContext;
   /** The directory mdmem runs in: an agent launched there reads only the files it finds from there. */
   cwd: string;
   /**
@@ -36,20 +52,19 @@ export interface AdapterContext {
   unknownEnv?: readonly string[];
 }
 
-export interface EnableOptions {
-  /** Claude Code: which side the import keeps on a same-name conflict between Claude's memories and the store. */
-  prefer?: ImportPreference;
+/** The project of a context that must have one: project-scope wiring is planned only in a project. */
+export function projectOf(ctx: AdapterContext): ProjectContext {
+  if (ctx.project === undefined) {
+    throw new Error(
+      `${ctx.cwd} is in no project; project-scope wiring is planned only in one`
+    );
+  }
+  return ctx.project;
 }
 
-export interface DisableOptions {
-  /** Codex: also remove mdmem's handlers from the user-wide hooks file. Ignored by agents with no user-wide entries. */
-  global?: boolean;
-  /**
-   * No project holds the working directory (no repository, no store): leave the
-   * project files alone, since the working directory may be one whose agent files
-   * are user-wide (the home directory), and act on user-wide entries only.
-   */
-  outsideProject?: boolean;
+/** The directory project files resolve against: the project's work tree, else the working directory (only absolute files are read there). */
+export function rootOf(ctx: AdapterContext): string {
+  return ctx.project?.root ?? ctx.cwd;
 }
 
 /** What enable or disable did, as the CLI prints it. */
@@ -98,19 +113,30 @@ export function unreadableRefusal({ file, reason }: UnreadableFile): string {
   return `${file} ${reason}: fix it, then run the command again`;
 }
 
+/** An agent's wiring in one scope. */
+export interface ScopeStatus {
+  scope: Scope;
+  /** Every entry of the scope is present. */
+  wired: boolean;
+  /** The agent is wired in this scope, wholly or in part: some of mdmem's own entries of the scope are present. */
+  enabled: boolean;
+  entries: WiringEntry[];
+}
+
 export interface AgentStatus {
   /** The adapter's id. */
   id: HookAgent;
   title: string;
-  /** Every entry is present. */
+  /** Every entry of at least one scope is present. */
   wired: boolean;
-  /** The project is wired for the agent, wholly or in part: some of mdmem's own entries for the project are present. */
+  /** Some scope is enabled for the agent. */
   enabled: boolean;
-  entries: WiringEntry[];
+  /** The global scope, then the project scope when status runs in a project. */
+  scopes: ScopeStatus[];
   /**
    * What keeps the wiring from working, as far as mdmem can see: the check reports
    * each one. A project file of the agent's that cannot be read is one whether or
-   * not the project is enabled for the agent; everything else only when it is.
+   * not the agent is enabled; everything else only when some scope is.
    */
   problems: string[];
   /** Status only, as warnings: a user-wide file that could not be read while the check leaves it out, or a state that depends on where status runs. */
@@ -141,14 +167,21 @@ export const MCP_SERVER_IDENTITY: KeyIdentity = {
   fix: `remove or rename it, or set its command to ${JSON.stringify(MCP_SERVER.command)} and its args to ${JSON.stringify(MCP_SERVER.args)}`,
 };
 
-/** The command of the agent's session-start hook that injects `part`. */
-export function hookCommand(agent: HookAgent, part: HookPart): string {
-  return `mdmem hook ${agent} ${part}`;
+/** The marker of a global hook entry, which project entries leave out so a 0.2.0 repository needs no migration (ADR 0004). */
+export const GLOBAL_HOOK_FLAG = "--global";
+
+/** The command of the agent's session-start hook that injects `part`; a global entry's carries GLOBAL_HOOK_FLAG. */
+export function hookCommand(
+  agent: HookAgent,
+  part: HookPart,
+  global = false
+): string {
+  return `mdmem hook ${agent} ${part}${global ? ` ${GLOBAL_HOOK_FLAG}` : ""}`;
 }
 
 /** The commands of the agent's session-start hooks, one per part. */
-export function hookCommands(agent: HookAgent): string[] {
-  return HOOK_PARTS.map((part) => hookCommand(agent, part));
+export function hookCommands(agent: HookAgent, global = false): string[] {
+  return HOOK_PARTS.map((part) => hookCommand(agent, part, global));
 }
 
 /** The label of an entry holding the session-start hooks that run `commands`. */
@@ -170,7 +203,7 @@ export function commitLine(
   return `Commit ${files.join(" and ")}: ${what} for everyone working in the repository, who then needs mdmem on PATH.${tail}`;
 }
 
-/** What an agent's status holds only when the project is enabled for it. */
+/** What an agent's status holds only when some scope is enabled for it. */
 export interface EnabledStatus {
   problems: string[];
   /** User-wide files read only for an enabled agent that cannot be read: a problem each, before `problems`. */
@@ -180,17 +213,23 @@ export interface EnabledStatus {
   notes: string[];
 }
 
+/** The command that wires `agent` in `scope`. */
+export function enableCommand(agent: HookAgent, scope: Scope): string {
+  return `mdmem enable ${agent}${scope === "project" ? " --project" : ""}`;
+}
+
 /**
- * How a check problem that `mdmem enable <agent>` fixes ends; while files that
- * enable refuses on cannot be read, it says to fix them first.
+ * How a check problem that `mdmem enable <agent>` fixes in `scope` ends; while
+ * files that enable refuses on cannot be read, it says to fix them first.
  */
 export function enableAdvice(
   agent: HookAgent,
+  scope: Scope,
   fixFirst: readonly string[] = []
 ): string {
   const fix =
     fixFirst.length === 0 ? "" : `fix ${fixFirst.join(" and ")}, then `;
-  return ` — ${fix}run \`mdmem enable ${agent}\``;
+  return ` — ${fix}run \`${enableCommand(agent, scope)}\``;
 }
 
 /** The check's problem for an agent file that cannot be read: it replaces the problems of the entries and values in it. */
@@ -202,32 +241,36 @@ function unreadableProblem(
 }
 
 /**
- * An agent's status from its entries: wired when every entry is present, and with
- * the problems, notes and further warnings of `whenEnabled`, which runs only when
- * the project is `enabled` for the agent. Of the `unreadable` files, a project
- * file is a problem whatever `enabled` says, since mdmem cannot tell what it
- * wires; a user-wide file (an absolute path) is one only for an enabled agent, and
- * a warning otherwise. While a file holding the agent's entries, which enable
- * reads and refuses on, cannot be read, each other problem ending in
- * `enableAdvice` says to fix that file first.
+ * An agent's status from its scopes: wired when every entry of some scope is
+ * present, and with the problems, notes and further warnings of `whenEnabled`,
+ * which runs only when some scope is enabled and gets those scopes. Of the
+ * `unreadable` files, a project file is a problem whatever is enabled, since mdmem
+ * cannot tell what it wires; a user-wide file (an absolute path) is one only for an
+ * enabled agent, and a warning otherwise. While a file holding a scope's entries,
+ * which enable reads and refuses on, cannot be read, each other problem ending in
+ * that scope's `enableAdvice` says to fix that file first.
  */
 export async function agentStatus(
   adapter: Pick<Adapter, "id" | "title">,
   {
-    entries,
-    enabled,
+    scopes,
     unreadable,
     warnings,
   }: {
-    entries: WiringEntry[];
-    enabled: boolean;
+    scopes: ScopeStatus[];
     unreadable: readonly UnreadableFile[];
     warnings: string[];
   },
-  whenEnabled: () => EnabledStatus | Promise<EnabledStatus>
+  whenEnabled: (
+    enabled: ReadonlySet<Scope>
+  ) => EnabledStatus | Promise<EnabledStatus>
 ): Promise<AgentStatus> {
+  const enabledScopes = new Set(
+    scopes.filter(({ enabled }) => enabled).map(({ scope }) => scope)
+  );
+  const enabled = enabledScopes.size > 0;
   const more: EnabledStatus = enabled
-    ? await whenEnabled()
+    ? await whenEnabled(enabledScopes)
     : { problems: [], notes: [] };
   const reported = (file: UnreadableFile): boolean =>
     enabled || !isAbsolute(file.file);
@@ -235,25 +278,28 @@ export async function agentStatus(
     ...unreadable.filter(reported),
     ...(more.unreadable ?? []),
   ];
-  const entryFiles = new Set(entries.map(({ file }) => file));
-  const refusedByEnable = unreadableProblems
-    .map(({ file }) => file)
-    .filter((file) => entryFiles.has(file));
-  const advice = enableAdvice(adapter.id);
-  const problems =
-    refusedByEnable.length === 0
-      ? more.problems
-      : more.problems.map((problem) =>
-          problem.endsWith(advice)
-            ? `${problem.slice(0, -advice.length)}${enableAdvice(adapter.id, refusedByEnable)}`
-            : problem
-        );
+  const problems = more.problems.map((problem) => {
+    for (const { scope, entries } of scopes) {
+      const advice = enableAdvice(adapter.id, scope);
+      if (!problem.endsWith(advice)) {
+        continue;
+      }
+      const entryFiles = new Set(entries.map(({ file }) => file));
+      const refusedByEnable = unreadableProblems
+        .map(({ file }) => file)
+        .filter((file) => entryFiles.has(file));
+      return refusedByEnable.length === 0
+        ? problem
+        : `${problem.slice(0, -advice.length)}${enableAdvice(adapter.id, scope, refusedByEnable)}`;
+    }
+    return problem;
+  });
   return {
     id: adapter.id,
     title: adapter.title,
-    wired: entries.every(({ present }) => present),
+    wired: scopes.some((scope) => scope.wired),
     enabled,
-    entries,
+    scopes,
     problems: [
       ...unreadableProblems.map((file) => unreadableProblem(adapter, file)),
       ...problems,
@@ -267,6 +313,20 @@ export async function agentStatus(
   };
 }
 
+/** A scope's status from its entries: wired when every one is present, enabled as the adapter decides. */
+export function scopeStatus(
+  scope: Scope,
+  entries: WiringEntry[],
+  enabled: boolean
+): ScopeStatus {
+  return {
+    scope,
+    wired: entries.every(({ present }) => present),
+    enabled,
+    entries,
+  };
+}
+
 /**
  * The problem of an enabled agent whose session-start hooks are missing: its
  * sessions start without the protocol, the index or both. `hooksIn` says how many
@@ -274,6 +334,7 @@ export async function agentStatus(
  */
 export function missingHooksProblem(
   adapter: Pick<Adapter, "id" | "title">,
+  scope: Scope,
   entries: readonly WiringEntry[],
   hooksIn: (entry: WiringEntry) => number
 ): string[] {
@@ -290,15 +351,15 @@ export function missingHooksProblem(
       ? "what that hook injects"
       : "what those hooks inject";
   return [
-    `${adapter.title}: missing ${where.join(", ")}, so its sessions start without ${injected}${enableAdvice(adapter.id)}`,
+    `${adapter.title}: missing ${where.join(", ")}, so its sessions start without ${injected}${enableAdvice(adapter.id, scope)}`,
   ];
 }
 
-/** What disable says of an agent's project files when no project holds the working directory, so it leaves them alone. */
+/** What `disable --project` says of an agent's project files when no project holds the working directory, so it leaves them alone. */
 export const OUTSIDE_PROJECT_LINE =
   "not in a project (no repository, no store here), so no project files were changed: run the command in the project's checkout";
 
-/** The plan of disabling an agent with no user-wide entries outside a project: it changes nothing. */
+/** The plan of `disable --project` outside a project: it changes nothing. */
 export function outsideProjectPlan(title: string): WiringPlan {
   const result: WiringResult = {
     title,
@@ -308,25 +369,39 @@ export function outsideProjectPlan(title: string): WiringPlan {
   return { write: () => Promise.resolve(result) };
 }
 
+/** What an agent's own memories are imported for: a store being created, and where the agent keeps its directories. */
+export interface ImportContext extends UserContext {
+  store: MemoryStore;
+}
+
+/** An import planned, nothing written yet: writing it returns the lines to report (none when nothing was imported) and the warnings. */
+export type PlannedMemoryImport = () => Promise<{
+  lines: string[];
+  warnings: string[];
+}>;
+
 export interface Adapter {
   readonly id: HookAgent;
   readonly title: string;
   /** The agent's command: on PATH, it counts the agent as found on this machine for `--all`. */
   readonly command: string;
   /** The agent's config directory, as the agent resolves it from the environment (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`): when it exists, the agent counts as found too. */
-  readonly configDir: (ctx: Pick<AdapterContext, "env" | "home">) => string;
+  readonly configDir: (ctx: UserContext) => string;
   /**
-   * Plan adding the entries that are missing, merging into the agent's files and
-   * leaving their other content as it was; running it again changes nothing. A
-   * refusal (an unparseable file, an import conflict) throws a RefusalError while
-   * planning, before any file is written.
+   * Plan adding the scope's entries that are missing, merging into the agent's
+   * files and leaving their other content as it was; running it again changes
+   * nothing. The project scope needs `ctx.project`. A refusal (an unparseable
+   * file, a key holding another value) throws a RefusalError while planning,
+   * before any file is written.
    */
-  enable: (ctx: AdapterContext, options: EnableOptions) => Promise<WiringPlan>;
-  /** Plan removing exactly mdmem's entries; a file left holding nothing else is deleted. The store is untouched. */
-  disable: (
-    ctx: AdapterContext,
-    options: DisableOptions
-  ) => Promise<WiringPlan>;
+  enable: (ctx: AdapterContext, scope: Scope) => Promise<WiringPlan>;
+  /**
+   * Plan removing exactly mdmem's entries of the scope; a file left holding nothing
+   * else is deleted. The store is untouched. The project scope outside a project
+   * changes nothing.
+   */
+  disable: (ctx: AdapterContext, scope: Scope) => Promise<WiringPlan>;
+  /** Both scopes' entries, the project's only in a project. */
   status: (ctx: AdapterContext) => Promise<AgentStatus>;
   /**
    * What an agent started in a submodule of a project wired for it misses beyond
@@ -334,12 +409,17 @@ export interface Adapter {
    */
   readonly submoduleClause?: string;
   /**
-   * For an agent whose session-start hook is user-wide (Codex), whether the project
-   * at `projectRoot` is wired for it: the hook stays silent where it is not.
-   * Absent for an agent whose hooks live in the project's own files, which disable
-   * removes.
+   * Whether the agent's session-start hook speaks at `site`, a project where a hook
+   * may speak: a global entry stays silent where the project's own entries run.
+   * Absent for an agent whose hook always speaks there.
    */
-  projectWired?: (projectRoot: string) => Promise<boolean>;
+  hookSpeaks?: (ctx: UserContext, site: HookSite) => Promise<boolean>;
+  /**
+   * Plan importing the memories the agent kept in its own directories into a store
+   * being created, for an agent wired in either scope with its own memory off.
+   * Absent for an agent with nothing to import.
+   */
+  importMemories?: (ctx: ImportContext) => Promise<PlannedMemoryImport>;
   /**
    * Where the agent keeps its past sessions of the project at `projectRoot`, and how
    * to search them, as the consolidation prompt names them: its directories resolved
@@ -347,7 +427,7 @@ export interface Adapter {
    * history is not files to grep (Bob's database), which keeps the prompt's generic line.
    */
   readonly sessionHistory?: (
-    ctx: Pick<AdapterContext, "projectRoot" | "env" | "home">
+    ctx: UserContext & { projectRoot: string }
   ) => SessionHistory;
 }
 

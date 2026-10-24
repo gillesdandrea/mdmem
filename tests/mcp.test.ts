@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   realpath,
@@ -14,10 +16,13 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 import { reindex } from "../src/core/check.ts";
+import { HOOK_PARTS } from "../src/core/hook.ts";
+import { claudeProjectDir } from "../src/core/import.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import { STORE_PAGE_SIZE } from "../src/core/operations.ts";
 import { getConsolidatePrompt } from "../src/core/protocol.ts";
 import { MemoryStore } from "../src/core/store.ts";
+import { gitRepo } from "./git-fixture.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
 const NEXT_CURSOR_RE = /next cursor: (?<cursor>\S+)/u;
@@ -51,14 +56,21 @@ async function withServer(
   {
     clientName = "test",
     env,
-  }: { clientName?: string; env?: (dir: string) => Record<string, string> } = {}
+    setup,
+  }: {
+    clientName?: string;
+    env?: (dir: string) => Record<string, string>;
+    /** Prepares the project instead of the default empty store: a repository with no store, say. */
+    setup?: (dir: string) => Promise<void>;
+  } = {}
 ) {
-  const dir = await mkdtemp(join(tmpdir(), "mdmem-mcp-"));
+  const dir = await realpath(await mkdtemp(join(tmpdir(), "mdmem-mcp-")));
   const store = new MemoryStore(join(dir, ".memory"));
-  // an empty store for the server to open
-  await reindex(store);
+  // an empty store for the server to open, unless the test prepares its own project
+  await (setup === undefined ? reindex(store) : setup(dir));
   const transport = new StdioClientTransport({
-    command: "bun",
+    // bun by its own path, so a test can replace PATH
+    command: process.execPath,
     args: [CLI, "mcp"],
     cwd: dir,
     env: (env ?? tempHomeEnv)(dir),
@@ -124,6 +136,44 @@ function write(
 
 function versionOfResult(result: { structuredContent?: unknown }): string {
   return (result.structuredContent as { version: string }).version;
+}
+
+/** Claude Code's global hook entry for `part`, as `mdmem enable claude-code` writes it. */
+function globalClaudeHook(part: string): object {
+  return {
+    matcher: "startup|clear|compact",
+    hooks: [
+      { type: "command", command: `mdmem hook claude-code ${part} --global` },
+    ],
+  };
+}
+
+/** A repository with no store, under a home where Claude Code is wired globally and holds a memory of its own for it, with mdmem on PATH. */
+async function unstoredRepo(dir: string): Promise<void> {
+  await gitRepo(dir);
+  const env = tempHomeEnv(dir);
+  // Claude Code wired globally: its auto memory off in the user settings, and a memory of its own for the repository
+  const config = env.CLAUDE_CONFIG_DIR ?? "";
+  await mkdir(config, { recursive: true });
+  await writeFile(
+    join(config, "settings.json"),
+    JSON.stringify({
+      autoMemoryEnabled: false,
+      hooks: { SessionStart: HOOK_PARTS.map(globalClaudeHook) },
+      permissions: { allow: ["mcp__mdmem"] },
+    }),
+    "utf-8"
+  );
+  // mdmem on PATH beside git, so the check does not depend on this machine
+  await mkdir(join(dir, "bin"));
+  await writeFile(join(dir, "bin", "mdmem"), "#!/bin/sh\n", "utf-8");
+  await chmod(join(dir, "bin", "mdmem"), 0o755);
+  const memories = join(
+    claudeProjectDir(dir, { env, home: env.HOME }),
+    "memory"
+  );
+  await mkdir(memories, { recursive: true });
+  await writeFile(join(memories, "b.md"), memory("b", "From Claude."), "utf-8");
 }
 
 describe("mcp server", () => {
@@ -784,5 +834,58 @@ describe("mcp server", () => {
         client.getPrompt({ name: "consolidate", arguments: { agent: "nope" } })
       ).rejects.toThrow('unknown agent "nope". Known: claude-code, bob, codex');
     });
+  });
+
+  test("in a repository with no store, reads refuse, memory_check checks the wiring alone, and the first memory_write creates the store, importing Claude Code's memories where Claude Code is wired", async () => {
+    await withServer(
+      async ({ client, store }) => {
+        const read = await client.callTool({
+          name: "memory_read",
+          arguments: { path: "MEMORY.md" },
+        });
+        expect(read.isError).toBe(true);
+        expect(textOf(read)).toBe(
+          `No .memory/ store for this project yet (looked for ${store.root}): the first memory write (memory_write, \`mdmem add\`) creates it, or run \`mdmem init\``
+        );
+        const check = await client.callTool({
+          name: "memory_check",
+          arguments: {},
+        });
+        expect(textOf(check)).toBe("✓ no memory store yet, no problems");
+        // A write that names a version cannot match a document that does not exist, so it creates nothing.
+        const stale = await write(
+          client,
+          "uses-bun.md",
+          memory("uses-bun", "Use bun."),
+          "0123456789ab"
+        );
+        expect(stale.isError).toBe(true);
+        expect(textOf(stale)).toContain(
+          'Version conflict on "uses-bun.md": the file does not exist'
+        );
+        expect(existsSync(store.root)).toBe(false);
+
+        const written = await write(
+          client,
+          "uses-bun.md",
+          memory("uses-bun", "Use bun."),
+          "new"
+        );
+        expect(written.isError).toBeUndefined();
+        const lines = textOf(written).split("\n");
+        expect(lines[0]).toBe(`Created the memory store at ${store.root}`);
+        expect(lines[1]).toBe("Copied into .memory/:");
+        expect(lines).toContain("Saved uses-bun.md");
+        expect(store.exists("b.md")).toBe(true);
+        expect(store.exists("uses-bun.md")).toBe(true);
+      },
+      {
+        setup: unstoredRepo,
+        env: (dir) => ({
+          ...tempHomeEnv(dir),
+          PATH: `${join(dir, "bin")}:${dirname(Bun.which("git") ?? "/usr/bin/git")}`,
+        }),
+      }
+    );
   });
 });

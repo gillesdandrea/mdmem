@@ -1,7 +1,7 @@
 import { join, resolve } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookPart } from "../core/hook.ts";
+import type { HookPart, HookSite } from "../core/hook.ts";
 import {
   claudeConfigDir,
   claudeProjectDir,
@@ -21,14 +21,20 @@ import {
   MCP_SERVER_IDENTITY,
   missingHooksProblem,
   outsideProjectPlan,
+  projectOf,
+  rootOf,
+  scopeStatus,
 } from "./adapter.ts";
 import type {
   AdapterContext,
   AdapterFor,
   AgentStatus,
-  DisableOptions,
-  EnableOptions,
+  ImportContext,
+  PlannedMemoryImport,
+  Scope,
   UnreadableFile,
+  UserContext,
+  WiringEntry,
   WiringPlan,
 } from "./adapter.ts";
 import {
@@ -46,13 +52,17 @@ import type { JsonConfigFile, JsonEntry, JsonObject } from "./json-config.ts";
 const ID = "claude-code";
 const TITLE = "Claude Code";
 
-// Claude Code is wired through files committed with the repository (ADR 0003): its
-// auto memory off, two session-start hooks injecting the protocol and the index, and
-// the mdmem MCP server with permission for its tools.
+// Claude Code is wired in either scope (ADR 0004): its auto memory off, two
+// session-start hooks injecting the protocol and the index, and the mdmem MCP server
+// with permission for its tools. The global scope writes its user settings and the
+// user config holding its user-scope servers; the project scope, files committed
+// with the repository (ADR 0003).
 const SETTINGS = ".claude/settings.json";
 // The user's own project settings, which override the committed ones.
 const SETTINGS_LOCAL = ".claude/settings.local.json";
 const MCP_CONFIG = ".mcp.json";
+// Claude Code's user config: in CLAUDE_CONFIG_DIR when set, else in the home directory.
+const USER_CONFIG = ".claude.json";
 // A new session, /clear and compaction; never a resume, which already holds the injection.
 const HOOK_MATCHER = "startup|clear|compact";
 const SERVER = { type: "stdio", ...MCP_SERVER };
@@ -66,101 +76,72 @@ const ENV_TRUE = new Set(["1", "true", "yes", "on"]);
 const ENV_FALSE = new Set(["0", "false", "no", "off"]);
 const DISABLE_HOOKS_KEY = "disableAllHooks";
 
-function hookEntry(part: HookPart): JsonEntry {
-  const command = hookCommand(ID, part);
+/** The hook entry injecting `part`, the global scope's marked with `--global`. */
+function hookEntry(part: HookPart, global: boolean): JsonEntry {
+  const command = hookCommand(ID, part, global);
   return hookGroupEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
     matcher: HOOK_MATCHER,
     hooks: [{ type: "command", command }],
   });
 }
 
-const HOOK_ENTRIES = HOOK_PARTS.map(hookEntry);
-const HOOK_LABELS = new Set(HOOK_ENTRIES.map(({ label }) => label));
+const PROJECT_HOOKS = HOOK_PARTS.map((part) => hookEntry(part, false));
+const GLOBAL_HOOKS = HOOK_PARTS.map((part) => hookEntry(part, true));
+const HOOK_LABELS = new Set(
+  [...PROJECT_HOOKS, ...GLOBAL_HOOKS].map(({ label }) => label)
+);
 
-const FILES: readonly JsonConfigFile[] = [
-  {
-    file: SETTINGS,
-    entries: [
-      valueEntry(AUTO_MEMORY_LABEL, [AUTO_MEMORY_KEY], false),
-      ...HOOK_ENTRIES,
-      arrayItemEntry(
-        `permissions.allow "${TOOLS_PERMISSION}"`,
-        ["permissions", "allow"],
-        TOOLS_PERMISSION
-      ),
-    ],
-  },
-  {
-    file: MCP_CONFIG,
-    entries: [
-      valueEntry(
-        "mcpServers.mdmem",
-        ["mcpServers", "mdmem"],
-        SERVER,
-        MCP_SERVER_IDENTITY
-      ),
-    ],
-  },
+/** The entries of a settings file: auto memory off, the hooks, and the tools' permission. */
+function settingsEntries(hooks: readonly JsonEntry[]): JsonEntry[] {
+  return [
+    valueEntry(AUTO_MEMORY_LABEL, [AUTO_MEMORY_KEY], false),
+    ...hooks,
+    arrayItemEntry(
+      `permissions.allow "${TOOLS_PERMISSION}"`,
+      ["permissions", "allow"],
+      TOOLS_PERMISSION
+    ),
+  ];
+}
+
+const SERVER_ENTRY = valueEntry(
+  "mcpServers.mdmem",
+  ["mcpServers", "mdmem"],
+  SERVER,
+  MCP_SERVER_IDENTITY
+);
+
+const PROJECT_FILES: readonly JsonConfigFile[] = [
+  { file: SETTINGS, entries: settingsEntries(PROJECT_HOOKS) },
+  { file: MCP_CONFIG, entries: [SERVER_ENTRY] },
 ];
 
-/** How to import again past the marker, worded alike wherever mdmem names it. */
-function reimportAdvice(marker: string): string {
-  return `To import again, delete ${marker} and run \`mdmem enable ${ID}\` again.`;
-}
-
-/** The import's report and warnings, once written, and the marker to record when it imported something. */
-interface ImportOutcome {
-  lines: string[];
-  warnings: string[];
-  /** The path of the import marker to write; undefined when there is nothing to record. */
-  markerToWrite?: string;
-}
-
-/**
- * Plan importing Claude's memories unless this user already did for the
- * repository: the import runs once, so a later enable neither refuses again over
- * files settled with --prefer nor brings back a memory deleted since. A conflict
- * refuses here, before anything is written.
- */
-async function planImportOnce(
-  ctx: AdapterContext,
-  options: EnableOptions
-): Promise<() => Promise<ImportOutcome>> {
-  const environment = { env: ctx.env, home: ctx.home };
-  const marker = importMarker(ctx.store, environment);
-  const recorded = await readImportMarker(marker);
-  if (recorded !== undefined) {
-    const when = recorded === "" ? "" : ` (${recorded})`;
-    const prefer =
-      options.prefer === undefined
-        ? ""
-        : `, so --prefer ${options.prefer} was not used`;
-    const outcome: ImportOutcome = {
-      lines: [
-        `Claude Code's memories were already imported${when}: skipped the import${prefer}. ${reimportAdvice(marker)}`,
-      ],
-      warnings: [],
-    };
-    return () => Promise.resolve(outcome);
-  }
-  const write = await planClaudeImport(ctx.store, {
-    ...environment,
-    prefer: options.prefer,
-  });
-  return async () => {
-    const result = await write();
-    return {
-      lines: formatImport(result),
-      warnings: result.warnings,
-      // Nothing to remember when Claude held no memories for the repository.
-      markerToWrite: result.sources.length > 0 ? marker : undefined,
-    };
-  };
-}
-
 /** Claude Code's user settings file, in its config directory. */
-function userSettings(ctx: AdapterContext): string {
+function userSettings(ctx: UserContext): string {
   return join(claudeConfigDir(ctx), "settings.json");
+}
+
+/** Claude Code's user config, whose top-level mcpServers are its user-scope servers. */
+function userConfig({ env, home }: UserContext): string {
+  return join(env.CLAUDE_CONFIG_DIR || home, USER_CONFIG);
+}
+
+/** The global scope's files, by their absolute paths. */
+function globalFiles(ctx: UserContext): JsonConfigFile[] {
+  return [
+    { file: userSettings(ctx), entries: settingsEntries(GLOBAL_HOOKS) },
+    { file: userConfig(ctx), entries: [SERVER_ENTRY] },
+  ];
+}
+
+/** The scope's files, and the directory relative ones resolve against. */
+function scopeFiles(
+  ctx: AdapterContext,
+  scope: Scope
+): { root: string; files: readonly JsonConfigFile[] } {
+  return scope === "global"
+    ? { root: rootOf(ctx), files: globalFiles(ctx) }
+    : { root: projectOf(ctx).root, files: PROJECT_FILES };
 }
 
 /** A settings file Claude Code reads, as read: its document, or why it cannot be read. */
@@ -171,15 +152,18 @@ interface SettingsFile {
 
 /**
  * Claude Code's settings files in the order it reads a setting: the local project
- * settings, then the committed ones, then the user's. Managed settings and
- * --settings are not read.
+ * settings, then the committed ones, then the user's; the user's alone outside a
+ * project. Managed settings and --settings are not read.
  */
 function readSettings(ctx: AdapterContext): Promise<SettingsFile[]> {
-  const files = [SETTINGS_LOCAL, SETTINGS, userSettings(ctx)];
+  const files = [
+    ...(ctx.project === undefined ? [] : [SETTINGS_LOCAL, SETTINGS]),
+    userSettings(ctx),
+  ];
   return Promise.all(
     files.map(async (file) => ({
       file,
-      read: await configDocument(ctx.projectRoot, file),
+      read: await configDocument(rootOf(ctx), file),
     }))
   );
 }
@@ -208,11 +192,13 @@ function claudeSetting(
 /**
  * Claude Code's auto memory still on, which makes Claude save to its own directory
  * beside the store: forced on by the environment, or autoMemoryEnabled not false
- * where Claude Code reads it first.
+ * where Claude Code reads it first. The fix names the file of the scope enabled,
+ * the project's when both are; a project's true overrides the user's false.
  */
 function autoMemoryProblem(
   ctx: AdapterContext,
-  settings: readonly SettingsFile[]
+  settings: readonly SettingsFile[],
+  enabled: ReadonlySet<Scope>
 ): string[] {
   const on = "Claude Code's auto memory is on";
   const consequence =
@@ -235,8 +221,15 @@ function autoMemoryProblem(
       `${on}: ${SETTINGS_LOCAL} sets ${AUTO_MEMORY_KEY} to ${JSON.stringify(setting.value)}, overriding ${SETTINGS}, ${consequence} — remove it from ${SETTINGS_LOCAL}`,
     ];
   }
+  const scope = enabled.has("project") ? "project" : "global";
+  if (setting?.file === SETTINGS && scope === "global") {
+    return [
+      `${on}: ${SETTINGS} sets ${AUTO_MEMORY_KEY} to ${JSON.stringify(setting.value)}, overriding ${userSettings(ctx)}, ${consequence} — remove it from ${SETTINGS}`,
+    ];
+  }
+  const file = scope === "project" ? SETTINGS : userSettings(ctx);
   return [
-    `${on}: ${AUTO_MEMORY_KEY} is not false in ${SETTINGS}, ${consequence}${enableAdvice(ID)}`,
+    `${on}: ${AUTO_MEMORY_KEY} is not false in ${file}, ${consequence}${enableAdvice(ID, scope)}`,
   ];
 }
 
@@ -250,6 +243,13 @@ function disabledHooksProblem(settings: readonly SettingsFile[]): string[] {
     : [];
 }
 
+/** A scope is enabled by any of mdmem's entries but autoMemoryEnabled: false, which alone may be the user's own choice. */
+function enabledBy(entries: readonly WiringEntry[]): boolean {
+  return entries.some(
+    ({ label, present }) => present && label !== AUTO_MEMORY_LABEL
+  );
+}
+
 export const claudeCodeAdapter: AdapterFor<typeof ID> = {
   id: ID,
   command: "claude",
@@ -261,61 +261,42 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
     search: "grep the `.jsonl` files there, one per session of this project",
   }),
 
-  async enable(
-    ctx: AdapterContext,
-    options: EnableOptions
-  ): Promise<WiringPlan> {
-    // Read every file and plan the import, so an unparseable file or an import conflict refuses before anything is written.
-    const plan = await planConfigs(ctx.projectRoot, FILES, "add");
-    const importOnce = await planImportOnce(ctx, options);
+  async enable(ctx: AdapterContext, scope: Scope): Promise<WiringPlan> {
+    // Read every file first, so an unparseable one refuses before anything is written.
+    const { root, files } = scopeFiles(ctx, scope);
+    const plan = await planConfigs(root, files, "add");
+    const after =
+      scope === "project"
+        ? commitLine([SETTINGS, MCP_CONFIG], `they wire ${TITLE}`)
+        : `${TITLE}'s auto memory is now off in every project, and the first memory saved in a repository creates its store, importing the memories ${TITLE} kept for it.`;
     return {
       write: async () => {
-        const imported = await importOnce();
-        // Recorded before the config files, so a failed write leaves the import done once.
-        if (imported.markerToWrite !== undefined) {
-          await writeImportMarker(imported.markerToWrite, ctx.store);
-        }
         await writeConfigs(plan);
         return {
           title: TITLE,
-          actions: [
-            ...imported.lines,
-            ...describePlan(plan, "add"),
-            commitLine([SETTINGS, MCP_CONFIG], `they wire ${TITLE}`),
-          ],
-          warnings: imported.warnings,
+          actions: [...describePlan(plan, "add"), after],
+          warnings: [],
         };
       },
     };
   },
 
-  async disable(
-    ctx: AdapterContext,
-    options: DisableOptions
-  ): Promise<WiringPlan> {
-    if (options.outsideProject) {
+  async disable(ctx: AdapterContext, scope: Scope): Promise<WiringPlan> {
+    if (scope === "project" && ctx.project === undefined) {
       return outsideProjectPlan(TITLE);
     }
-    const plan = await planConfigs(ctx.projectRoot, FILES, "remove");
-    const marker = importMarker(ctx.store, { env: ctx.env, home: ctx.home });
-    // Auto memory is back on, so Claude may save memories that a later enable,
-    // skipping the import, would leave out.
-    const markerLine =
-      (await readImportMarker(marker)) === undefined
-        ? []
-        : [
-            `The import marker stays, so a later \`mdmem enable ${ID}\` skips the import and leaves out the memories Claude Code saves meanwhile. ${reimportAdvice(marker)}`,
-          ];
+    const { root, files } = scopeFiles(ctx, scope);
+    const plan = await planConfigs(root, files, "remove");
+    const kept =
+      scope === "project"
+        ? "The memories imported from Claude Code stay in the store."
+        : "The memories imported from Claude Code stay in the stores they were imported into.";
     return {
       write: async () => {
         await writeConfigs(plan);
         return {
           title: TITLE,
-          actions: [
-            ...describePlan(plan, "remove"),
-            "The memories imported from Claude Code stay in the store.",
-            ...markerLine,
-          ],
+          actions: [...describePlan(plan, "remove"), kept],
           warnings: [],
         };
       },
@@ -323,48 +304,96 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
-    const { entries, unreadable } = await configStatus(ctx.projectRoot, FILES);
-    // The local settings hold none of mdmem's entries, but Claude Code reads them first.
-    const local = await configDocument(ctx.projectRoot, SETTINGS_LOCAL);
-    // autoMemoryEnabled: false alone may be the user's own choice, not mdmem's wiring.
-    const enabled = entries.some(
-      ({ label, present }) => present && label !== AUTO_MEMORY_LABEL
+    const global = await configStatus(rootOf(ctx), globalFiles(ctx));
+    const { project } = ctx;
+    const inProject =
+      project === undefined
+        ? undefined
+        : {
+            ...(await configStatus(project.root, PROJECT_FILES)),
+            // The local settings hold none of mdmem's entries, but Claude Code reads them first.
+            local: await configDocument(project.root, SETTINGS_LOCAL),
+            // In a project at the home directory, the user settings are the project's, reported once.
+            settings: resolve(project.root, SETTINGS),
+          };
+    const scopes = [
+      scopeStatus("global", global.entries, enabledBy(global.entries)),
+      ...(inProject === undefined
+        ? []
+        : [
+            scopeStatus(
+              "project",
+              inProject.entries,
+              enabledBy(inProject.entries)
+            ),
+          ]),
+    ];
+    const globalUnreadable = global.unreadable.filter(
+      ({ file }) => resolve(file) !== inProject?.settings
     );
     return agentStatus(
       claudeCodeAdapter,
       {
-        entries,
-        enabled,
+        scopes,
         unreadable: [
-          ...("unreadable" in local ? [local.unreadable] : []),
-          ...unreadable,
+          ...(inProject !== undefined && "unreadable" in inProject.local
+            ? [inProject.local.unreadable]
+            : []),
+          ...(inProject?.unreadable ?? []),
+          ...globalUnreadable,
         ],
         warnings: [],
       },
-      async () => {
+      async (enabled) => {
         const settings = await readSettings(ctx);
-        const user = settings.at(-1)?.read;
-        // In a project at the home directory, the user settings are the project's, reported above.
-        const userIsProject =
-          resolve(ctx.projectRoot, SETTINGS) === resolve(userSettings(ctx));
         return {
           problems: [
-            ...missingHooksProblem(claudeCodeAdapter, entries, ({ label }) =>
-              HOOK_LABELS.has(label) ? 1 : 0
-            ),
+            ...scopes
+              .filter(({ scope }) => enabled.has(scope))
+              .flatMap(({ scope, entries }) =>
+                missingHooksProblem(claudeCodeAdapter, scope, entries, (e) =>
+                  HOOK_LABELS.has(e.label) ? 1 : 0
+                )
+              ),
             ...disabledHooksProblem(settings),
-            ...autoMemoryProblem(ctx, settings),
+            ...autoMemoryProblem(ctx, settings, enabled),
           ],
-          unreadable:
-            !userIsProject && user !== undefined && "unreadable" in user
-              ? [user.unreadable]
-              : [],
-          notes: [
-            `${TITLE} runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,
-          ],
+          notes: enabled.has("project")
+            ? [
+                `${TITLE} runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,
+              ]
+            : [],
         };
       }
     );
+  },
+
+  // A global entry stays silent where the project's own entry for its part runs (ADR 0004): Claude Code reads the project's settings only from the folder it was started in.
+  async hookSpeaks(_ctx: UserContext, site: HookSite): Promise<boolean> {
+    if (!site.global) {
+      return true;
+    }
+    const read = await configDocument(site.cwd, SETTINGS);
+    return !("doc" in read && hookEntry(site.part, false).has(read.doc));
+  },
+
+  // Once per user and repository: the marker keeps a store created again from bringing back memories deleted since.
+  async importMemories(ctx: ImportContext): Promise<PlannedMemoryImport> {
+    const environment = { env: ctx.env, home: ctx.home };
+    const marker = importMarker(ctx.store, environment);
+    if ((await readImportMarker(marker)) !== undefined) {
+      return () => Promise.resolve({ lines: [], warnings: [] });
+    }
+    const write = await planClaudeImport(ctx.store, environment);
+    return async () => {
+      const result = await write();
+      // Nothing to report or remember when Claude held no memories for the repository.
+      if (result.sources.length === 0) {
+        return { lines: [], warnings: result.warnings };
+      }
+      await writeImportMarker(marker, ctx.store);
+      return { lines: formatImport(result), warnings: result.warnings };
+    };
   },
 
   submoduleClause: `${TITLE} applies the submodule's settings, not the superproject's, so mdmem's setting that turns its auto memory off does not apply`,

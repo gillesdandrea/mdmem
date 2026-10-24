@@ -24,6 +24,7 @@ import {
   claudeProjectKey,
   formatImport,
   importClaudeMemories,
+  planClaudeImport,
 } from "../src/core/import.ts";
 import type { ImportOptions } from "../src/core/import.ts";
 import { parseMemory, serializeMemory } from "../src/core/memory.ts";
@@ -41,7 +42,6 @@ import {
   getMemoryProtocol,
   PROTOCOL_MAX_CHARS,
 } from "../src/core/protocol.ts";
-import { RefusalError } from "../src/core/refusal.ts";
 import { findSecrets } from "../src/core/secrets.ts";
 import {
   locateStore,
@@ -857,6 +857,7 @@ describe("location", () => {
       root: repo,
       dir: join(repo, ".memory"),
       exists: false,
+      inRepository: true,
     });
     await dir("repo", ".memory");
     for (const start of [repo, join(tmp, "wt"), deep]) {
@@ -864,6 +865,7 @@ describe("location", () => {
         root: repo,
         dir: join(repo, ".memory"),
         exists: true,
+        inRepository: true,
       });
     }
   });
@@ -921,12 +923,14 @@ describe("location", () => {
       root: start,
       dir: join(start, ".memory"),
       exists: false,
+      inRepository: false,
     });
     await dir("proj", ".memory");
     expect(locateStore(start, tmp)).toEqual({
       root: join(tmp, "proj"),
       dir: join(tmp, "proj", ".memory"),
       exists: true,
+      inRepository: false,
     });
   });
 
@@ -940,6 +944,7 @@ describe("location", () => {
       root: start,
       dir: join(start, ".memory"),
       exists: false,
+      inRepository: false,
     });
   });
 });
@@ -1065,56 +1070,31 @@ describe("import from Claude Code", () => {
     );
   });
 
-  test("refuses on same-name files with different content, listing each, and changes nothing", async () => {
-    await store.create("a.md", claudeMemoryText("a", "Store's a"));
-    await store.create("b.md", claudeMemoryText("b", "Store's b"));
-    await reindex(store);
-    await put(claudeDir(), "a.md", claudeMemoryText("a", "Claude's a"));
-    // The same file on a filesystem that ignores case, so a conflict everywhere.
-    await put(claudeDir(), "B.md", claudeMemoryText("b", "Claude's b"));
-    await put(claudeDir(), "c.md", claudeMemoryText("c", "Claude's c"));
-    const before = await snapshot(store.root);
-
-    const refused = importClaudeMemories(store, options);
-
-    await expect(refused).rejects.toThrow(RefusalError);
-    await expect(refused).rejects.toThrow(
-      /a\.md: .* differs from .*; --prefer claude or --prefer mdmem settles it[\s\S]*b\.md: [\s\S]*Ways past it/u
-    );
-    // Claude's directories never change, so after an agent's merge only --prefer mdmem gets past the conflict.
-    await expect(refused).rejects.toThrow(
-      `have an agent merge Claude's versions into the store: run \`mdmem consolidate\` and point it at ${claudeDir()}; then run \`mdmem enable claude-code --prefer mdmem\` to keep the merged files`
-    );
-    expect(await snapshot(store.root)).toEqual(before);
-    expect(await readdir(dirname(claudeDir()))).toEqual(["memory"]);
-  });
-
-  test("--prefer mdmem keeps the store's file, --prefer claude takes Claude's and its description", async () => {
+  test("of same-name files with different content, keeps the store's and reports Claude's as left behind, its pointer not taken", async () => {
     await store.create("a.md", claudeMemoryText("a", "Store's a"));
     await store.create("MEMORY.md", "");
     await put(claudeDir(), "a.md", claudeMemoryText("a", "Claude's a"));
+    // The same file on a filesystem that ignores case.
     await put(claudeDir(), "MEMORY.md", "- [A](a.md) — Claude's pointer\n");
 
-    const kept = await importClaudeMemories(store, {
-      ...options,
-      prefer: "mdmem",
-    });
-    expect(kept.kept).toEqual(["a.md"]);
-    expect(kept.backup).toBeUndefined();
+    const result = await importClaudeMemories(store, options);
+
+    expect(result.copied).toEqual([]);
+    expect(result.leftBehind).toEqual([{ file: "a.md", from: claudeDir() }]);
     expect(await store.view("a.md")).toBe(claudeMemoryText("a", "Store's a"));
     // Claude's pointer describes Claude's version, so a kept file does not take it.
     expect(await store.view("MEMORY.md")).toBe("");
-
-    const replaced = await importClaudeMemories(store, {
-      ...options,
-      prefer: "claude",
-    });
-    expect(replaced.replaced).toEqual([{ file: "a.md", from: claudeDir() }]);
-    expect(await store.view("a.md")).toBe(claudeMemoryText("a", "Claude's a"));
-    expect(await store.view("MEMORY.md")).toBe("- [A](a.md) — Claude's a\n");
+    expect(formatImport(result)).toEqual([
+      "Nothing to import: .memory/ keeps its own version of every file that differs.",
+      "Other versions, not imported, left in Claude's directories:",
+      `    a.md (from ${claudeDir()})`,
+      "These directories can be deleted once you no longer need the versions not imported, which are nowhere else:",
+      `    ${claudeDir()}`,
+    ]);
+    expect(await readdir(dirname(claudeDir()))).toEqual(["memory"]);
   });
 
-  test("folds in a worktree's own Claude key; two keys that disagree are refused unless --prefer mdmem keeps the store's file", async () => {
+  test("folds in a worktree's own Claude key; of two keys that disagree, the repository's is copied and the worktree's left behind", async () => {
     const worktree = join(tmp, "wt");
     git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
     await put(claudeDir(), "a.md", claudeMemoryText("a", "From the key"));
@@ -1123,6 +1103,8 @@ describe("import from Claude Code", () => {
       "b.md",
       claudeMemoryText("b", "From the worktree")
     );
+    await put(claudeDir(), "c.md", claudeMemoryText("c", "One"));
+    await put(claudeDir(worktree), "c.md", claudeMemoryText("c", "Two"));
 
     const result = await importClaudeMemories(store, options);
 
@@ -1130,28 +1112,35 @@ describe("import from Claude Code", () => {
     expect(result.copied).toEqual([
       { file: "a.md", from: claudeDir() },
       { file: "b.md", from: claudeDir(worktree) },
+      { file: "c.md", from: claudeDir() },
     ]);
+    expect(result.leftBehind).toEqual([
+      { file: "c.md", from: claudeDir(worktree) },
+    ]);
+    expect(await store.view("c.md")).toBe(claudeMemoryText("c", "One"));
     expect(formatImport(result)).toContain(`    ${claudeDir(worktree)}`);
+  });
 
-    await put(claudeDir(), "c.md", claudeMemoryText("c", "One"));
-    await put(claudeDir(worktree), "c.md", claudeMemoryText("c", "Two"));
-    await expect(
-      importClaudeMemories(store, { ...options, prefer: "claude" })
-    ).rejects.toThrow(
-      /c\.md: Claude's directories hold different versions .*; no --prefer settles it until the store holds its own c\.md/u
+  test("a store that does not exist yet when the import is planned gets no backup", async () => {
+    const fresh = new MemoryStore(join(tmp, "fresh", ".memory"));
+    await mkdir(dirname(fresh.root));
+    await put(
+      join(
+        home,
+        ".claude",
+        "projects",
+        claudeProjectKey(dirname(fresh.root)),
+        "memory"
+      ),
+      "a.md",
+      claudeMemoryText("a", "A")
     );
-    expect(store.exists("c.md")).toBe(false);
-
-    // With the store holding the file too, only --prefer mdmem settles it.
-    await store.create("c.md", claudeMemoryText("c", "Store's"));
-    await expect(
-      importClaudeMemories(store, { ...options, prefer: "claude" })
-    ).rejects.toThrow(/c\.md: .*; only --prefer mdmem settles it/u);
-    const kept = await importClaudeMemories(store, {
-      ...options,
-      prefer: "mdmem",
-    });
-    expect(kept.kept).toEqual(["c.md"]);
+    const write = await planClaudeImport(fresh, options);
+    await reindex(fresh);
+    const result = await write();
+    expect(result.backup).toBeUndefined();
+    expect(fresh.exists("a.md")).toBe(true);
+    expect(formatImport(result)[0]).toBe("Copied into .memory/:");
   });
 
   test("honours CLAUDE_CONFIG_DIR and CLAUDE_CODE_PROJECT_DIR_NAME for the sources and the backup", async () => {

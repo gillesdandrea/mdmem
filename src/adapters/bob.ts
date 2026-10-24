@@ -1,26 +1,34 @@
 import { join } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
+import type { HookPart, HookSite } from "../core/hook.ts";
 import { realDir } from "../core/store.ts";
 import {
   agentStatus,
   commitLine,
+  hookCommand,
   hookCommands,
   hooksLabel,
   MCP_SERVER,
   MCP_SERVER_IDENTITY,
   missingHooksProblem,
   outsideProjectPlan,
+  projectOf,
+  rootOf,
+  scopeStatus,
 } from "./adapter.ts";
 import type {
   AdapterContext,
   AdapterFor,
   AgentStatus,
-  DisableOptions,
+  ProjectContext,
+  Scope,
+  UserContext,
   WiringPlan,
 } from "./adapter.ts";
 import {
   hookGroupEntry,
+  configDocument,
   configStatus,
   configValue,
   describePlan,
@@ -28,16 +36,17 @@ import {
   valueEntry,
   writeConfigs,
 } from "./json-config.ts";
-import type { JsonConfigFile } from "./json-config.ts";
+import type { JsonConfigFile, JsonEntry } from "./json-config.ts";
 
 const ID = "bob";
 const TITLE = "IBM Bob";
 
-// IBM Bob is wired through workspace files committed with the repository (ADR 0003):
-// two session-start hooks injecting the protocol and the index, and the mdmem MCP
-// server. Bob runs both only in a trusted folder, and reads .bob/settings.json and
-// .bob/mcp.json only from the workspace it was launched in: launched below the
-// checkout's root, it has no memory wiring at all.
+// IBM Bob is wired in either scope (ADR 0004): two session-start hooks injecting the
+// protocol and the index, and the mdmem MCP server. The global scope writes its user
+// settings and the user MCP config `bob mcp add -s global` writes; the project scope,
+// workspace files committed with the repository (ADR 0003), which Bob runs only in a
+// trusted folder and reads only from the workspace it was launched in: launched below
+// the checkout's root, it gets none of them.
 const SETTINGS = ".bob/settings.json";
 const MCP_CONFIG = ".bob/mcp.json";
 // Bob's matcher is an unanchored regex on the payload's source (startup, resume or
@@ -47,46 +56,89 @@ const HOOK_MATCHER = "^(startup|compact)$";
 // Bob's default, in seconds.
 const HOOK_TIMEOUT = 10;
 
-const commands = hookCommands(ID);
+/** A command handler as Bob takes it. */
+function handler(command: string): {
+  type: string;
+  command: string;
+  timeout: number;
+} {
+  return { type: "command", command, timeout: HOOK_TIMEOUT };
+}
 
 // Bob validates its hooks strictly: one unknown key voids the whole hooks block, so
 // the group holds only documented fields.
-const HOOK_GROUP = {
-  matcher: HOOK_MATCHER,
-  hooks: commands.map((command) => ({
-    type: "command",
-    command,
-    timeout: HOOK_TIMEOUT,
-  })),
-};
+function hookEntry(global: boolean): JsonEntry {
+  const commands = hookCommands(ID, global);
+  return hookGroupEntry(hooksLabel(commands), ["hooks", "SessionStart"], {
+    matcher: HOOK_MATCHER,
+    hooks: commands.map(handler),
+  });
+}
 
-const HOOK_ENTRY = hookGroupEntry(
-  hooksLabel(commands),
-  ["hooks", "SessionStart"],
-  HOOK_GROUP
+/** The project entry of one part, which a global entry of that part defers to. */
+function projectPartEntry(part: HookPart): JsonEntry {
+  const command = hookCommand(ID, part);
+  return hookGroupEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
+    matcher: HOOK_MATCHER,
+    hooks: [handler(command)],
+  });
+}
+
+const PROJECT_HOOK = hookEntry(false);
+const GLOBAL_HOOK = hookEntry(true);
+
+const SERVER_ENTRY = valueEntry(
+  "mcpServers.mdmem",
+  ["mcpServers", "mdmem"],
+  MCP_SERVER,
+  MCP_SERVER_IDENTITY
 );
 
-const FILES: readonly JsonConfigFile[] = [
-  {
-    file: SETTINGS,
-    entries: [HOOK_ENTRY],
-  },
-  {
-    file: MCP_CONFIG,
-    entries: [
-      valueEntry(
-        "mcpServers.mdmem",
-        ["mcpServers", "mdmem"],
-        MCP_SERVER,
-        MCP_SERVER_IDENTITY
-      ),
-    ],
-  },
+const PROJECT_FILES: readonly JsonConfigFile[] = [
+  { file: SETTINGS, entries: [PROJECT_HOOK] },
+  { file: MCP_CONFIG, entries: [SERVER_ENTRY] },
 ];
 
+/** A scope is enabled by any of mdmem's entries. */
+function enabledBy(entries: readonly { present: boolean }[]): boolean {
+  return entries.some(({ present }) => present);
+}
+
+/** How many hooks an entry holds: both parts for a hook group, none for the server. */
+function hooksIn({ label }: { label: string }): number {
+  return label === PROJECT_HOOK.label || label === GLOBAL_HOOK.label
+    ? HOOK_PARTS.length
+    : 0;
+}
+
+/** Bob's user settings directory. */
+function userDir({ home }: UserContext): string {
+  return join(home, ".bob", "settings");
+}
+
+/** The global scope's files, by their absolute paths. */
+function globalFiles(ctx: UserContext): JsonConfigFile[] {
+  return [
+    { file: join(userDir(ctx), "settings.json"), entries: [GLOBAL_HOOK] },
+    { file: join(userDir(ctx), "mcp.json"), entries: [SERVER_ENTRY] },
+  ];
+}
+
+/** The scope's files, and the directory relative ones resolve against. */
+function scopeFiles(
+  ctx: AdapterContext,
+  scope: Scope
+): { root: string; files: readonly JsonConfigFile[] } {
+  return scope === "global"
+    ? { root: rootOf(ctx), files: globalFiles(ctx) }
+    : { root: projectOf(ctx).root, files: PROJECT_FILES };
+}
+
 /** `disableWorkspaceHooks: true` in the workspace settings drops every workspace hook, mdmem's included; a settings file that cannot be read is reported as such. */
-async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
-  const disabled = await configValue(ctx.projectRoot, SETTINGS, [
+async function disabledHooksProblem(
+  project: ProjectContext
+): Promise<string[]> {
+  const disabled = await configValue(project.root, SETTINGS, [
     "disableWorkspaceHooks",
   ]);
   return "value" in disabled && disabled.value === true
@@ -97,9 +149,12 @@ async function disabledHooksProblem(ctx: AdapterContext): Promise<string[]> {
 }
 
 /** Run below the checkout's root, where a Bob launched here reads none of the workspace files. */
-function belowRootWarning(ctx: AdapterContext): string[] {
+function belowRootWarning(
+  ctx: AdapterContext,
+  project: ProjectContext
+): string[] {
   const cwd = realDir(ctx.cwd);
-  const root = realDir(ctx.projectRoot);
+  const root = realDir(project.root);
   return cwd === root
     ? []
     : [
@@ -113,35 +168,37 @@ export const bobAdapter: AdapterFor<typeof ID> = {
   configDir: ({ home }) => join(home, ".bob"),
   title: TITLE,
 
-  async enable(ctx: AdapterContext): Promise<WiringPlan> {
-    const plan = await planConfigs(ctx.projectRoot, FILES, "add");
-    return {
-      write: async () => {
-        await writeConfigs(plan);
-        return {
-          title: TITLE,
-          actions: [
-            ...describePlan(plan, "add"),
+  async enable(ctx: AdapterContext, scope: Scope): Promise<WiringPlan> {
+    const { root, files } = scopeFiles(ctx, scope);
+    const plan = await planConfigs(root, files, "add");
+    const after =
+      scope === "project"
+        ? [
             commitLine(
               [SETTINGS, MCP_CONFIG],
               `they wire ${TITLE}`,
               "Bob runs them only in a trusted folder, and reads them only when launched at the checkout's root: launched in a subdirectory it gets neither the hooks nor the mdmem tools."
             ),
-          ],
+          ]
+        : [];
+    return {
+      write: async () => {
+        await writeConfigs(plan);
+        return {
+          title: TITLE,
+          actions: [...describePlan(plan, "add"), ...after],
           warnings: [],
         };
       },
     };
   },
 
-  async disable(
-    ctx: AdapterContext,
-    options: DisableOptions
-  ): Promise<WiringPlan> {
-    if (options.outsideProject) {
+  async disable(ctx: AdapterContext, scope: Scope): Promise<WiringPlan> {
+    if (scope === "project" && ctx.project === undefined) {
       return outsideProjectPlan(TITLE);
     }
-    const plan = await planConfigs(ctx.projectRoot, FILES, "remove");
+    const { root, files } = scopeFiles(ctx, scope);
+    const plan = await planConfigs(root, files, "remove");
     return {
       write: async () => {
         await writeConfigs(plan);
@@ -155,23 +212,64 @@ export const bobAdapter: AdapterFor<typeof ID> = {
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
-    const { entries, unreadable } = await configStatus(ctx.projectRoot, FILES);
-    const enabled = entries.some(({ present }) => present);
+    const global = await configStatus(rootOf(ctx), globalFiles(ctx));
+    const { project } = ctx;
+    const inProject =
+      project === undefined
+        ? undefined
+        : await configStatus(project.root, PROJECT_FILES);
+    const scopes = [
+      scopeStatus("global", global.entries, enabledBy(global.entries)),
+      ...(inProject === undefined
+        ? []
+        : [
+            scopeStatus(
+              "project",
+              inProject.entries,
+              enabledBy(inProject.entries)
+            ),
+          ]),
+    ];
     return agentStatus(
       bobAdapter,
-      { entries, enabled, unreadable, warnings: [] },
-      async () => ({
-        problems: [
-          ...missingHooksProblem(bobAdapter, entries, ({ label }) =>
-            label === HOOK_ENTRY.label ? HOOK_PARTS.length : 0
-          ),
-          ...(await disabledHooksProblem(ctx)),
-        ],
-        warnings: belowRootWarning(ctx),
-        notes: [
-          `${TITLE} runs workspace hooks and MCP servers only in a trusted folder: mdmem does not check whether this one is.`,
-        ],
-      })
+      {
+        scopes,
+        unreadable: [...(inProject?.unreadable ?? []), ...global.unreadable],
+        warnings: [],
+      },
+      async (enabled) => {
+        const workspace =
+          project !== undefined && enabled.has("project") ? project : undefined;
+        return {
+          problems: [
+            ...scopes
+              .filter(({ scope }) => enabled.has(scope))
+              .flatMap(({ scope, entries }) =>
+                missingHooksProblem(bobAdapter, scope, entries, hooksIn)
+              ),
+            ...(workspace === undefined
+              ? []
+              : await disabledHooksProblem(workspace)),
+          ],
+          warnings:
+            workspace === undefined ? [] : belowRootWarning(ctx, workspace),
+          notes:
+            workspace === undefined
+              ? []
+              : [
+                  `${TITLE} runs workspace hooks and MCP servers only in a trusted folder: mdmem does not check whether this one is.`,
+                ],
+        };
+      }
     );
+  },
+
+  // A global entry stays silent where the workspace's own entry for its part runs (ADR 0004): Bob reads the workspace files only from the folder it was launched in.
+  async hookSpeaks(_ctx: UserContext, site: HookSite): Promise<boolean> {
+    if (!site.global) {
+      return true;
+    }
+    const read = await configDocument(site.cwd, SETTINGS);
+    return !("doc" in read && projectPartEntry(site.part).has(read.doc));
   },
 };
