@@ -10,6 +10,10 @@ A project's file-based memory, in the same format as Claude Code's auto memory, 
 A project's shared memory: the `.memory/` directory of memory documents, read and written by every agent on the project.
 _Avoid_: memory directory (Claude Code's private auto memory), memory folder, brain
 
+**Project**:
+The unit that owns one memory store: a git repository, every worktree, subdirectory and submodule included; outside git, the directory holding `.memory/`.
+_Avoid_: workspace (an agent's launch folder), repo (when worktrees are meant too)
+
 **Memory document**:
 Any file in a memory store, addressed by its path in the store: a memory or the index.
 _Avoid_: file (when the store's view is meant)
@@ -90,9 +94,13 @@ _Avoid_: cleanup, compaction
 ### Agents
 
 **Wiring**:
-What connects one agent to a project's memory store in that agent's native way, so it recalls and saves there: its session-start hooks and its registration of the mdmem MCP server.
+What connects one agent to mdmem in that agent's native way, in one scope, so it recalls and saves in a project's memory store: its session-start hooks and its registration of the mdmem MCP server.
 _Avoid_: link (a `[[name]]` in a memory), integration, setup
 
+**Scope**:
+Where an agent's wiring lives: global, in the agent's user-wide files, so it applies in every project; or project, in files committed with one repository, so it applies only there.
+_Avoid_: mode, level, installation
+
 **Import**:
-The one-time copy of the memories an agent kept in its own directories into the project's memory store, when that agent is wired and its own memory is turned off: Claude Code's auto memory, from each of its memory directories for the repository, which are left untouched. Same-name files that differ are a conflict, which stops the import before anything changes.
+The one-time copy of the memories an agent kept in its own directories into the project's memory store, when that store is created and the agent is wired with its own memory turned off: Claude Code's auto memory, from each of its memory directories for the repository, which are left untouched.
 _Avoid_: migration, sync
