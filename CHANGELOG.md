@@ -91,6 +91,13 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   copied unchanged, so `mdmem doctor` failed right after the import and mdmem
   could not save the memory until its name was fixed by hand. Its title in
   `MEMORY.md` is left as Claude wrote it.
+- `mdmem status` warns when it runs below the root of a repository wired for
+  Claude Code in the project scope, as it already did for Bob: Claude
+  Code reads `.claude/settings.json` only from the folder it is started in, so
+  a Claude Code started there runs neither mdmem hook and gets no memory
+  protocol and no index. The warning says to start it at the root or wire the
+  global scope; a repository whose user settings also hold mdmem's hooks gets
+  no warning.
 
 ## [0.2.0] - 2026-10-21
 

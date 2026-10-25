@@ -2,7 +2,6 @@ import { join } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookPart, HookSite } from "../core/hook.ts";
-import { realDir } from "../core/store.ts";
 import {
   agentStatus,
   commitLine,
@@ -14,6 +13,7 @@ import {
   missingHooksProblem,
   outsideProjectPlan,
   projectOf,
+  rootAbove,
   rootOf,
   scopeStatus,
 } from "./adapter.ts";
@@ -153,9 +153,8 @@ function belowRootWarning(
   ctx: AdapterContext,
   project: ProjectContext
 ): string[] {
-  const cwd = realDir(ctx.cwd);
-  const root = realDir(project.root);
-  return cwd === root
+  const root = rootAbove(ctx, project);
+  return root === undefined
     ? []
     : [
         `${TITLE} reads ${SETTINGS} (the session-start hooks) and ${MCP_CONFIG} (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets no memory protocol, no index and no mdmem tools. Launch Bob at ${root}.`,

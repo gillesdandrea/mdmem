@@ -16,6 +16,7 @@ import { HOOK_PARTS } from "../core/hook.ts";
 import type { HookAgent, HookPart, HookSite } from "../core/hook.ts";
 import { isObject } from "../core/object.ts";
 import type { SessionHistory } from "../core/protocol.ts";
+import { realDir } from "../core/store.ts";
 import type { MemoryStore } from "../core/store.ts";
 
 /** Where an agent's wiring lives (GLOSSARY.md): its user-wide files, or one repository's. */
@@ -60,6 +61,15 @@ export function projectOf(ctx: AdapterContext): ProjectContext {
     );
   }
   return ctx.project;
+}
+
+/** The project's root, resolved, when the working directory is below it; undefined at the root. */
+export function rootAbove(
+  ctx: AdapterContext,
+  project: ProjectContext
+): string | undefined {
+  const root = realDir(project.root);
+  return realDir(ctx.cwd) === root ? undefined : root;
 }
 
 /** The directory project files resolve against: the project's work tree, else the working directory (only absolute files are read there). */

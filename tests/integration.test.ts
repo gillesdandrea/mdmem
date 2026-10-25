@@ -2386,6 +2386,40 @@ describe("status and check", () => {
     });
   });
 
+  test("status warns, below the root of a project wiring Claude Code in the project scope alone, that a Claude Code started there reads none of its settings", async () => {
+    await withWiredRepo(async ({ root, ctx, store }) => {
+      const sub = join(root, "src");
+      await mkdir(sub);
+      const below = adapterContext(sub, store, ctx.env, ctx.home);
+      const claudeWarnings = async (): Promise<string[] | undefined> => {
+        const status = await projectStatus(below);
+        return status.agents.find(({ title }) => title === "Claude Code")
+          ?.warnings;
+      };
+      const warning = `Claude Code reads .claude/settings.json only from the folder it is started in: started here, below ${root}, it runs neither mdmem hook, so its sessions start without the memory protocol and the index, and it applies neither the project's autoMemoryEnabled: false nor its permission for the mdmem tools. Start Claude Code at ${root}, or run \`mdmem enable claude-code\` to wire it in every folder.`;
+      expect(await claudeWarnings()).toEqual([warning]);
+      // at the root there is nothing to warn about
+      const atRoot = await projectStatus(ctx);
+      expect(
+        atRoot.agents.find(({ title }) => title === "Claude Code")?.warnings
+      ).toEqual([]);
+      // where status runs is not a problem with the project
+      expect(await checkProject(below)).toMatchObject({ problems: [] });
+      // a global scope without mdmem's hooks runs none below the root either
+      const user = join(ctx.env.CLAUDE_CONFIG_DIR ?? "", "settings.json");
+      await mkdir(dirname(user), { recursive: true });
+      await writeFile(
+        user,
+        '{ "permissions": { "allow": ["mcp__mdmem"] } }\n',
+        "utf-8"
+      );
+      expect(await claudeWarnings()).toEqual([warning]);
+      // the global scope's hooks speak below the root, so wired there too it is fine
+      await wire(claudeCodeAdapter.enable(ctx, "global"));
+      expect(await claudeWarnings()).toEqual([]);
+    });
+  });
+
   test("status warns, in a submodule of a wired project, that agents started there get none of its wiring", async () => {
     await withWiredRepo(async ({ root, ctx, store }) => {
       const library = await realpath(

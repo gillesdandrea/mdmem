@@ -22,6 +22,7 @@ import {
   missingHooksProblem,
   outsideProjectPlan,
   projectOf,
+  rootAbove,
   rootOf,
   scopeStatus,
 } from "./adapter.ts";
@@ -31,6 +32,7 @@ import type {
   AgentStatus,
   ImportContext,
   PlannedMemoryImport,
+  ProjectContext,
   Scope,
   UnreadableFile,
   UserContext,
@@ -243,6 +245,31 @@ function disabledHooksProblem(settings: readonly SettingsFile[]): string[] {
     : [];
 }
 
+/**
+ * Run below the root of a project wired in the project scope, where a Claude Code
+ * started here reads none of the committed settings. The global scope's hooks speak
+ * there (ADR 0004), so a project whose user settings hold one of them gets no warning.
+ */
+function belowRootWarning(
+  ctx: AdapterContext,
+  project: ProjectContext,
+  enabled: ReadonlySet<Scope>,
+  globalEntries: readonly WiringEntry[]
+): string[] {
+  const globalHooks = globalEntries.some(
+    ({ label, present }) => present && HOOK_LABELS.has(label)
+  );
+  const root =
+    enabled.has("project") && !globalHooks
+      ? rootAbove(ctx, project)
+      : undefined;
+  return root === undefined
+    ? []
+    : [
+        `${TITLE} reads ${SETTINGS} only from the folder it is started in: started here, below ${root}, it runs neither mdmem hook, so its sessions start without the memory protocol and the index, and it applies neither the project's ${AUTO_MEMORY_LABEL} nor its permission for the mdmem tools. Start ${TITLE} at ${root}, or run \`mdmem enable ${ID}\` to wire it in every folder.`,
+      ];
+}
+
 /** A scope is enabled by any of mdmem's entries but autoMemoryEnabled: false, which alone may be the user's own choice. */
 function enabledBy(entries: readonly WiringEntry[]): boolean {
   return entries.some(
@@ -358,6 +385,10 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
             ...disabledHooksProblem(settings),
             ...autoMemoryProblem(ctx, settings, enabled),
           ],
+          warnings:
+            project === undefined
+              ? []
+              : belowRootWarning(ctx, project, enabled, global.entries),
           notes: enabled.has("project")
             ? [
                 `${TITLE} runs the project's hooks only in a folder whose trust dialog you accepted, and connects the ${MCP_CONFIG} server only once you approve it: mdmem does not check either.`,

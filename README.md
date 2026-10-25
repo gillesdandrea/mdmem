@@ -247,6 +247,11 @@ The rest are `status` lines only, because they are your choice, depend on where
 - A warning when `status` runs below the checkout's root of a project wired for
   Bob: a Bob launched there reads neither `.bob/settings.json` nor
   `.bob/mcp.json`, so it gets no protocol, no index and no mdmem tools.
+- A warning when `status` runs below the checkout's root of a project wired for
+  Claude Code in the project scope, with none of mdmem's hooks in your user
+  settings: a Claude Code started there does not read the project's
+  `.claude/settings.json`, so it gets no protocol and no index, and keeps its
+  auto memory on unless your user settings turn it off.
 - A warning when `status` runs in a submodule of a project whose files wire an
   agent that the submodule's files do not. The submodule shares the project's store, but
   an agent started there reads the submodule's own files, so it gets no
@@ -319,10 +324,11 @@ and runs the project's hooks, only once you accept the folder's trust dialog.
 The global hooks stay silent where the project's own entries are present, so
 in an untrusted folder wired in both scopes neither speaks until you trust it.
 Claude Code reads `.claude/settings.json` only from the folder it is started
-in, so started in a subdirectory it runs none of the project scope's hooks. The
-global hooks stay silent only where that folder holds the project's own
-entries, so a Claude Code started in a subdirectory of a repository wired in
-both scopes still gets them.
+in, so started in a subdirectory it runs none of the project scope's hooks, and
+`mdmem status` run there warns about it. The global hooks stay silent only
+where that folder holds the project's own entries, so a Claude Code started in
+a subdirectory of a repository wired in both scopes still gets them, and
+`status` does not warn.
 
 Claude Code asks each user to approve a server from a project's `.mcp.json`
 before it connects it; until then the mdmem tools are missing and agents fall
