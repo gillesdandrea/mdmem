@@ -121,6 +121,7 @@ To wire one repository for everyone who clones it instead, run
 | `mdmem disable <agent…> \| --all [--project]` | Remove exactly mdmem's entries from an agent's user-wide files, or with `--project` from the repository's (leaves the store); `--all` takes the agents found on this machine. Needs no store. |
 | `mdmem status` | Show the store (or that there is none yet), the check in one line, and each agent's wiring in each scope, entry by entry (present or missing), with the warnings and notes below; outside any project, the global scope alone |
 | `mdmem path` | Print the store directory |
+| `mdmem version` (also `--version`, `-v`, `-V`) | Print `mdmem` and its version, the one the MCP server reports |
 | `mdmem mcp` | Run the MCP server over stdio |
 | `mdmem hook <agent> <part> [--global]` | Run by an agent's session-start hook, not typed by hand (see below) |
 

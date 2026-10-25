@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 
+import packageJson from "../../package.json" with { type: "json" };
 import { GLOBAL_HOOK_FLAG } from "../adapters/adapter.ts";
 import type {
   Adapter,
@@ -519,6 +520,11 @@ function cmdPath(): void {
   print(store.root);
 }
 
+/** The version package.json declares, the one the MCP server reports too. */
+function cmdVersion(): void {
+  print(`mdmem ${packageJson.version}`);
+}
+
 function usage(): void {
   print(`mdmem — shared, Claude-style memory for any coding agent
 
@@ -581,6 +587,7 @@ Usage: mdmem <command> [options]
                             project whose files wire agents that agents started in the submodule do
                             not get; outside any project, the global scope alone
   path                      Print the store directory
+  version                   Print mdmem's version (also --version, -v, -V)
   mcp                       Run the MCP server over stdio (for agent tool-calls)
   hook <agent> <part> [--global]
                             Run by an agent's session-start hook, not typed by hand: print the
@@ -618,6 +625,10 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   disable: (args) => cmdWiring(args, "disable"),
   status: () => cmdStatus(),
   path: () => cmdPath(),
+  version: () => cmdVersion(),
+  "--version": () => cmdVersion(),
+  "-v": () => cmdVersion(),
+  "-V": () => cmdVersion(),
   mcp: runMcp,
   hook: (args) => cmdHook(args),
 };

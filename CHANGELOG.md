@@ -41,6 +41,9 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 - `mdmem status`, `mdmem doctor` and `memory_check` work without a store and
   outside any repository, where they report the wiring alone, and list each
   agent's wiring per scope.
+- `mdmem version`, `mdmem --version`, `-v` and `-V` print `mdmem <version>`,
+  read from `package.json` as the MCP server reads it, so the two report the
+  same version.
 
 ### Changed
 

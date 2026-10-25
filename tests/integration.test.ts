@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 
 import { z } from "zod";
 
+import packageJson from "../package.json" with { type: "json" };
 import {
   enableAdvice,
   MCP_SERVER,
@@ -1475,6 +1476,17 @@ describe("cli", () => {
       expect(nope.err).toBe(
         'mdmem: unknown agent "nope". Known: claude-code, bob, codex\n'
       );
+    });
+  });
+
+  test("--version, -v, -V and version print mdmem and package.json's version", async () => {
+    await withCliProject((root) => {
+      for (const flag of ["--version", "-v", "-V", "version"]) {
+        const version = runCli(root, flag);
+        expect(version.code).toBe(0);
+        expect(version.out).toBe(`mdmem ${packageJson.version}\n`);
+        expect(version.err).toBe("");
+      }
     });
   });
 
