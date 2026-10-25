@@ -115,10 +115,10 @@ names do not combine.
 `enable` and `disable` check every agent name and read every file they would
 change before writing any: an unknown agent or a file that does not parse stops
 the command with no file written. The global scope runs anywhere and needs no
-store. `enable --project` runs in a work tree, or in a project without git that
-has a store; in a bare repository, or the folder holding one as `.git`, it
-refuses and names the repository's worktrees, since agents read their files
-only from a work tree. In a repository with no store it creates one, as the
+store. `enable --project` runs in a work tree, or outside git in the working
+directory, which is then the project; in a bare repository, or the folder
+holding one as `.git`, it refuses and names the repository's worktrees, since
+agents read their files only from a work tree. Where there is no store it creates one, as the
 first save would. `disable` needs no store, so it works after `.memory/` was
 deleted; `disable --project` outside any project (no repository, no store)
 changes nothing, since the directory may be one whose agent files are

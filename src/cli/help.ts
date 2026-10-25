@@ -110,7 +110,6 @@ const PAGES: Record<string, CommandPage> = {
       ...WIRING_REFUSALS,
       "a key of mdmem's holds another value, such as another mcpServers.mdmem or autoMemoryEnabled: true",
       "with --project, in a bare repository or the folder holding one",
-      "with --project, outside git where there is no store",
     ],
   },
   disable: {

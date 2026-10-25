@@ -3235,6 +3235,17 @@ describe("scopes and store creation", () => {
       const clean = runCliWith(dir, ["doctor"], env);
       expect(clean.out).toBe("✓ no memory store yet, no problems\n");
       expect(clean.code).toBe(0);
+      // the project scope outside git: the working directory is the project, and enable creates its store
+      const project = runCliWith(dir, ["enable", "bob", "--project"], env);
+      expect(project.code).toBe(0);
+      expect(project.out).toContain(
+        `Created the memory store at ${join(dir, ".memory")}`
+      );
+      expect(existsSync(join(dir, ".memory/MEMORY.md"))).toBe(true);
+      expect(existsSync(join(dir, ".bob/settings.json"))).toBe(true);
+      expect(runCliWith(dir, ["status"], env).out).toContain(
+        "IBM Bob (project)"
+      );
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

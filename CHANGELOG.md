@@ -21,8 +21,8 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   `enable claude-code`. A store that already exists gets no import.
 - `mdmem init` is gone: the first memory write (`memory_write`, `mdmem add`)
   creates the store everywhere, at a repository's root or, outside git, in the
-  working directory, and `mdmem enable --project` still creates it in a
-  repository. `mdmem init` is refused with one line saying so, and
+  working directory, and `mdmem enable --project` creates it too, in a
+  repository or, outside git, in the working directory. `mdmem init` is refused with one line saying so, and
   `mdmem status` says where the store would be.
 
 ### Added

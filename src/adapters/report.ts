@@ -11,11 +11,7 @@ import {
   workTreeRoot,
   worktreePaths,
 } from "../core/git.ts";
-import {
-  createStore,
-  noStoreRefusal,
-  storeIgnored,
-} from "../core/operations.ts";
+import { createStore, storeIgnored } from "../core/operations.ts";
 import { RefusalError } from "../core/refusal.ts";
 import { locateStore, MemoryStore, STORE_DIR } from "../core/store.ts";
 import type {
@@ -85,8 +81,8 @@ export function locateContext(
  * The context `mdmem enable` works in. The global scope needs neither a project
  * nor a store. The project scope is refused in a repository with no work tree here
  * (a bare repository, or the folder holding one), where no agent reads the files
- * enable would write, and outside git without a store; it creates a missing store
- * in a repository once every agent is planned.
+ * enable would write; elsewhere its project is the repository or, outside git, the
+ * working directory (ADR 0004), whose store it creates once every agent is planned.
  */
 export function enableContext(cwd: string, scope: Scope): AdapterContext {
   if (scope === "global") {
@@ -105,10 +101,7 @@ export function enableContext(cwd: string, scope: Scope): AdapterContext {
     );
   }
   const location = locateStore(cwd);
-  if (!(location.exists || location.inRepository)) {
-    throw noStoreRefusal(location);
-  }
-  return locateContext(cwd);
+  return adapterContext(cwd, new MemoryStore(location.dir));
 }
 
 /** What happened to a project's store on a write: created or not, and what creating it imported. */
