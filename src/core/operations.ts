@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 
 import { INDEX_FILE, loadMemories, refreshIndex, reindex } from "./check.ts";
-import type { SavedMemory } from "./check.ts";
+import type { IndexChange } from "./check.ts";
 import { isIgnoredByGit } from "./git.ts";
 import type { Memory, MemoryType } from "./memory.ts";
 import {
@@ -85,15 +85,6 @@ export function storeIgnored(location: StoreLocation): boolean | undefined {
 export interface WriteResult {
   file: string;
   warnings: string[];
-}
-
-/** Update the index after `file` was written or removed, keeping any failure as a warning. */
-async function reindexAfterWrite(
-  store: MemoryStore,
-  file: string,
-  saved?: SavedMemory
-): Promise<WriteResult> {
-  return { file, warnings: await refreshIndex(store, saved) };
 }
 
 /** How many documents one listing page holds; a longer listing continues from a cursor. */
@@ -248,9 +239,10 @@ export async function readDocument(
   return document;
 }
 
-/** A write that landed, with the version token of the content it wrote. */
+/** A write that landed, with the version token of the content it wrote and what it did to the memory's pointer in the index. */
 export interface VersionedWriteResult extends WriteResult {
   version: string;
+  index: IndexChange;
 }
 
 /** Refuse a path inside a directory, which writes and deletes alike never touch. */
@@ -342,14 +334,12 @@ export async function writeDocument(
   const { description } = checkMemoryWrite(path, content);
   const previous = await previousDescription(store, path);
   await store.create(path, content, ifVersion);
-  return {
-    ...(await reindexAfterWrite(store, path, {
-      file: path,
-      description,
-      previousDescription: previous,
-    })),
-    version: versionOf(content),
-  };
+  const { warnings, index } = await refreshIndex(store, {
+    file: path,
+    description,
+    previousDescription: previous,
+  });
+  return { file: path, warnings, version: versionOf(content), index };
 }
 
 /** Refuse deleting a nested file or the index, before touching the store. */
@@ -377,7 +367,8 @@ export async function deleteDocument(
     throw new RefusalError(`No memory document at "${path}"`);
   }
   await store.remove(path, ifVersion);
-  return reindexAfterWrite(store, path);
+  const { warnings } = await refreshIndex(store);
+  return { file: path, warnings };
 }
 
 /** The memory document `saveMemory` writes for `input`: its path and content. */

@@ -15,6 +15,7 @@ import { basename, dirname, join } from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
+import { IGNORE_NOTE } from "../src/adapters/report.ts";
 import { reindex } from "../src/core/check.ts";
 import { HOOK_PARTS } from "../src/core/hook.ts";
 import { claudeProjectDir } from "../src/core/import.ts";
@@ -122,6 +123,14 @@ function memory(name: string, body: string): string {
   });
 }
 
+/** The memory note with `description`, so a test can change its description alone. */
+function noteDescribed(description: string): string {
+  return serializeMemory({
+    frontmatter: { name: "note", description, metadata: { type: "project" } },
+    body: "x",
+  });
+}
+
 function write(
   client: Client,
   path: string,
@@ -201,6 +210,35 @@ describe("mcp server", () => {
         "path",
         "if_version",
       ]);
+      // Claude Code reads a tool's title from annotations.title, so each tool carries it there too, with every hint set.
+      const readOnly = {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      };
+      const changes = {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      };
+      const hints: Record<string, object> = {
+        memory_list: readOnly,
+        memory_search: readOnly,
+        memory_check: readOnly,
+        memory_read: readOnly,
+        memory_write: changes,
+        memory_delete: changes,
+      };
+      expect(names.toSorted()).toEqual(Object.keys(hints).toSorted());
+      for (const tool of tools.tools) {
+        expect(tool.title).toBeString();
+        expect(tool.annotations).toEqual({
+          title: tool.title,
+          ...hints[tool.name],
+        });
+      }
 
       const saved = await write(
         client,
@@ -333,9 +371,14 @@ describe("mcp server", () => {
         name: "memory_read",
         arguments: { store: storeId, path: "prefers-bun.md" },
       });
-      const { version } = read.structuredContent as { version: string };
-      expect(version).toBe(await store.version("prefers-bun.md"));
-      // The version is in the text too, for agents that ignore structuredContent.
+      const version = await store.version("prefers-bun.md");
+      // The structured content carries the whole document: Claude Code shows the agent only it.
+      expect(read.structuredContent).toEqual({
+        path: "prefers-bun.md",
+        content: "Use bun.",
+        version,
+      });
+      // The text carries both too, for agents that ignore structuredContent.
       expect(textOf(read)).toBe(`Use bun.\nversion: ${version}`);
     });
   });
@@ -392,6 +435,13 @@ describe("mcp server", () => {
       expect(textOf(stale)).toContain(
         `version: ${await store.version("note.md")}`
       );
+      expect(stale.structuredContent).toEqual({
+        message:
+          'Version conflict on "note.md": the file changed since it was read',
+        path: "note.md",
+        content: memory("note", "two"),
+        version: await store.version("note.md"),
+      });
       expect(await store.view("note.md")).toBe(memory("note", "two"));
     });
   });
@@ -426,7 +476,12 @@ describe("mcp server", () => {
       expect(second.isError).toBeFalsy();
       expect(await store.view("note.md")).toBe(memory("note", "line three"));
       const version = await store.version("note.md");
-      expect(versionOfResult(second)).toBe(version);
+      expect(second.structuredContent).toEqual({
+        file: "note.md",
+        version,
+        index: "unchanged",
+        warnings: [],
+      });
       expect(textOf(second)).toContain(`version: ${version}`);
     });
   });
@@ -550,12 +605,44 @@ describe("mcp server", () => {
         "new"
       );
       expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toContain(
-        "Warning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (it has no pointer in MEMORY.md until it parses)"
-      );
+      const warning =
+        "broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---` (it has no pointer in MEMORY.md until it parses)";
+      expect(textOf(result)).toContain(`Warning: ${warning}`);
+      expect(result.structuredContent).toEqual({
+        file: "other.md",
+        version: await store.version("other.md"),
+        index: "pointer added",
+        warnings: [warning],
+      });
       expect(await store.view("MEMORY.md")).toBe(
         "- [note](note.md) — About note\n- [other](other.md) — About other\n"
       );
+    });
+  });
+
+  test("memory_write says what it did to the memory's pointer in MEMORY.md: added, updated or unchanged", async () => {
+    await withServer(async ({ client }) => {
+      const added = await write(client, "note.md", noteDescribed("One"), "new");
+      expect(textOf(added)).toContain("\nMEMORY.md: pointer added");
+      const same = await write(
+        client,
+        "note.md",
+        `${noteDescribed("One")}More.\n`,
+        versionOfResult(added)
+      );
+      expect(textOf(same)).toContain("\nMEMORY.md: unchanged");
+      const updated = await write(
+        client,
+        "note.md",
+        noteDescribed("Two"),
+        versionOfResult(same)
+      );
+      expect(textOf(updated)).toContain("\nMEMORY.md: pointer updated");
+      expect(
+        [added, same, updated].map(
+          (result) => (result.structuredContent as { index: string }).index
+        )
+      ).toEqual(["pointer added", "unchanged", "pointer updated"]);
     });
   });
 
@@ -876,6 +963,18 @@ describe("mcp server", () => {
         expect(lines[0]).toBe(`Created the memory store at ${store.root}`);
         expect(lines[1]).toBe("Copied into .memory/:");
         expect(lines).toContain("Saved uses-bun.md");
+        // The structured content carries the creation lines too, one field each.
+        expect(written.structuredContent).toEqual({
+          file: "uses-bun.md",
+          version: await store.version("uses-bun.md"),
+          index: "pointer added",
+          created: {
+            store: store.root,
+            imported: lines.slice(1, lines.indexOf(IGNORE_NOTE)),
+            ignored: false,
+          },
+          warnings: [],
+        });
         expect(store.exists("b.md")).toBe(true);
         expect(store.exists("uses-bun.md")).toBe(true);
       },

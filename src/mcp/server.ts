@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type {
   CallToolResult,
   GetPromptResult,
+  ToolAnnotations,
 } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
@@ -18,7 +19,7 @@ import {
   locateContext,
 } from "../adapters/report.ts";
 import type { StoreCreation } from "../adapters/report.ts";
-import { POINTER_MAX_CHARS } from "../core/check.ts";
+import { INDEX_CHANGES, INDEX_FILE, POINTER_MAX_CHARS } from "../core/check.ts";
 import {
   assertStoreId,
   checkMemoryWrite,
@@ -101,17 +102,28 @@ async function documentsListing(
   return lines.join("\n");
 }
 
-/** A document's content, then its version on a line of its own, so the text carries both. */
-function documentResult({
-  content,
-  version,
-}: VersionedDocument): CallToolResult {
+/**
+ * What memory_read returns as structured content. A client that shows the agent the
+ * structured content instead of the text blocks (Claude Code, when a tool declares an
+ * output schema) must still see the whole document.
+ */
+const documentOutput = z.object({
+  path: z.string(),
+  content: z.string(),
+  version: z.string(),
+});
+
+/** A document's content, then its version on a line of its own, so the text carries both; the structured content carries them too. */
+function documentResult(
+  path: string,
+  { content, version }: VersionedDocument
+): CallToolResult {
   return {
     content: [
       { type: "text", text: content },
       { type: "text", text: `version: ${version}` },
     ],
-    structuredContent: { version },
+    structuredContent: { path, content, version },
   };
 }
 
@@ -134,9 +146,29 @@ const ifVersionParam = z
     "the version token from your most recent memory_read or memory_write of this path, or the literal word new for a file that does not exist yet"
   );
 
-/** Saved: what creating the store did, if the write created it, then the path, the new version, and the write's warnings (the write itself landed). */
+/**
+ * What memory_write returns as structured content, one field per kind of line its
+ * text holds: the path and new version, what the write did to the memory's pointer in
+ * MEMORY.md, what creating the store did when the write created it (its path, the
+ * import's lines, whether git ignores it), and every warning.
+ */
+const savedOutput = z.object({
+  file: z.string(),
+  version: z.string(),
+  index: z.enum(INDEX_CHANGES),
+  created: z
+    .object({
+      store: z.string(),
+      imported: z.array(z.string()),
+      ignored: z.boolean().optional(),
+    })
+    .optional(),
+  warnings: z.array(z.string()),
+});
+
+/** Saved: what creating the store did, if the write created it, then the path, the new version, what became of its pointer in MEMORY.md, and the write's warnings (the write itself landed). */
 function savedResult(
-  { file, warnings, version }: VersionedWriteResult,
+  { file, warnings, version, index }: VersionedWriteResult,
   creation: StoreCreation
 ): CallToolResult {
   const lines = [
@@ -144,17 +176,33 @@ function savedResult(
     ...warningLines(creation.warnings),
     `Saved ${file}`,
     `version: ${version}`,
+    `${INDEX_FILE}: ${index}`,
     ...warningLines(warnings),
   ];
+  const created = creation.created
+    ? {
+        store: creation.store.root,
+        imported: creation.imported,
+        ignored: creation.ignored,
+      }
+    : undefined;
+  const output: z.infer<typeof savedOutput> = {
+    file,
+    version,
+    index,
+    ...(created === undefined ? {} : { created }),
+    warnings: [...creation.warnings, ...warnings],
+  };
   return {
     content: [{ type: "text", text: lines.join("\n") }],
-    structuredContent: { version },
+    structuredContent: output,
   };
 }
 
-/** A version conflict hands back the document as it is now, so the agent can merge and retry. */
+/** A version conflict hands back the document as it is now, in the text and the structured content, so the agent can merge and retry. */
 function conflictResult({
   message,
+  path,
   current,
 }: VersionConflictError): CallToolResult {
   if (current === undefined) {
@@ -178,7 +226,7 @@ function conflictResult({
       { type: "text", text: current },
       { type: "text", text: `version: ${version}` },
     ],
-    structuredContent: { version },
+    structuredContent: { message, path, content: current, version },
     isError: true,
   };
 }
@@ -210,6 +258,33 @@ function withStore(
   return asResult(() => fn(resolveStore(id)));
 }
 
+/** What a tool does to the store: only reads it, or changes it. */
+type ToolKind = "read" | "change";
+
+/**
+ * A tool's title and annotations, the title written once: the spec's place for a title
+ * is the top level, but Claude Code reads annotations.title. Every hint is set, so no
+ * client falls back on a default: a read-only tool changes nothing; a write or delete
+ * replaces or removes a whole document, and the same call cannot land twice, since
+ * its if_version no longer matches. No tool reaches past the project's store.
+ */
+function titled(
+  title: string,
+  kind: ToolKind
+): { title: string; annotations: ToolAnnotations } {
+  const changes = kind === "change";
+  return {
+    title,
+    annotations: {
+      title,
+      readOnlyHint: !changes,
+      destructiveHint: changes,
+      idempotentHint: changes,
+      openWorldHint: false,
+    },
+  };
+}
+
 /** The name Codex CLI gives its MCP client (codex-rs/codex-mcp, rust-v0.160.0). */
 const CODEX_CLIENT = "codex-mcp-client";
 
@@ -233,7 +308,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_list",
     {
-      title: "List memory stores or documents",
+      ...titled("List memory stores or documents", "read"),
       description:
         "List the memory documents in a memory store, sorted by path — each line gives a document's path, size, and last-updated date, but no content (use memory_read for that). Pass store (the store's id) to choose the store, path_prefix to list only the paths that start with it, and the cursor from a previous call to continue a long listing. Call with no arguments at all to list the memory stores available — their ids, a one-line description, whether each is writable or read-only, and the path of each store's index document.",
       inputSchema: z.object({
@@ -264,7 +339,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_search",
     {
-      title: "Search memory",
+      ...titled("Search memory", "read"),
       description:
         "Find the memories in a memory store whose text (name, description or body) contains the query, ignoring case. Each line gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it.",
       inputSchema: z.object({
@@ -287,7 +362,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_check",
     {
-      title: "Check a memory store and the agents' wiring",
+      ...titled("Check a memory store and the agents' wiring", "read"),
       description: `Check a memory store for problems with its memories and its index: an unparseable memory, a name that differs from its file name, a metadata.type and a type that disagree, a secret, a pointer over ${POINTER_MAX_CHARS} characters, a stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, or a pointer titled with its memory's name whose description differs from the memory's), or an index over the size a session-start hook can inject; and with the agents' wiring, user-wide and the project's: an agent's config file that cannot be read (a project file always, a user-wide one only for an agent wired in either scope, and Codex's global hooks.json only when CODEX_HOME reaches this server), an agent's session-start hook missing or switched off (Codex's global hook only when CODEX_HOME reaches this server, which Codex does not pass by default), Claude Code's auto memory still on, or mdmem not on PATH. A [[link]] to a memory not written yet is a note, not a problem: it marks a memory worth writing. With no store yet, it checks the wiring alone. Returns the problems one per line, or a line with the memory count saying there are none, then a note: line per such link. Problems are findings, not errors: fix a memory with memory_write or memory_delete, and any memory_write or memory_delete also brings a stale index up to date; tell the user about a wiring problem, which the line says how to fix.`,
       inputSchema: z.object({ store: storeParam }),
     },
@@ -309,7 +384,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_read",
     {
-      title: "Read a memory document",
+      ...titled("Read a memory document", "read"),
       description:
         "Read one memory document by its path in the store — a memory such as prefers-bun.md, or the index, MEMORY.md — and return its content and its version token. Pass that version as if_version to memory_write or memory_delete; the change is then refused if the document changed since you read it.",
       inputSchema: z.object({
@@ -320,20 +395,20 @@ export async function startMcpServer(): Promise<void> {
             "the document's path in the store, e.g. prefers-bun.md or MEMORY.md"
           ),
       }),
-      outputSchema: z.object({ version: z.string() }),
+      outputSchema: documentOutput,
     },
     ({ store: id, path }) =>
       withStore(id, async (store) =>
-        documentResult(await readDocument(store, path))
+        documentResult(path, await readDocument(store, path))
       )
   );
 
   server.registerTool(
     "memory_write",
     {
-      title: "Write a memory document",
+      ...titled("Write a memory document", "change"),
       description:
-        "Create or update a memory document with full content, in the memory store named by store (call memory_list with no arguments to see it; omitted means the project's store). In a git repository with no store yet, the first memory_write creates it, and the result says so. Overwrites if the path already exists: content replaces the ENTIRE document — this is not an append or a patch. Include every existing line you intend to keep; any line you omit is deleted. The content is a memory — YAML frontmatter with name, description and metadata.type (user, feedback, project or reference), then the body — and its name must equal the path without .md, in kebab-case or snake_case. mdmem keeps MEMORY.md up to date from the memories, so it cannot be written. Use this to save durable knowledge about the project and how to work in it — not transient task state. Always pass if_version: the version token from your most recent memory_read or memory_write of this path, or the literal word new (without quotes) for a file that does not yet exist. The listing shows paths but not version tokens, so for any file already there you must memory_read it first. Writes with if_version=new to an existing path are rejected so you can't overwrite content you haven't seen. Both the rejection and a version conflict return the current content and version so you can merge and retry. The result includes the new version token for follow-up writes. Never write secrets or credentials into a memory — the store is shared with every agent on the project, and content that looks like it holds an API key, token, private key or password is refused.",
+        "Create or update a memory document with full content, in the memory store named by store (call memory_list with no arguments to see it; omitted means the project's store). In a git repository with no store yet, the first memory_write creates it, and the result says so. Overwrites if the path already exists: content replaces the ENTIRE document — this is not an append or a patch. Include every existing line you intend to keep; any line you omit is deleted. The content is a memory — YAML frontmatter with name, description and metadata.type (user, feedback, project or reference), then the body — and its name must equal the path without .md, in kebab-case or snake_case. mdmem keeps MEMORY.md up to date from the memories, so it cannot be written. Use this to save durable knowledge about the project and how to work in it — not transient task state. Always pass if_version: the version token from your most recent memory_read or memory_write of this path, or the literal word new (without quotes) for a file that does not yet exist. The listing shows paths but not version tokens, so for any file already there you must memory_read it first. Writes with if_version=new to an existing path are rejected so you can't overwrite content you haven't seen. Both the rejection and a version conflict return the current content and version so you can merge and retry. The result includes the new version token for follow-up writes, and what the write did to the memory's pointer in MEMORY.md: pointer added, pointer updated or unchanged. Never write secrets or credentials into a memory — the store is shared with every agent on the project, and content that looks like it holds an API key, token, private key or password is refused.",
       inputSchema: z.object({
         store: storeParam,
         path: z
@@ -344,7 +419,7 @@ export async function startMcpServer(): Promise<void> {
           .describe("the whole document: frontmatter, then the body"),
         if_version: ifVersionParam,
       }),
-      outputSchema: z.object({ version: z.string() }),
+      outputSchema: savedOutput,
     },
     // In a repository, the first write creates the store (ADR 0004); a refused one creates nothing.
     ({ store: id, path, content, if_version: ifVersion }) =>
@@ -371,7 +446,7 @@ export async function startMcpServer(): Promise<void> {
   server.registerTool(
     "memory_delete",
     {
-      title: "Delete a memory document",
+      ...titled("Delete a memory document", "change"),
       description:
         "Delete a memory document from the memory store named by store (omitted means the project's store), then update the index. Always pass if_version: the version token from your most recent memory_read or memory_write of this path. If the document changed since, the delete is rejected with its current content and version, so you can decide again. mdmem keeps MEMORY.md up to date from the memories, so it cannot be deleted.",
       inputSchema: z.object({

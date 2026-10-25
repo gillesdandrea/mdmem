@@ -35,12 +35,15 @@ export const STORE_DIR = ".memory";
 export const NEW_FILE_VERSION = "new";
 
 export class VersionConflictError extends RefusalError {
+  /** The path the conflict is on. */
+  readonly path: string;
   /** The file's content when the conflict was found; undefined when it does not exist. */
   readonly current: string | undefined;
 
   constructor(path: string, current: string | undefined, reason: string) {
     super(`Version conflict on "${path}": ${reason}`);
     this.name = "VersionConflictError";
+    this.path = path;
     this.current = current;
   }
 }

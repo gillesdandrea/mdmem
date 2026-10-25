@@ -475,8 +475,8 @@ server with the same memory-store tools as Claude Code, plus three of its own:
 | Tool | Purpose |
 |---|---|
 | `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
-| `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. |
-| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. In a git repository with no store, the first write creates it, and its result opens with the lines `mdmem add` prints for that. |
+| `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. The structured result carries the same: `path`, `content` and `version`. |
+| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. In a git repository with no store, the first write creates it, and its result opens with the lines `mdmem add` prints for that. A line says what the write did to the memory's pointer in `MEMORY.md`: `pointer added`, `pointer updated` or `unchanged`. The structured result carries what the text says: `file`, `version`, `index` (what became of that pointer), `created` (the store's path, the import's lines, whether git ignores it) on the write that created the store, and `warnings`. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` and paths inside a directory are refused. |
 | `memory_search` | List the memories containing a query, by path with their description. A memory that does not parse is skipped and named in a warning. |
 | `memory_check` | Check the store and the agents' wiring as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems; with no store yet, the wiring alone. |
@@ -489,8 +489,15 @@ saying what creates it. `memory_write` and
 `memory_read` or `memory_write` of that path. For a file that doesn't exist yet,
 `memory_write` takes the literal `new`. When the document has changed since that
 version, or `new` names a file that already exists, the call is rejected and
-returns the current content and version, so the agent can merge and retry. Both
+returns the current content and version, in the text and the structured result
+(`message`, `path`, `content`, `version`), so the agent can merge and retry. Both
 tools update `MEMORY.md` afterwards.
+
+Each tool also carries its title in its annotations, where Claude Code reads
+it, with hints for the client: `memory_list`, `memory_search`, `memory_check`
+and `memory_read` are read-only; `memory_write` and `memory_delete` are
+destructive (they replace or remove a whole document) and idempotent (a repeated
+call fails on its `if_version`); none reaches past the project's store.
 
 The server also serves one prompt, `consolidate` (see below).
 

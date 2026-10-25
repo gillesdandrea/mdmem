@@ -44,6 +44,12 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 - `mdmem version`, `mdmem --version`, `-v` and `-V` print `mdmem <version>`,
   read from `package.json` as the MCP server reads it, so the two report the
   same version.
+- `memory_write` says what the write did to the memory's pointer in
+  `MEMORY.md`, on a line such as `MEMORY.md: pointer added` and in the
+  structured result's `index`: `pointer added`, `pointer updated` (its line
+  changed: a new description, or a pointer brought into mdmem's form) or
+  `unchanged`, which is also what a write reports when the index could not be
+  updated, beside the warning that it is stale.
 
 ### Changed
 
@@ -63,6 +69,22 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   save" and "how to use" guidance, the reply-by-reply save checklist and the
   "ignore memory" and "forget" paragraphs; keeping a memory's name, description
   and type in step with its body moved to the consolidation prompt.
+
+### Fixed
+
+- `memory_read` and `memory_write` no longer hide their content from agents
+  that read the structured result, as Claude Code does when a tool declares an
+  output schema: the structured result held only the version, so the agent saw
+  no content. `memory_read`'s now carries `path`, `content` and `version`;
+  `memory_write`'s carries `file`, `version`, `created` (the store's path, the
+  import's lines, whether git ignores it) on the write that created the store,
+  and `warnings`; a version conflict's carries its message, `path`, the current
+  `content` and `version`. The text is unchanged, for clients that read it.
+- Claude Code shows each mdmem tool's title: every tool now carries it in
+  `annotations.title`, where Claude Code reads it, beside the top-level
+  `title`, with `readOnlyHint` on `memory_list`, `memory_search`,
+  `memory_check` and `memory_read`, `destructiveHint` and `idempotentHint` on
+  `memory_write` and `memory_delete`, and `openWorldHint` false on all six.
 
 ## [0.2.0] - 2026-10-21
 

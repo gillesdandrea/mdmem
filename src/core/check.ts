@@ -286,11 +286,12 @@ interface IndexFindings {
   outdated: string[];
 }
 
-/** An index brought up to date, the files it points at, and what was wrong with it. */
+/** An index brought up to date, the files it points at, what was wrong with it, and the files whose pointer it rewrote. */
 interface Reconciled {
   content: string;
   pointed: ReadonlySet<string>;
   findings: IndexFindings;
+  rewritten: ReadonlySet<string>;
 }
 
 /** The lines of `content`, without their endings or the empty one after a final line break. */
@@ -320,6 +321,7 @@ function reconcileIndex(
 ): Reconciled {
   const kept: string[] = [];
   const pointed = new Set<string>();
+  const rewritten = new Set<string>();
   const findings: IndexFindings = {
     missing: [],
     dangling: [],
@@ -348,6 +350,10 @@ function reconcileIndex(
       if (refreshed.outdated) {
         findings.outdated.push(pointer.target);
       }
+      // Not `outdated`: a pointer outside mdmem's form is rewritten without being outdated.
+      if (refreshed.line !== line) {
+        rewritten.add(pointer.target);
+      }
       kept.push(refreshed.line);
     }
   }
@@ -359,7 +365,7 @@ function reconcileIndex(
   }
   const eol = lineEndingOf(current);
   const content = kept.length === 0 ? "" : `${kept.join(eol)}${eol}`;
-  return { content, pointed, findings };
+  return { content, pointed, findings, rewritten };
 }
 
 /** The index's text, or empty when there is none yet. */
@@ -402,6 +408,56 @@ function brokenWarning(
     : `${problem} (it has no pointer in ${INDEX_FILE} until it parses)`;
 }
 
+/** What a save did to its memory's pointer in the index, worded as a write reports it. */
+export const INDEX_CHANGES = [
+  "pointer added",
+  "pointer updated",
+  "unchanged",
+] as const;
+export type IndexChange = (typeof INDEX_CHANGES)[number];
+
+/** What reconciling the index did to `file`'s pointer: a memory that does not parse gets none, so its index is unchanged. */
+function indexChange(
+  file: string,
+  { findings, rewritten }: Reconciled
+): IndexChange {
+  if (findings.missing.includes(file)) {
+    return "pointer added";
+  }
+  return rewritten.has(file) ? "pointer updated" : "unchanged";
+}
+
+/** An index update: its warnings, and the index as reconciled. */
+interface IndexUpdate {
+  warnings: string[];
+  reconciled: Reconciled;
+}
+
+/** `reindex`, keeping the reconciled index for `refreshIndex` to say what became of a saved memory's pointer. */
+async function updateIndex(
+  store: MemoryStore,
+  saved?: SavedMemory | readonly SavedMemory[]
+): Promise<IndexUpdate> {
+  const entries = await loadFiles(store);
+  const { memories, broken } = splitLoad(entries);
+  const current = await currentIndex(store);
+  const files = new Set(entries.map(({ file }) => file));
+  const savedList = saved === undefined ? [] : [saved].flat();
+  const reconciled = reconcileIndex(current, files, memories, savedList);
+  const { content, pointed } = reconciled;
+  if (content !== current || !store.exists(INDEX_FILE)) {
+    await store.create(INDEX_FILE, content);
+  }
+  const capacity = indexCapacity(content);
+  return {
+    warnings: [
+      ...broken.map((entry) => brokenWarning(entry, pointed)),
+      ...(capacity ? [capacity.message] : []),
+    ],
+    reconciled,
+  };
+}
+
 /**
  * Bring the index up to date with the memory files, in place (`reconcileIndex`
  * says how), writing it only when it changes. `saved` is the memory a write just
@@ -413,41 +469,40 @@ export async function reindex(
   store: MemoryStore,
   saved?: SavedMemory | readonly SavedMemory[]
 ): Promise<string[]> {
-  const entries = await loadFiles(store);
-  const { memories, broken } = splitLoad(entries);
-  const current = await currentIndex(store);
-  const files = new Set(entries.map(({ file }) => file));
-  const savedList = saved === undefined ? [] : [saved].flat();
-  const { content, pointed } = reconcileIndex(
-    current,
-    files,
-    memories,
-    savedList
-  );
-  if (content !== current || !store.exists(INDEX_FILE)) {
-    await store.create(INDEX_FILE, content);
-  }
-  const capacity = indexCapacity(content);
-  return [
-    ...broken.map((entry) => brokenWarning(entry, pointed)),
-    ...(capacity ? [capacity.message] : []),
-  ];
+  const { warnings } = await updateIndex(store, saved);
+  return warnings;
+}
+
+/** An index refreshed after a write: its warnings, and what became of the saved memory's pointer. */
+export interface IndexRefresh {
+  warnings: string[];
+  /** Unchanged when nothing was saved, or when the index could not be updated. */
+  index: IndexChange;
 }
 
 /**
- * `reindex` after a write that already landed: a failure becomes a warning that the
- * index is stale, worded once here so the CLI and MCP say the same thing.
+ * `reindex` after a write that already landed, also saying what became of the saved
+ * memory's pointer (`IndexRefresh`): a failure becomes a warning that the index is
+ * stale, worded once here so the CLI and MCP say the same thing.
  */
 export async function refreshIndex(
   store: MemoryStore,
   saved?: SavedMemory
-): Promise<string[]> {
+): Promise<IndexRefresh> {
   try {
-    return await reindex(store, saved);
+    const { warnings, reconciled } = await updateIndex(store, saved);
+    return {
+      warnings,
+      index:
+        saved === undefined ? "unchanged" : indexChange(saved.file, reconciled),
+    };
   } catch (error) {
-    return [
-      `${INDEX_FILE} is stale: ${messageOf(error)} (run \`mdmem reindex\`)`,
-    ];
+    return {
+      warnings: [
+        `${INDEX_FILE} is stale: ${messageOf(error)} (run \`mdmem reindex\`)`,
+      ],
+      index: "unchanged",
+    };
   }
 }
 
