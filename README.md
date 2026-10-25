@@ -286,11 +286,16 @@ repository's worktrees) into it, and the creating command lists what it copied.
 A memory held by one directory is copied, identical ones are kept once, and
 when two directories hold different versions of a file, the repository's own
 directory's version is copied and the others are listed as left in Claude's
-directories, which mdmem never changes. The import runs once per user and
-repository: mdmem records it in `~/.claude/projects/<key>/mdmem-imported`, so a
-store created again after you delete `.memory/` does not bring back memories
-you had deleted. Delete the marker to import again the next time a store is
-created. An existing store gets no import.
+directories, which mdmem never changes. A memory whose `name` differs from its
+file name (`team-lead.md` holding `name: Team Lead`) is stored with the file name
+as its name, so `mdmem doctor` passes, and is listed under "Renamed to match the
+file name:"; its title in `MEMORY.md` stays as Claude wrote it. A memory that
+does not parse, or whose name the import cannot rewrite, is copied as it is, and
+`mdmem doctor` reports it. The import runs once per user and repository: mdmem
+records it in `~/.claude/projects/<key>/mdmem-imported`, so a store created
+again after you delete `.memory/` does not bring back memories you had deleted.
+Delete the marker to import again the next time a store is created. An existing
+store gets no import.
 
 With `--project`, commit both files: they wire Claude Code for everyone working
 in the repository, and everyone then needs `mdmem` on PATH.

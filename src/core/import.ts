@@ -10,8 +10,11 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { stringify as stringifyYaml } from "yaml";
+
 import { INDEX_FILE, pointerTarget, reindex } from "./check.ts";
 import { worktreePaths } from "./git.ts";
+import { memoryFileName, parseMemory } from "./memory.ts";
 import { describeSecrets, findSecrets } from "./secrets.ts";
 import type { MemoryStore } from "./store.ts";
 import { realDir, STORE_DIR } from "./store.ts";
@@ -22,7 +25,9 @@ import { LINE_BREAK_RE, lineEndingOf } from "./text.ts";
  * ADR 0004): once Claude Code is wired, its own memory is off, so the memories it
  * already holds for the repository move into `.memory/` when that store is created.
  * The merge is mechanical: it compares files, not meaning, never refuses, and backs
- * an existing store up before it writes. Claude's directories are only read.
+ * an existing store up before it writes. A copied memory whose name differs from its
+ * file name gets the file name as its name; only its `name:` line changes. Claude's
+ * directories are only read.
  */
 
 /** Where Claude Code's directories are: its config directory comes from the environment, else the home directory. */
@@ -42,12 +47,19 @@ export interface ImportedFile {
   from: string;
 }
 
+/** A copied memory whose frontmatter name was rewritten to its file name, and the name it had. */
+export interface RenamedFile extends ImportedFile {
+  name: string;
+}
+
 /** What an import did. Every list is empty, and `backup` unset, when there was nothing to do. */
 export interface ImportResult {
   /** The Claude memory directories read, the repository's key first. */
   sources: string[];
   /** Files that were in Claude's directories only, now in the store. */
   copied: ImportedFile[];
+  /** Copied files whose name differed from their file name, so mdmem can read them back and save them: the name is now the file name. */
+  renamed: RenamedFile[];
   /**
    * Claude's versions of a file that differ from the one the store holds or took
    * (the store's own, else the first Claude directory's): not imported, so they
@@ -409,6 +421,41 @@ async function storedMemories(
   );
 }
 
+const MEMORY_EXTENSION = ".md";
+const FRONTMATTER_NAME_LINE_RE = /^name:[^\r\n]*/mu;
+
+/** The name in `raw`'s frontmatter; undefined when the memory does not parse. */
+function parsedName(raw: string): string | undefined {
+  try {
+    return parseMemory(raw).frontmatter.name;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `raw` with its frontmatter's top-level `name:` line set to `file`'s name, and the
+ * name it had; undefined when the memory does not parse or its name already matches,
+ * so it is copied as it is.
+ */
+function renamedToFile(
+  file: string,
+  raw: string
+): { raw: string; name: string } | undefined {
+  const name = parsedName(raw);
+  if (name === undefined || memoryFileName(name) === file) {
+    return undefined;
+  }
+  const stem = file.slice(0, -MEMORY_EXTENSION.length);
+  // stringify quotes a name YAML would read as something else, such as `2024` or `null`.
+  const value = stringifyYaml(stem).trimEnd();
+  const renamed = raw.replace(FRONTMATTER_BLOCK_RE, (block) =>
+    block.replace(FRONTMATTER_NAME_LINE_RE, `name: ${value}`)
+  );
+  // A name the line rewrite cannot reach (one spread over several lines) stays as it is.
+  return parsedName(renamed) === stem ? { raw: renamed, name } : undefined;
+}
+
 /** A file an import writes: its name in the store, the Claude directory it came from, and its text. */
 interface Write extends ImportedFile {
   raw: string;
@@ -417,7 +464,7 @@ interface Write extends ImportedFile {
 /** What an import will do. */
 interface ImportPlan extends Pick<
   ImportResult,
-  "copied" | "leftBehind" | "collapsed"
+  "copied" | "renamed" | "leftBehind" | "collapsed"
 > {
   writes: Write[];
   /** The files whose store version was kept over a differing Claude version. */
@@ -433,6 +480,7 @@ function planImport(
     writes: [],
     kept: [],
     copied: [],
+    renamed: [],
     leftBehind: [],
     collapsed: [],
   };
@@ -454,20 +502,24 @@ function planImport(
       continue;
     }
     const imported = { file, from: resolution.copy.from };
-    plan.writes.push({ ...imported, raw: resolution.copy.raw });
+    const renamed = renamedToFile(file, resolution.copy.raw);
+    plan.writes.push({ ...imported, raw: renamed?.raw ?? resolution.copy.raw });
     plan.copied.push(imported);
+    if (renamed !== undefined) {
+      plan.renamed.push({ ...imported, name: renamed.name });
+    }
   }
   return plan;
 }
 
-/** A warning for each written file that looks like it holds a secret: an import copies files as they are. */
+/** A warning for each written file that looks like it holds a secret: an import copies files unredacted. */
 function secretWarnings(writes: readonly Write[]): string[] {
   return writes.flatMap(({ file, raw }) => {
     const secrets = findSecrets(raw);
     return secrets.length === 0
       ? []
       : [
-          `${file}: imported as it is, and it looks like it holds a secret at ${describeSecrets(secrets)}; remove it before committing ${STORE_DIR}/`,
+          `${file}: imported unredacted, and it looks like it holds a secret at ${describeSecrets(secrets)}; remove it before committing ${STORE_DIR}/`,
         ];
   });
 }
@@ -580,10 +632,12 @@ export async function planClaudeImport(
  * Import Claude Code's memories for the project whose store is `store` (ADR 0003):
  * the memory directory at the repository's key and every other Claude project
  * directory of the repository's worktrees. A file in one place only is copied, files
- * with the same content (bar Claude's `modified:` stamp) are kept once, and a memory
- * that breaks mdmem's write rules is copied as it is. Of same-name files with
- * different content, the store's is kept, else the first Claude directory's is
- * copied, and the others are reported as left behind. Each source index's pointer
+ * with the same content (bar Claude's `modified:` stamp) are kept once, a memory
+ * whose name differs from its file name is copied with the file name as its name,
+ * and any other memory that breaks mdmem's write rules, or does not parse, is copied
+ * as it is. Of same-name files with different content, the store's is kept, else
+ * the first Claude directory's is copied, and the others are reported as left
+ * behind. Each source index's pointer
  * lines are appended after the store's, then the index is reconciled as `reindex`
  * does. An existing store is backed up before the first write; with nothing new,
  * nothing is written. Claude's directories are only read.
@@ -622,6 +676,14 @@ export function formatImport(result: ImportResult): string[] {
   }
   if (result.copied.length > 0) {
     lines.push(`Copied into ${STORE_DIR}/:`, ...fileList(result.copied));
+  }
+  if (result.renamed.length > 0) {
+    lines.push(
+      "Renamed to match the file name:",
+      ...result.renamed.map(
+        ({ file, name }) => `    ${file} (was ${JSON.stringify(name)})`
+      )
+    );
   }
   if (result.leftBehind.length > 0) {
     lines.push(

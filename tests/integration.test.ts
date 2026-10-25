@@ -42,7 +42,7 @@ import {
 import { checkSummary, reindex } from "../src/core/check.ts";
 import { HOOK_CONTEXT_MAX_CHARS, HOOK_PARTS } from "../src/core/hook.ts";
 import { claudeProjectDir, importMarker } from "../src/core/import.ts";
-import { serializeMemory } from "../src/core/memory.ts";
+import { parseMemory, serializeMemory } from "../src/core/memory.ts";
 import {
   getConsolidatePrompt,
   getMemoryProtocol,
@@ -2854,6 +2854,52 @@ describe("scopes and store creation", () => {
         `Created the memory store at ${dir}\nNote: git does not ignore .memory/; ignoring or committing it is your choice.\nSaved uses-bun.md\n`
       );
       expect(store.exists("b.md")).toBe(false);
+    });
+  });
+
+  test("a store created by the first add imports a Claude memory whose name differs from its file name under the file name, says so, and doctor passes", async () => {
+    await withFreshRepo(async ({ root, home, env }) => {
+      expect(runCliWith(root, ["enable", "claude-code"], env).code).toBe(0);
+      await claudeMemory(
+        { env, home } as AdapterContext,
+        root,
+        "team-lead.md",
+        memoryText("Team Lead", "Leads the team.")
+      );
+      await claudeMemory(
+        { env, home } as AdapterContext,
+        root,
+        "MEMORY.md",
+        "- [Team Lead](team-lead.md) — About Team Lead\n"
+      );
+      const add = runCliWith(
+        root,
+        [
+          "add",
+          "--type",
+          "user",
+          "--name",
+          "a",
+          "--description",
+          "d",
+          "--body",
+          "b",
+        ],
+        env
+      );
+      expect(add.code).toBe(0);
+      expect(add.out).toContain(
+        'Renamed to match the file name:\n    team-lead.md (was "Team Lead")\n'
+      );
+      const store = new MemoryStore(join(root, ".memory"));
+      const stored = parseMemory(await store.view("team-lead.md"));
+      expect(stored.frontmatter.name).toBe("team-lead");
+      expect(await store.view("MEMORY.md")).toContain(
+        "- [Team Lead](team-lead.md) — About Team Lead\n"
+      );
+      const doctor = runCliWith(root, ["doctor"], env);
+      expect(doctor.code).toBe(0);
+      expect(doctor.out).toBe("✓ 2 memories, no problems\n");
     });
   });
 

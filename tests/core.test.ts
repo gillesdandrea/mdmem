@@ -1070,6 +1070,38 @@ describe("import from Claude Code", () => {
     );
   });
 
+  test("rewrites a copied memory's name to its file name and reports it, leaving the index's title and a memory that does not parse as they are", async () => {
+    const lead = claudeMemoryText("Team Lead", "Leads the team");
+    await put(claudeDir(), "team-lead.md", lead);
+    await put(claudeDir(), "2024.md", claudeMemoryText("Year", "The year"));
+    await put(claudeDir(), "broken.md", "No frontmatter here.\n");
+    await put(
+      claudeDir(),
+      "MEMORY.md",
+      "- [Team Lead](team-lead.md) — Leads the team\n"
+    );
+
+    const result = await importClaudeMemories(store, options);
+
+    expect(result.renamed).toEqual([
+      { file: "2024.md", from: claudeDir(), name: "Year" },
+      { file: "team-lead.md", from: claudeDir(), name: "Team Lead" },
+    ]);
+    expect(await store.view("team-lead.md")).toBe(
+      lead.replace("name: Team Lead", "name: team-lead")
+    );
+    // A name YAML would read as a number is quoted.
+    expect(await store.view("2024.md")).toContain('\nname: "2024"\n');
+    expect(await store.view("broken.md")).toBe("No frontmatter here.\n");
+    expect(await store.view("MEMORY.md")).toContain(
+      "- [Team Lead](team-lead.md) — Leads the team\n"
+    );
+    expect(formatImport(result)).toContain("Renamed to match the file name:");
+    expect(formatImport(result)).toContain(
+      '    team-lead.md (was "Team Lead")'
+    );
+  });
+
   test("of same-name files with different content, keeps the store's and reports Claude's as left behind, its pointer not taken", async () => {
     await store.create("a.md", claudeMemoryText("a", "Store's a"));
     await store.create("MEMORY.md", "");
@@ -1199,7 +1231,7 @@ describe("import from Claude Code", () => {
 
     expect(result.warnings).toEqual([
       expect.stringMatching(
-        /^key\.md: imported as it is, .* secret at line 8/u
+        /^key\.md: imported unredacted, .* secret at line 8/u
       ),
     ]);
     expect(formatImport(result)).toContain(

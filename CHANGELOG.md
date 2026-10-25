@@ -85,6 +85,12 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   `title`, with `readOnlyHint` on `memory_list`, `memory_search`,
   `memory_check` and `memory_read`, `destructiveHint` and `idempotentHint` on
   `memory_write` and `memory_delete`, and `openWorldHint` false on all six.
+- The import of Claude Code's memories rewrites a memory's `name` to its file
+  name when the two differ (`team-lead.md` holding `name: Team Lead`), and
+  lists each one under "Renamed to match the file name:". Such a memory was
+  copied unchanged, so `mdmem doctor` failed right after the import and mdmem
+  could not save the memory until its name was fixed by hand. Its title in
+  `MEMORY.md` is left as Claude wrote it.
 
 ## [0.2.0] - 2026-10-21
 
