@@ -64,11 +64,17 @@ any agent is visible to all of them.
 
   The memory protocol adapts Claude Code's own memory instructions to the shared
   store: the memory format and types, what to save and what not to, checking a
-  recalled memory before acting on it, and saving through the MCP tools (writing
-  files directly only when an agent lacks them). Its text lives in
-  `templates/memory-protocol.md` and is easy to edit; a test keeps it at 6,000
-  characters at most, about three times Claude Code's own memory block, since
-  every wired agent reads it at every session start, `/clear` and compaction.
+  recalled memory, and any claim it makes about an external tool, library or
+  service, before acting on it or repeating it, naming the memory an answer
+  comes from, and saving through the MCP tools (writing files directly only when
+  an agent lacks them). It also says to load every mdmem tool in one request
+  where the agent loads tools on demand, to keep project knowledge in the store
+  where the agent has a memory of its own, and that a changed-on-disk notice for
+  a file under `.memory/` right after a `memory_write` is that write. Its text
+  lives in `templates/memory-protocol.md` and is easy to edit; a test keeps it
+  at 6,000 characters at most, about three times Claude Code's own memory block,
+  since every wired agent reads it at every session start, `/clear` and
+  compaction.
 - **Two surfaces, one core:** a CLI for humans/scripts and setup, and an MCP
   server for agents that prefer tool calls.
 
@@ -447,6 +453,18 @@ above it, inside it or after it, and those directly above the table that
 follows it, with the blank lines around them. `mdmem status` lists each
 scope's server and the hook, each present or missing.
 
+Codex's own memory (`[features] memories`, under `~/.codex/memories/`) stays on
+beside mdmem: `mdmem enable codex` does not touch `features.memories`, imports
+nothing from it, and the check reports nothing about it. Codex writes that
+memory itself after each session, as summaries of its sessions and tasks, so it
+does not compete with the store, and turning it off would cost Codex its
+continuity. The memory protocol tells Codex to keep what is about itself and its
+sessions there and to save everything about the project, how to work in it and
+what the user wants to the store. Claude Code's auto memory is different: it
+holds facts the agent saves deliberately, in the store's own format, and so
+competes with the store. `mdmem enable claude-code` turns it off and imports its
+memories once, when the store is created (ADR 0003).
+
 ## Memory format
 
 One file, one fact — `.memory/<name>.md`:
@@ -486,10 +504,10 @@ server with the same memory-store tools as Claude Code, plus three of its own:
 | Tool | Purpose |
 |---|---|
 | `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
-| `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. The structured result carries the same: `path`, `content` and `version`. |
+| `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. The result opens with a line naming the store that answered, `Store: <id> (<path>)`, the id `memory_list` gives it and its directory. The structured result carries the same: `store` (`id` and `path`), `path`, `content` and `version`. |
 | `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. In a git repository with no store, the first write creates it, and its result opens with the lines `mdmem add` prints for that. A line says what the write did to the memory's pointer in `MEMORY.md`: `pointer added`, `pointer updated` or `unchanged`. The structured result carries what the text says: `file`, `version`, `index` (what became of that pointer), `created` (the store's path, the import's lines, whether git ignores it) on the write that created the store, and `warnings`. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` and paths inside a directory are refused. |
-| `memory_search` | List the memories containing a query, by path with their description. A memory that does not parse is skipped and named in a warning. |
+| `memory_search` | List the memories containing a query, by path with their description, after the same `Store: <id> (<path>)` line as `memory_read`. A memory that does not parse is skipped and named in a warning. |
 | `memory_check` | Check the store and the agents' wiring as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems; with no store yet, the wiring alone. |
 
 `store` is optional everywhere: leave it out to use the project's store. An

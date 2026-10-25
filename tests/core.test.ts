@@ -797,6 +797,32 @@ describe("templates", () => {
     }
   });
 
+  test.each([
+    [
+      "check a memory's claim about an external tool",
+      "Check a claim it makes about an external tool, library or service before acting on it or repeating it, since a memory records what was believed when it was written.",
+    ],
+    [
+      "load the mdmem tools in one request",
+      "If your harness loads tools on demand, load every mdmem tool in one request.",
+    ],
+    [
+      "name the memory an answer comes from",
+      "When an answer comes from a memory, name that memory's path in the store, so the user can open or correct it.",
+    ],
+    [
+      "keep project knowledge in the store",
+      "Where your harness keeps a memory of its own, it keeps what is about you and your sessions; everything about the project, how to work in it and what the user wants goes to the store.",
+    ],
+    [
+      "expect the changed-on-disk notice after a memory_write",
+      "After your own `memory_write`, your harness may report that a file under `.memory/` changed on disk: that is the write you just made, not another edit, and needs no re-read.",
+    ],
+  ])("the memory protocol says to %s", (_behavior, sentence) => {
+    // The template is hard-wrapped, so compare sentences across its line breaks.
+    expect(getMemoryProtocol().replaceAll("\n", " ")).toContain(sentence);
+  });
+
   test("the consolidation prompt renders with no leftover placeholder", () => {
     const prompt = getConsolidatePrompt("/project/.memory");
     expect(prompt).not.toContain("{{");

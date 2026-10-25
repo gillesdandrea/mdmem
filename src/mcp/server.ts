@@ -79,6 +79,20 @@ const storeParam = z
     "the store's id (call memory_list with no arguments to see it); omitted means the project's store"
   );
 
+/** The store that answered a read, as structured content: its id and its directory. */
+const storeOutput = z.object({ id: z.string(), path: z.string() });
+
+/** The store that answered a read, by the id memory_list gives it and its directory. */
+function storeRef(store: MemoryStore): z.infer<typeof storeOutput> {
+  return { id: describeStore(store).id, path: store.root };
+}
+
+/** The line a search or read result opens with, naming the store that answered. */
+function storeLine(store: MemoryStore): string {
+  const { id, path } = storeRef(store);
+  return `Store: ${id} (${path})`;
+}
+
 function storesListing(store: MemoryStore): string {
   const { id, description, writable, index } = describeStore(store);
   return `${id} — ${description} — ${writable ? "writable" : "read-only"} — index: ${index}`;
@@ -103,27 +117,31 @@ async function documentsListing(
 }
 
 /**
- * What memory_read returns as structured content. A client that shows the agent the
- * structured content instead of the text blocks (Claude Code, when a tool declares an
- * output schema) must still see the whole document.
+ * What memory_read returns as structured content: the store that answered, and the
+ * document. A client that shows the agent the structured content instead of the text
+ * blocks (Claude Code, when a tool declares an output schema) must still see the whole
+ * document.
  */
 const documentOutput = z.object({
+  store: storeOutput,
   path: z.string(),
   content: z.string(),
   version: z.string(),
 });
 
-/** A document's content, then its version on a line of its own, so the text carries both; the structured content carries them too. */
+/** The store that answered, the document's content, then its version, each in a text block of its own; the structured content carries them too. */
 function documentResult(
+  store: MemoryStore,
   path: string,
   { content, version }: VersionedDocument
 ): CallToolResult {
   return {
     content: [
+      { type: "text", text: storeLine(store) },
       { type: "text", text: content },
       { type: "text", text: `version: ${version}` },
     ],
-    structuredContent: { path, content, version },
+    structuredContent: { store: storeRef(store), path, content, version },
   };
 }
 
@@ -341,7 +359,7 @@ export async function startMcpServer(): Promise<void> {
     {
       ...titled("Search memory", "read"),
       description:
-        "Find the memories in a memory store whose text (name, description or body) contains the query, ignoring case. Each line gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it.",
+        "Find the memories in a memory store whose text (name, description or body) contains the query, ignoring case. The result opens with a line naming the store that answered, Store: <id> (<path>); each line after it gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it.",
       inputSchema: z.object({
         store: storeParam,
         query: z.string().describe("text to search for"),
@@ -355,7 +373,9 @@ export async function startMcpServer(): Promise<void> {
             ? hits.map((h) => `${h.file} — ${h.description}`)
             : [`No memories matching "${query}".`];
         // An unparseable memory is skipped and reported, not a failure (ADR 0002).
-        return text([...lines, ...warningLines(warnings)].join("\n"));
+        return text(
+          [storeLine(store), ...lines, ...warningLines(warnings)].join("\n")
+        );
       })
   );
 
@@ -386,7 +406,7 @@ export async function startMcpServer(): Promise<void> {
     {
       ...titled("Read a memory document", "read"),
       description:
-        "Read one memory document by its path in the store — a memory such as prefers-bun.md, or the index, MEMORY.md — and return its content and its version token. Pass that version as if_version to memory_write or memory_delete; the change is then refused if the document changed since you read it.",
+        "Read one memory document by its path in the store — a memory such as prefers-bun.md, or the index, MEMORY.md — and return a line naming the store that answered, Store: <id> (<path>), then the document's content, then its version token on a line of its own. Pass that version as if_version to memory_write or memory_delete; the change is then refused if the document changed since you read it.",
       inputSchema: z.object({
         store: storeParam,
         path: z
@@ -399,7 +419,7 @@ export async function startMcpServer(): Promise<void> {
     },
     ({ store: id, path }) =>
       withStore(id, async (store) =>
-        documentResult(path, await readDocument(store, path))
+        documentResult(store, path, await readDocument(store, path))
       )
   );
 

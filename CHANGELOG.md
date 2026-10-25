@@ -50,6 +50,19 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   changed: a new description, or a pointer brought into mdmem's form) or
   `unchanged`, which is also what a write reports when the index could not be
   updated, beside the warning that it is stale.
+- `memory_search` and `memory_read` results open with a line naming the store
+  that answered, `Store: <id> (<path>)`: the id `memory_list` gives it and its
+  directory. `memory_read`'s structured result carries it as `store`, with `id`
+  and `path`.
+- The memory protocol says to check a claim a memory makes about an external
+  tool, library or service before acting on it or repeating it, since a memory
+  records what was believed when it was written; to name the path of the memory
+  an answer comes from; to load every mdmem tool in one request where the agent
+  loads tools on demand; to keep project knowledge in the store where the
+  agent keeps a memory of its own; and that a file under `.memory/` reported
+  changed on disk right after the agent's own `memory_write` is that write.
+- README's Codex CLI section says Codex's own memory stays on beside mdmem,
+  and why Claude Code's auto memory is turned off instead.
 
 ### Changed
 
@@ -58,7 +71,7 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   directory's version is copied and the others are listed as left in Claude's
   directories.
 - The memory protocol injected at session start is less than half its size:
-  about 4,200 characters instead of 9,700, and a test holds it at 6,000 at
+  about 4,800 characters instead of 9,700, and a test holds it at 6,000 at
   most, about three times Claude Code's own memory block, since every wired
   agent reads it at every session start, `/clear` and compaction. It keeps the
   memory format and the four types, the index rule, recall, what to save and

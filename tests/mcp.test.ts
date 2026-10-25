@@ -364,7 +364,7 @@ describe("mcp server", () => {
     });
   });
 
-  test("memory_read returns a document's content and version by path", async () => {
+  test("memory_read names the store that answered, then returns a document's content and version by path", async () => {
     await withServer(async ({ client, store, storeId }) => {
       await store.create("prefers-bun.md", "Use bun.");
       const read = await client.callTool({
@@ -374,12 +374,15 @@ describe("mcp server", () => {
       const version = await store.version("prefers-bun.md");
       // The structured content carries the whole document: Claude Code shows the agent only it.
       expect(read.structuredContent).toEqual({
+        store: { id: storeId, path: store.root },
         path: "prefers-bun.md",
         content: "Use bun.",
         version,
       });
-      // The text carries both too, for agents that ignore structuredContent.
-      expect(textOf(read)).toBe(`Use bun.\nversion: ${version}`);
+      // The text carries them too, for agents that ignore structuredContent.
+      expect(textOf(read)).toBe(
+        `Store: ${storeId} (${store.root})\nUse bun.\nversion: ${version}`
+      );
     });
   });
 
@@ -737,8 +740,8 @@ describe("mcp server", () => {
     });
   });
 
-  test("memory_search lists matching memory documents by path with their description", async () => {
-    await withServer(async ({ client, storeId }) => {
+  test("memory_search names the store that answered, then lists matching memory documents by path with their description", async () => {
+    await withServer(async ({ client, store, storeId }) => {
       await write(client, "uses-bun.md", memory("uses-bun", "Use bun."), "new");
       await write(client, "uses-ts.md", memory("uses-ts", "Use TS."), "new");
 
@@ -746,12 +749,14 @@ describe("mcp server", () => {
         name: "memory_search",
         arguments: { store: storeId, query: "bun" },
       });
-      expect(textOf(result)).toBe("uses-bun.md — About uses-bun");
+      expect(textOf(result)).toBe(
+        `Store: ${storeId} (${store.root})\nuses-bun.md — About uses-bun`
+      );
     });
   });
 
   test("memory_search answers from the memories that parse and appends a warning for a broken one", async () => {
-    await withServer(async ({ client, store }) => {
+    await withServer(async ({ client, store, storeId }) => {
       await write(client, "uses-bun.md", memory("uses-bun", "Use bun."), "new");
       await store.create("broken.md", "no frontmatter, but bun");
 
@@ -761,7 +766,7 @@ describe("mcp server", () => {
       });
       expect(result.isError).toBeFalsy();
       expect(textOf(result)).toBe(
-        "uses-bun.md — About uses-bun\nWarning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by `---`"
+        `Store: ${storeId} (${store.root})\nuses-bun.md — About uses-bun\nWarning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by \`---\``
       );
     });
   });
