@@ -66,11 +66,19 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   loads tools on demand; to keep project knowledge in the store where the
   agent keeps a memory of its own; and that a file under `.memory/` reported
   changed on disk right after the agent's own `memory_write` is that write.
-- README's Codex CLI section says Codex's own memory stays on beside mdmem,
-  and why Claude Code's auto memory is turned off instead.
+- README's "Codex's own memory" section says Codex's own memory stays on
+  beside mdmem, and why Claude Code's auto memory is turned off instead.
 
 ### Changed
 
+- README is a user document: why mdmem exists, install (bun required until
+  mdmem is on npm), the quickstart, what happens in each agent and the
+  approvals it needs, a team workflow (committing or ignoring `.memory/`,
+  several people writing one store, `MEMORY.md` in pull requests, the version
+  check) and troubleshooting, starting with "the agent has no memory". The
+  reference detail it held (store resolution, the index rules, the commands
+  table, what `status` and the check report, each agent's files, the MCP tools,
+  the consolidation prompt's session paths) moved to `docs/reference.md`.
 - `mdmem --help` is one page of 30 lines: the commands in three groups by who
   runs them (setting up and looking after a project, working with memories,
   run by the agents), each on one line, then `-h, --help` and `-v, --version`.
