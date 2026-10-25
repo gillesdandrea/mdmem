@@ -31,7 +31,7 @@ import {
 } from "../adapters/report.ts";
 import type { StoreCreation } from "../adapters/report.ts";
 import { checkSummary, reindex } from "../core/check.ts";
-import { HOOK_AGENTS, HOOK_PARTS, runHook } from "../core/hook.ts";
+import { runHook } from "../core/hook.ts";
 import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import type { MemoryType } from "../core/memory.ts";
 import {
@@ -52,6 +52,7 @@ import { RefusalError } from "../core/refusal.ts";
 import type { MemoryStore } from "../core/store.ts";
 import { locateStore, VersionConflictError } from "../core/store.ts";
 import { messageOf } from "../core/text.ts";
+import { commandHelp, topLevelHelp, unknownCommandHelp } from "./help.ts";
 
 function print(msg = ""): void {
   process.stdout.write(`${msg}\n`);
@@ -257,7 +258,8 @@ async function cmdDelete(args: string[]): Promise<void> {
 }
 
 async function cmdSearch(args: string[]): Promise<void> {
-  const [query] = args;
+  // A leading `--` lets the query be -h or --help, which main otherwise takes as asking for help.
+  const [query] = args[0] === "--" ? args.slice(1) : args;
   if (!query) {
     die("usage: mdmem search <query>");
   }
@@ -500,86 +502,13 @@ function cmdVersion(): void {
   print(`mdmem ${packageJson.version}`);
 }
 
-function usage(): void {
-  print(`mdmem — shared, Claude-style memory for any coding agent
-
-Usage: mdmem <command> [options]
-
-  add --type <t> --name <n> --description <d> [--body <text>] [--force]
-                            Save a memory (body may be piped via stdin; --force overwrites an existing one,
-                            unless it changes while being saved); with no store yet, the first save
-                            creates it, as memory_write does: at the repository's root, or outside
-                            git in the working directory
-  list                      Print the memory index (MEMORY.md)
-  read <name>               Print one memory by its name (or <name>.md), or the index (MEMORY.md)
-  edit <name>               Edit a copy of a memory in $VISUAL/$EDITOR, then save it back; an invalid
-                            edit or one that conflicts is refused and its copy kept
-  delete | rm <name>        Remove a memory by its name (or <name>.md)
-  search <query>            Find memories containing text
-  reindex                   Bring MEMORY.md up to date with the memories, keeping its other lines
-  consolidate [--agent <agent>]
-                            Print a prompt that has an agent consolidate the store; --agent points
-                            it at that agent's past sessions of the project (claude-code: its
-                            project directory in $CLAUDE_CONFIG_DIR/projects or ~/.claude/projects;
-                            codex: the sessions in $CODEX_HOME/sessions or ~/.codex/sessions whose
-                            cwd is the project; bob keeps the generic line)
-  doctor | check            Check the store (parse errors, name≠filename, conflicting types, secrets,
-                            long pointers, stale index, index over its size limit) and the agents'
-                            wiring in both scopes (a config file it cannot read, a session-start hook
-                            missing or switched off, Claude Code's auto memory still on, mdmem not on
-                            PATH); with no store, or outside any project, the wiring alone; exits 1
-                            on a problem; a [[link]] to a memory not written yet is a note
-  enable <agent…> | --all [--project]
-                            Wire an agent to mdmem in the user-wide files it reads in every project
-                            (the global scope), or with --project in the repository's files, meant
-                            to be committed, creating its store if missing (refused in a bare
-                            repository or the folder holding one, and outside git without a store);
-                            --all wires the agents found on this machine, by their command on PATH
-                            (claude, bob, codex) or config directory ($CLAUDE_CONFIG_DIR or ~/.claude,
-                            ~/.bob, $CODEX_HOME or ~/.codex)
-                            (claude-code: turn its auto memory off, add its session-start hooks, the
-                            mdmem MCP server and its tools' permission, in ~/.claude/settings.json and
-                            ~/.claude.json ($CLAUDE_CONFIG_DIR when set), or .claude/settings.json and
-                            .mcp.json; bob: its session-start hooks and the mdmem MCP server, in
-                            ~/.bob/settings/settings.json and ~/.bob/settings/mcp.json, or
-                            .bob/settings.json and .bob/mcp.json; codex: its session-start hooks in
-                            ~/.codex/hooks.json ($CODEX_HOME when set) in both scopes, and the mdmem
-                            MCP server in ~/.codex/config.toml or .codex/config.toml); an unknown
-                            agent, a file that does not parse or a key of mdmem's holding something
-                            else (another mcpServers.mdmem, autoMemoryEnabled: true) stops it with no
-                            file written
-  disable <agent…> | --all [--project]
-                            Remove exactly mdmem's entries from an agent's user-wide files, or with
-                            --project from the repository's (leaves the store, needs none); --all
-                            takes the agents found on this machine; codex's hook serves both scopes,
-                            so the global scope removes it and --project keeps it
-  status                    Show the store (or that there is none yet), the check in one line,
-                            whether git ignores .memory/, and each agent's wiring in each scope, entry
-                            by entry, with what mdmem cannot check (folder trust), a warning when Bob
-                            would be launched below the checkout's root, and one in a submodule of a
-                            project whose files wire agents that agents started in the submodule do
-                            not get; outside any project, the global scope alone
-  path                      Print the store directory
-  version                   Print mdmem's version (also --version, -v, -V)
-  mcp                       Run the MCP server over stdio (for agent tool-calls)
-  hook <agent> <part> [--global]
-                            Run by an agent's session-start hook, not typed by hand: print the
-                            memory protocol or the index as context to inject (agent: ${HOOK_AGENTS.join(", ")};
-                            part: ${HOOK_PARTS.join(", ")}); speaks in every git repository, the index
-                            saying when no store exists yet, and outside git only where a store
-                            exists; a --global entry is silent where the project's own entry runs,
-                            and codex's where neither ~/.codex/config.toml nor .codex/config.toml
-                            registers the mdmem server
-
-Agents: ${adapterIds().join(", ")} (only agents with session-start hooks are supported)
-Memory types: ${MEMORY_TYPES.join(", ")}`);
-}
-
 const runMcp = async (): Promise<void> => {
   // Dynamic import so normal CLI commands never pay the MCP SDK load cost.
   const { startMcpServer } = await import("../mcp/server.ts");
   await startMcpServer();
 };
+
+const HELP_FLAGS: ReadonlySet<string> = new Set(["--help", "-h"]);
 
 const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   // Gone since the first save creates the store everywhere; kept only to say so.
@@ -610,20 +539,32 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   hook: (args) => cmdHook(args),
 };
 
+/** Whether `args` ask for help, before any `--` that ends the options. */
+function asksForHelp(args: readonly string[]): boolean {
+  const end = args.indexOf("--");
+  const options = end === -1 ? args : args.slice(0, end);
+  return options.some((arg) => HELP_FLAGS.has(arg));
+}
+
 async function main(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
-  if (
-    command === undefined ||
-    command === "help" ||
-    command === "--help" ||
-    command === "-h"
-  ) {
-    usage();
+  const [first, ...rest] = process.argv.slice(2);
+  // `mdmem help <command>` is `mdmem <command> --help`; bare, it is the top-level page.
+  const named = first === "help" ? rest[0] : first;
+  if (named === undefined || named === "help" || HELP_FLAGS.has(named)) {
+    print(topLevelHelp());
     return;
   }
-  const handler = COMMANDS[command];
+  const args = first === "help" ? ["--help"] : rest;
+  const handler = COMMANDS[named];
   if (!handler) {
-    die(`unknown command "${command}". Run \`mdmem help\`.`);
+    process.stderr.write(`${unknownCommandHelp(named)}\n`);
+    process.exit(1);
+  }
+  // Help is taken before any option parsing, so no parser's wording reaches the user.
+  const page = asksForHelp(args) ? commandHelp(named) : undefined;
+  if (page !== undefined) {
+    print(page);
+    return;
   }
   try {
     await handler(args);

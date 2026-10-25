@@ -1515,6 +1515,146 @@ describe("cli", () => {
     });
   });
 
+  test("mdmem, -h, --help and help print one page under 35 lines: three groups, one line per command, the glossary's words", async () => {
+    await withCliProject((root) => {
+      const page = runCli(root);
+      expect(page.code).toBe(0);
+      for (const args of [["-h"], ["--help"], ["help"]]) {
+        expect(runCli(root, ...args).out).toBe(page.out);
+      }
+      const lines = page.out.trimEnd().split("\n");
+      expect(lines.length).toBeLessThan(35);
+      for (const heading of [
+        "Set up and look after a project:",
+        "Work with memories:",
+        "Run by the agents, never typed:",
+        "Options:",
+      ]) {
+        expect(lines).toContain(heading);
+      }
+      const commands = [
+        "enable",
+        "disable",
+        "status",
+        "doctor",
+        "consolidate",
+        "add",
+        "read",
+        "edit",
+        "delete",
+        "list",
+        "search",
+        "reindex",
+        "path",
+        "hook",
+        "mcp",
+      ];
+      for (const command of commands) {
+        expect(
+          lines.filter((line) => line.startsWith(`  ${command} `))
+        ).toHaveLength(1);
+      }
+      expect(lines.some((line) => line.startsWith("  -v, --version "))).toBe(
+        true
+      );
+      expect(lines.at(-1)).toBe(
+        "Use mdmem <command> --help for a command's arguments and flags."
+      );
+      for (const avoided of ["project files", "MEMORY.md", "lint", "validat"]) {
+        expect(page.out).not.toContain(avoided);
+      }
+    });
+  });
+
+  test("help add, add --help and add -h print one page with an example and its refusals", async () => {
+    await withCliProject((root, store) => {
+      const page = runCli(root, "help", "add");
+      expect(page.code).toBe(0);
+      expect(page.err).toBe("");
+      expect(runCli(root, "add", "--help").out).toBe(page.out);
+      expect(runCli(root, "add", "--name", "x", "-h").out).toBe(page.out);
+      expect(page.out).toStartWith("Usage: mdmem add ");
+      expect(page.out).toContain("Example:\n  mdmem add ");
+      expect(page.out).toContain(
+        "Refuses when:\n  --type is missing or not a memory type\n"
+      );
+      expect(page.out).toContain("user, feedback, project, reference");
+      // the page is all it did: no memory was saved
+      expect(existsSync(join(store.root, "x.md"))).toBe(false);
+    });
+  });
+
+  test("every command and alias has a page with an example and a Refuses when: block", async () => {
+    await withCliProject((root) => {
+      for (const command of [
+        "enable",
+        "disable",
+        "status",
+        "doctor",
+        "check",
+        "consolidate",
+        "add",
+        "read",
+        "edit",
+        "delete",
+        "rm",
+        "list",
+        "search",
+        "reindex",
+        "path",
+        "hook",
+        "mcp",
+        "version",
+      ]) {
+        const page = runCli(root, command, "--help");
+        expect(page.code).toBe(0);
+        expect(page.out).toStartWith("Usage: mdmem ");
+        expect(page.out).toContain("\nExample:\n");
+        expect(page.out).toContain("\nRefuses when:\n");
+      }
+      expect(runCli(root, "rm", "-h").out).toBe(
+        runCli(root, "delete", "-h").out
+      );
+      expect(runCli(root, "check", "-h").out).toBe(
+        runCli(root, "doctor", "-h").out
+      );
+    });
+  });
+
+  test("search -- -h searches for -h, and -v -h prints version's page", async () => {
+    await withCliProject((root) => {
+      const search = runCli(root, "search", "--", "-h");
+      expect(search.code).toBe(0);
+      expect(search.out).toBe('No memories matching "-h".\n');
+      expect(runCli(root, "-v", "-h").out).toBe(
+        runCli(root, "help", "version").out
+      );
+    });
+  });
+
+  test("enable -h exits 0 and names both scopes and the agents", async () => {
+    await withCliProject((root) => {
+      const page = runCli(root, "enable", "-h");
+      expect(page.code).toBe(0);
+      expect(page.out).toContain("\n  global ");
+      expect(page.out).toContain("\n  project ");
+      expect(page.out).toContain("Agents:\n  claude-code, bob, codex\n");
+    });
+  });
+
+  test("an unknown command, and help of one, exit 1 with a line naming it, the usage line and the footer", async () => {
+    await withCliProject((root) => {
+      for (const args of [["nope"], ["help", "nope"]]) {
+        const unknown = runCli(root, ...args);
+        expect(unknown.code).toBe(1);
+        expect(unknown.out).toBe("");
+        expect(unknown.err).toBe(
+          'mdmem: unknown command "nope"\nUsage: mdmem <command> [options]\nUse mdmem <command> --help for a command\'s arguments and flags.\n'
+        );
+      }
+    });
+  });
+
   test("enable --all wires only the agents found on this machine, and naming an agent wires it anyway", async () => {
     await withCliProject(async (root) => {
       // bob is on PATH (with git, which the CLI runs), ~/.codex exists, Claude Code is nowhere

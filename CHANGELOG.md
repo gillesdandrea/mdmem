@@ -71,6 +71,17 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 
 ### Changed
 
+- `mdmem --help` is one page of 30 lines: the commands in three groups by who
+  runs them (setting up and looking after a project, working with memories,
+  run by the agents), each on one line, then `-h, --help` and `-v, --version`.
+  Each command has its own page, from `mdmem <command> --help`, `-h` or
+  `mdmem help <command>`: its usage, what it does, its options, an example
+  and the refusals it can give. `enable` and `disable`'s pages explain both
+  scopes and the files each one writes, and list the agents; `add`'s lists
+  the memory types. `--help` and `-h` used to fail on a command with a parser
+  error. An unknown command, or `mdmem help` of one, prints a line naming it,
+  the usage line and where to find a command's help, and exits 1. To search
+  for `-h` or `--help`, put `--` before it: `mdmem search -- -h`.
 - The import of Claude Code's memories never refuses: when Claude Code's
   directories hold different versions of a file, the repository's own
   directory's version is copied and the others are listed as left in Claude's
