@@ -1107,7 +1107,7 @@ async function seedMemories(store: MemoryStore, count: number): Promise<void> {
 const END_TO_END_TIMEOUT_MS = 30_000;
 
 describe("cli", () => {
-  test("init in a linked worktree creates the store at the main checkout's root, leaving .gitignore alone", async () => {
+  test("the first add in a linked worktree creates the store at the main checkout's root, leaving .gitignore alone", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
     try {
       const repo = join(tmp, "repo");
@@ -1118,16 +1118,27 @@ describe("cli", () => {
       git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
 
       // the user's global excludes must not decide whether git ignores .memory/
-      const init = runCliWith(worktree, ["init"], {
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-      });
-      expect(init.code).toBe(0);
-      expect(init.out).toBe(
+      const add = runCliWith(
+        worktree,
         [
-          `Initialized memory store at ${join(repo, ".memory")}`,
+          "add",
+          "--type",
+          "user",
+          "--name",
+          "a",
+          "--description",
+          "d",
+          "--body",
+          "b",
+        ],
+        { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }
+      );
+      expect(add.code).toBe(0);
+      expect(add.out).toBe(
+        [
+          `Created the memory store at ${join(repo, ".memory")}`,
           "Note: git does not ignore .memory/; ignoring or committing it is your choice.",
-          "Next: `mdmem enable --all` to wire up your agents.",
+          "Saved a.md",
           "",
         ].join("\n")
       );
@@ -1146,7 +1157,7 @@ describe("cli", () => {
     }
   });
 
-  test("without git, init stops its walk before $HOME and creates the store in the working directory", async () => {
+  test("without git, the first add stops its walk before $HOME and creates the store in the working directory, saying so", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
     try {
       const home = join(tmp, "home");
@@ -1154,19 +1165,35 @@ describe("cli", () => {
       const start = join(home, "a", "b");
       await mkdir(start, { recursive: true });
 
-      const init = runCliWith(start, ["init"], { HOME: home });
-      expect(init.code).toBe(0);
-      expect(init.out).toStartWith(
-        `Initialized memory store at ${join(start, ".memory")}\n`
+      const add = runCliWith(
+        start,
+        [
+          "add",
+          "--type",
+          "user",
+          "--name",
+          "a",
+          "--description",
+          "d",
+          "--body",
+          "b",
+        ],
+        { HOME: home }
+      );
+      expect(add.err).toBe("");
+      expect(add.code).toBe(0);
+      expect(add.out).toBe(
+        `Created the memory store at ${join(start, ".memory")}\nSaved a.md\n`
       );
       expect(existsSync(join(start, ".memory/MEMORY.md"))).toBe(true);
+      expect(existsSync(join(start, ".memory/a.md"))).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
   });
 
   test(
-    "init, add, status, enable run end-to-end",
+    "add, status, enable run end-to-end",
     async () => {
       const root = await mkdtemp(join(tmpdir(), "mdmem-cli-"));
       try {
@@ -1197,10 +1224,7 @@ describe("cli", () => {
           };
         };
 
-        const init = run("init");
-        expect(init.code).toBe(0);
-        expect(existsSync(join(root, ".memory/MEMORY.md"))).toBe(true);
-
+        // outside git, the first add creates the store in the working directory
         const add = run(
           "add",
           "--type",
@@ -1213,6 +1237,7 @@ describe("cli", () => {
           "Use bun."
         );
         expect(add.code).toBe(0);
+        expect(existsSync(join(root, ".memory/MEMORY.md"))).toBe(true);
         expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(true);
 
         const read = run("read", "uses-bun");
@@ -1632,6 +1657,17 @@ describe("cli", () => {
     });
   });
 
+  test("init, gone since the first write creates the store, is refused with what replaced it", async () => {
+    await withCliProject((root) => {
+      const init = runCli(root, "init");
+      expect(init.code).toBe(1);
+      expect(init.err).toBe(
+        "mdmem: init is gone: the first memory write (memory_write, `mdmem add`) creates the store, and `mdmem status` shows where\n"
+      );
+      expect(init.out).toBe("");
+    });
+  });
+
   test("disable needs no store: it unwires every agent in a repository whose .memory/ was deleted", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
     try {
@@ -1640,7 +1676,6 @@ describe("cli", () => {
         HOME: join(root, "home"),
         CLAUDE_CONFIG_DIR: join(root, "claude-config"),
       };
-      expect(runCliWith(root, ["init"], env).code).toBe(0);
       const agents = ["claude-code", "bob", "codex"];
       expect(
         runCliWith(root, ["enable", ...agents, "--project"], env).code
@@ -1677,7 +1712,23 @@ describe("cli", () => {
       };
       const project = join(tmp, "project");
       await mkdir(project);
-      expect(runCliWith(project, ["init"], env).code).toBe(0);
+      expect(
+        runCliWith(
+          project,
+          [
+            "add",
+            "--type",
+            "user",
+            "--name",
+            "a",
+            "--description",
+            "d",
+            "--body",
+            "b",
+          ],
+          env
+        ).code
+      ).toBe(0);
       expect(
         runCliWith(project, ["enable", "codex", "--project"], env).code
       ).toBe(0);
@@ -2815,7 +2866,7 @@ describe("scopes and store creation", () => {
       const read = runCliWith(root, ["read", "MEMORY.md"], env);
       expect(read.code).toBe(1);
       expect(read.err).toBe(
-        `mdmem: No .memory/ store for this project yet (looked for ${dir}): the first memory write (memory_write, \`mdmem add\`) creates it, or run \`mdmem init\`\n`
+        `mdmem: No .memory/ store for this project yet (looked for ${dir}): the first memory write (memory_write, \`mdmem add\`) creates it\n`
       );
 
       const before = runCliWith(root, ["status"], env);
@@ -3011,7 +3062,7 @@ describe("scopes and store creation", () => {
     });
   });
 
-  test("outside git, add refuses to create a store, and status and doctor report the global wiring alone", async () => {
+  test("outside git with no store, status says where the first write creates it, and status and doctor report the global wiring alone", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-scope-")));
     try {
       const home = join(tmp, "home");
@@ -3022,32 +3073,11 @@ describe("scopes and store creation", () => {
         CLAUDE_CONFIG_DIR: join(home, ".claude"),
         CODEX_HOME: join(home, ".codex"),
       };
-      const add = runCliWith(
-        dir,
-        [
-          "add",
-          "--type",
-          "user",
-          "--name",
-          "a",
-          "--description",
-          "d",
-          "--body",
-          "b",
-        ],
-        env
-      );
-      expect(add.code).toBe(1);
-      expect(add.err).toBe(
-        `mdmem: No .memory/ store for this project yet (looked for ${join(dir, ".memory")}): run \`mdmem init\` in the project first\n`
-      );
-      expect(existsSync(join(dir, ".memory"))).toBe(false);
-
       expect(runCliWith(dir, ["enable", "bob"], env).code).toBe(0);
       const status = runCliWith(dir, ["status"], env);
       expect(status.code).toBe(0);
       expect(status.out).toStartWith(
-        "Store: none (no repository, and no .memory/ here or above): `mdmem init` creates one\nCheck: "
+        `Store: none (no repository, and no .memory/ here or above); the first memory write (memory_write, \`mdmem add\`) creates ${join(dir, ".memory")}\nCheck: `
       );
       expect(status.out).toContain(
         `  ✓ IBM Bob (global)\n      ✓ SessionStart hooks "mdmem hook bob protocol --global", "mdmem hook bob index --global" (${join(home, ".bob/settings/settings.json")})\n`
@@ -3072,7 +3102,6 @@ describe("scopes and store creation", () => {
 
   test("a repository wired in both scopes has two status lines per agent and no problem, and injects each part once", async () => {
     await withFreshRepo(async ({ root, env }) => {
-      expect(runCliWith(root, ["init"], env).code).toBe(0);
       const agents = ["claude-code", "bob", "codex"];
       expect(runCliWith(root, ["enable", ...agents], env).code).toBe(0);
       expect(

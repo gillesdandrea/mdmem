@@ -22,13 +22,15 @@ any agent is visible to all of them.
   worktrees: each linked worktree would also check out a copy of `.memory/`,
   which mdmem ignores there. To keep `.memory/` out of every repository at once,
   add it to your global gitignore (`git config --global core.excludesFile`).
-- **The store is created on the first save.** In a git repository with no
-  `.memory/` yet, the first memory write (`memory_write` from an agent, or
-  `mdmem add`) creates it, with its `MEMORY.md`, and says so. Until then, reads
-  (`mdmem read`, `memory_read`, …) refuse and say what creates it. Outside git
-  only `mdmem init` creates a store, since a save in a folder such as `~/dev`
-  would make a store that every repository later created under it no longer
-  sees.
+- **The store is created on the first save.** With no `.memory/` yet, the
+  first memory write (`memory_write` from an agent, or `mdmem add`) creates it,
+  with its `MEMORY.md`, and says so: in a git repository at its root, outside
+  git in the working directory. Until then, reads (`mdmem read`,
+  `memory_read`, …) refuse and say what creates it, and `mdmem status` says
+  where it would be. Outside git, save where you mean the store to live: a
+  store in a folder such as `~/dev` goes unseen by every repository later
+  created under it, which is why the session-start hook speaks there only
+  where a store exists.
 - **mdmem keeps the index up to date from the memories.** Agents only ever write
   their own memory files. After every save or delete through mdmem, and on
   `mdmem reindex`, mdmem updates `MEMORY.md` in place: it appends a pointer for a
@@ -113,8 +115,7 @@ To wire one repository for everyone who clones it instead, run
 
 | Command | Purpose |
 |---|---|
-| `mdmem init` | Create `.memory/` at the project's root, or report the existing store; the only way to create one outside git |
-| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory, creating the store first in a repository that has none; refuses an existing name unless `--force`, and refuses a `--force` overwrite if the memory changes while it is saved. Body may also be piped via stdin. |
+| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory, creating the store first where there is none (at the repository's root, or outside git in the working directory); refuses an existing name unless `--force`, and refuses a `--force` overwrite if the memory changes while it is saved. Body may also be piped via stdin. |
 | `mdmem list` | Print the memory index (`MEMORY.md`) |
 | `mdmem read <name>` | Print one memory by its name (or `<name>.md`), or the index (`MEMORY.md`) |
 | `mdmem edit <name>` | Edit a copy of a memory in `$VISUAL`/`$EDITOR`, then save it back and reindex |
@@ -151,7 +152,7 @@ only from a work tree. In a repository with no store it creates one, as the
 first save would. `disable` needs no store, so it works after `.memory/` was
 deleted; `disable --project` outside any project (no repository, no store)
 changes nothing, since the directory may be one whose agent files are
-user-wide, such as your home. mdmem 0.2.0's `enable --prefer` and
+user-wide, such as your home. mdmem 0.2.0's `init`, `enable --prefer` and
 `disable --global` are refused, naming what replaced them.
 
 `mdmem hook` is what the agents' session-start hooks run: `<agent>` is
@@ -290,7 +291,7 @@ config, `~/.claude.json` (both in `$CLAUDE_CONFIG_DIR` when it is set);
   `.mcp.json`.
 
 When a store is created in a repository where Claude Code is enabled in either
-scope, by the first save, `mdmem init` or `mdmem enable --project`, mdmem
+scope, by the first save or `mdmem enable --project`, mdmem
 imports the memories Claude Code kept for the repository
 (`~/.claude/projects/<key>/memory/`, and the directory of each of the
 repository's worktrees) into it, and the creating command lists what it copied.
@@ -505,7 +506,7 @@ server with the same memory-store tools as Claude Code, plus three of its own:
 |---|---|
 | `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
 | `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. The result opens with a line naming the store that answered, `Store: <id> (<path>)`, the id `memory_list` gives it and its directory. The structured result carries the same: `store` (`id` and `path`), `path`, `content` and `version`. |
-| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. In a git repository with no store, the first write creates it, and its result opens with the lines `mdmem add` prints for that. A line says what the write did to the memory's pointer in `MEMORY.md`: `pointer added`, `pointer updated` or `unchanged`. The structured result carries what the text says: `file`, `version`, `index` (what became of that pointer), `created` (the store's path, the import's lines, whether git ignores it) on the write that created the store, and `warnings`. |
+| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. With no store yet, the first write creates it, at the git repository's root or, outside git, in the working directory, and its result opens with the lines `mdmem add` prints for that. A line says what the write did to the memory's pointer in `MEMORY.md`: `pointer added`, `pointer updated` or `unchanged`. The structured result carries what the text says: `file`, `version`, `index` (what became of that pointer), `created` (the store's path, the import's lines, whether git ignores it) on the write that created the store, and `warnings`. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` and paths inside a directory are refused. |
 | `memory_search` | List the memories containing a query, by path with their description, after the same `Store: <id> (<path>)` line as `memory_read`. A memory that does not parse is skipped and named in a warning. |
 | `memory_check` | Check the store and the agents' wiring as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems; with no store yet, the wiring alone. |

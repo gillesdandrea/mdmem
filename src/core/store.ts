@@ -201,7 +201,7 @@ export function realDir(path: string): string {
  * shares one store and a `.memory/` lower down is ignored. Without git, it is the first
  * directory holding a `.memory/`, walking up from `startDir` and stopping before the home
  * directory (unless `startDir` is the home directory), else `startDir` itself, where
- * `mdmem init` creates one.
+ * the first memory write creates one.
  */
 export function locateStore(
   startDir: string,

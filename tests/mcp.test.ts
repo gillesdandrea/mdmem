@@ -937,7 +937,7 @@ describe("mcp server", () => {
         });
         expect(read.isError).toBe(true);
         expect(textOf(read)).toBe(
-          `No .memory/ store for this project yet (looked for ${store.root}): the first memory write (memory_write, \`mdmem add\`) creates it, or run \`mdmem init\``
+          `No .memory/ store for this project yet (looked for ${store.root}): the first memory write (memory_write, \`mdmem add\`) creates it`
         );
         const check = await client.callTool({
           name: "memory_check",
@@ -989,6 +989,36 @@ describe("mcp server", () => {
           ...tempHomeEnv(dir),
           PATH: `${join(dir, "bin")}:${dirname(Bun.which("git") ?? "/usr/bin/git")}`,
         }),
+      }
+    );
+  });
+
+  test("outside git with no store, the first memory_write creates the store in the working directory", async () => {
+    await withServer(
+      async ({ client, store }) => {
+        const written = await write(
+          client,
+          "uses-bun.md",
+          memory("uses-bun", "Use bun."),
+          "new"
+        );
+        expect(written.isError).toBeUndefined();
+        expect(textOf(written)).toStartWith(
+          `Created the memory store at ${store.root}\nSaved uses-bun.md\n`
+        );
+        expect(store.exists("uses-bun.md")).toBe(true);
+        expect(store.exists("MEMORY.md")).toBe(true);
+        expect(
+          (written.structuredContent as { created?: { store: string } }).created
+            ?.store
+        ).toBe(store.root);
+      },
+      {
+        // no repository and no store: the server runs in an empty temp directory outside git
+        setup: async () => {},
+        // HOME at the temp directory's parent stops locateStore's walk-up there,
+        // so a .memory/ above the temp directory cannot stand in for the new store
+        env: (dir) => ({ ...tempHomeEnv(dir), HOME: dirname(dir) }),
       }
     );
   });

@@ -50,7 +50,7 @@ import type { WriteResult } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
 import type { MemoryStore } from "../core/store.ts";
-import { VersionConflictError } from "../core/store.ts";
+import { locateStore, VersionConflictError } from "../core/store.ts";
 import { messageOf } from "../core/text.ts";
 
 function print(msg = ""): void {
@@ -93,31 +93,6 @@ function isMemoryType(value: string | undefined): value is MemoryType {
   return (
     value !== undefined && (MEMORY_TYPES as readonly string[]).includes(value)
   );
-}
-
-async function cmdInit(): Promise<void> {
-  // The one way to create a store outside git (ADR 0004).
-  const { store, created, ignored, imported, warnings } = await ensureStore(
-    process.cwd(),
-    { outsideGit: true }
-  );
-  print(
-    created
-      ? `Initialized memory store at ${store.root}`
-      : `Memory store already exists at ${store.root}`
-  );
-  for (const line of imported) {
-    print(line);
-  }
-  for (const warning of warnings) {
-    warn(warning);
-  }
-  if (ignored === false) {
-    print(IGNORE_NOTE);
-  }
-  if (created) {
-    print("Next: `mdmem enable --all` to wire up your agents.");
-  }
 }
 
 async function cmdAdd(args: string[]): Promise<void> {
@@ -435,7 +410,7 @@ async function cmdStatus(): Promise<void> {
   const status = await projectStatus(locateContext(process.cwd()));
   if (status.store === undefined) {
     print(
-      "Store: none (no repository, and no .memory/ here or above): `mdmem init` creates one"
+      `Store: none (no repository, and no .memory/ here or above); the first memory write (memory_write, \`mdmem add\`) creates ${locateStore(process.cwd()).dir}`
     );
   } else if (status.store.exists) {
     print(`Store: ${status.store.dir}`);
@@ -530,13 +505,11 @@ function usage(): void {
 
 Usage: mdmem <command> [options]
 
-  init                      Create .memory/ at the project's root (a repository's main checkout), and
-                            import Claude Code's memories into it when Claude Code is wired; the only
-                            way to create a store outside git
   add --type <t> --name <n> --description <d> [--body <text>] [--force]
                             Save a memory (body may be piped via stdin; --force overwrites an existing one,
-                            unless it changes while being saved); in a repository with no store yet,
-                            the first save creates it, as memory_write does
+                            unless it changes while being saved); with no store yet, the first save
+                            creates it, as memory_write does: at the repository's root, or outside
+                            git in the working directory
   list                      Print the memory index (MEMORY.md)
   read <name>               Print one memory by its name (or <name>.md), or the index (MEMORY.md)
   edit <name>               Edit a copy of a memory in $VISUAL/$EDITOR, then save it back; an invalid
@@ -609,7 +582,11 @@ const runMcp = async (): Promise<void> => {
 };
 
 const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
-  init: () => cmdInit(),
+  // Gone since the first save creates the store everywhere; kept only to say so.
+  init: () =>
+    die(
+      "init is gone: the first memory write (memory_write, `mdmem add`) creates the store, and `mdmem status` shows where"
+    ),
   add: (args) => cmdAdd(args),
   list: () => cmdList(),
   read: (args) => cmdRead(args),

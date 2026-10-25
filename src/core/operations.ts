@@ -36,15 +36,12 @@ import { messageOf } from "./text.ts";
  */
 
 /**
- * Why a project has no store to read, and what creates one: in a repository, the
- * first memory write or `mdmem init`; outside git, only `mdmem init` (ADR 0004).
+ * Why a project has no store to read, and what creates one: the first memory write,
+ * at the repository's root, or outside git in the working directory (ADR 0004).
  */
 export function noStoreRefusal(location: StoreLocation): RefusalError {
-  const creates = location.inRepository
-    ? `the first memory write (memory_write, \`mdmem add\`) creates it, or run \`mdmem init\``
-    : "run `mdmem init` in the project first";
   return new RefusalError(
-    `No ${STORE_DIR}/ store for this project yet (looked for ${location.dir}): ${creates}`
+    `No ${STORE_DIR}/ store for this project yet (looked for ${location.dir}): the first memory write (memory_write, \`mdmem add\`) creates it`
   );
 }
 

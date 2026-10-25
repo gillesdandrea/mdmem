@@ -166,22 +166,20 @@ async function importers(
 
 /**
  * The store of the project holding `cwd`, created with an empty index when it does
- * not exist yet (ADR 0004): in a repository by any write, outside git only when
- * `outsideGit` allows it (`mdmem init`), and refused otherwise. Creating it imports
- * the memories of each agent wired in either scope, or about to be (`importFor`),
- * that kept its own: Claude Code's, once per user and repository.
+ * not exist yet (ADR 0004): in a repository at its root, outside git in the working
+ * directory. Creating it imports the memories of each agent wired in either scope,
+ * or about to be (`importFor`), that kept its own: Claude Code's, once per user and
+ * repository.
  */
 export async function ensureStore(
   cwd: string,
   {
     env = process.env,
     home = homedir(),
-    outsideGit = false,
     importFor = [],
   }: {
     env?: Record<string, string | undefined>;
     home?: string;
-    outsideGit?: boolean;
     importFor?: readonly string[];
   } = {}
 ): Promise<StoreCreation> {
@@ -190,9 +188,6 @@ export async function ensureStore(
   const none = { imported: [], warnings: [] };
   if (location.exists) {
     return { store, created: false, ignored: storeIgnored(location), ...none };
-  }
-  if (!(location.inRepository || outsideGit)) {
-    throw noStoreRefusal(location);
   }
   const ctx = adapterContext(cwd, store, env, home);
   // Planned before the store exists, so the import takes no backup of it.

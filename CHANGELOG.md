@@ -19,6 +19,11 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 - `enable --prefer` is gone: Claude Code's memories are imported when a store
   is created, which holds nothing they could conflict with, instead of by
   `enable claude-code`. A store that already exists gets no import.
+- `mdmem init` is gone: the first memory write (`memory_write`, `mdmem add`)
+  creates the store everywhere, at a repository's root or, outside git, in the
+  working directory, and `mdmem enable --project` still creates it in a
+  repository. `mdmem init` is refused with one line saying so, and
+  `mdmem status` says where the store would be.
 
 ### Added
 
@@ -36,8 +41,8 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   `MEMORY.md`, reporting its path, what the import copied, and whether git
   ignores it. Until then the session-start hook speaks anyway, its index part
   saying the store does not exist yet, and reads refuse, saying what creates
-  it. Outside git only `mdmem init` creates a store, and the hook speaks only
-  where one exists.
+  it. Outside git the first write creates the store in the working directory,
+  and the hook speaks only where one exists.
 - `mdmem status`, `mdmem doctor` and `memory_check` work without a store and
   outside any repository, where they report the wiring alone, and list each
   agent's wiring per scope.
