@@ -18,7 +18,7 @@ import {
   formatCheck,
   reindex,
 } from "../src/core/check.ts";
-import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
+import { HOOK_CONTEXT_MAX_CHARS, stdinPayload } from "../src/core/hook.ts";
 import {
   claudeProjectDir,
   formatImport,
@@ -31,6 +31,7 @@ import { parseMemory, serializeMemory } from "../src/core/memory.ts";
 import type { Memory, MemoryType } from "../src/core/memory.ts";
 import type { MemoryInput } from "../src/core/operations.ts";
 import {
+  createStore,
   deleteDocument,
   removeMemory,
   saveMemory,
@@ -563,6 +564,37 @@ describe("index", () => {
     ]);
   });
 
+  test("a store mdmem creates opens its index with a header naming the project, which saves and reindex keep; a store without one gets none", async () => {
+    const project = join(dir, "project");
+    const created = await createStore(
+      new MemoryStore(join(dir, "home-store"), project)
+    );
+    const header = [
+      `<!-- mdmem: this directory is the shared agent memory of the project at ${project}.`,
+      "Read this index, then the memory files you need. Save with `mdmem add` or the",
+      "mdmem MCP tool memory_write; after editing a file by hand run `mdmem reindex`.",
+      "`mdmem status` shows whether your agent is wired, `mdmem --help` the rest. -->",
+      "",
+    ].join("\n");
+    expect(await created.view("MEMORY.md")).toBe(header);
+    const input: MemoryInput = {
+      name: "c",
+      description: "d",
+      type: "project",
+      body: "b",
+    };
+    await saveMemory(created, input);
+    expect(await reindex(created)).toEqual([]);
+    expect(await created.view("MEMORY.md")).toBe(`${header}- [c](c.md) — d\n`);
+    expect(await problemsOf(created)).toEqual([]);
+
+    // a store made by hand keeps its index as it is
+    await saveMemory(store, input);
+    expect(await reindex(store)).toEqual([]);
+    expect(await store.view("MEMORY.md")).toBe("- [c](c.md) — d\n");
+    expect(await problemsOf(store)).toEqual([]);
+  });
+
   test("a write that brings the index near its limit warns, naming its size and the limit", async () => {
     // 60 pointers of about 147 characters, about 8,860 with their newlines: past 90% of 9,500.
     await seedMemories(store, 59, "x".repeat(127));
@@ -848,6 +880,20 @@ describe("templates", () => {
     expect(prompt).toContain(
       "Memory store: `/project/.mdmem`\n\nA second store to fold in: `/home/u/.mdmem/-project`. Read each of its memories and merge it into the memory store above, as Phase 3 merges new signal; once every one is merged, delete that store's directory, or ask the user to.\n"
     );
+  });
+});
+
+describe("hook", () => {
+  test("a terminal on stdin is no payload, and the hook never reads it", async () => {
+    let reads = 0;
+    const read = () => {
+      reads += 1;
+      return Promise.resolve("{}");
+    };
+    expect(await stdinPayload(true, read)).toBe("");
+    expect(reads).toBe(0);
+    expect(await stdinPayload(undefined, read)).toBe("{}");
+    expect(reads).toBe(1);
   });
 });
 

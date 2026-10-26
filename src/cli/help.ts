@@ -294,7 +294,7 @@ const PAGES: Record<string, CommandPage> = {
   hook: {
     usage: "mdmem hook <agent> <part> [--global]",
     about:
-      "Run by an agent's session-start hook, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index as context for the session. It speaks in every directory, git or not; with no store yet, the index part names the home store the first save creates. Codex's hook stays silent where neither ~/.codex/config.toml nor .codex/config.toml registers the server.",
+      "Run by an agent's session-start hook, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index as context for the session. It speaks in every directory, git or not; with no store yet, the index part names the home store the first save creates. Codex's hook stays silent where neither ~/.codex/config.toml nor .codex/config.toml registers the server. Where it prints nothing, one line on stderr says why; with no payload, that line gives the command that shows what it would inject here, or names an unknown agent or part.",
     sections: [
       {
         heading: "Arguments:",

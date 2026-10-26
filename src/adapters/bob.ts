@@ -5,6 +5,7 @@ import type { HookPart, HookSite } from "../core/hook.ts";
 import {
   agentStatus,
   commitLine,
+  globalSilence,
   hookCommand,
   hookCommands,
   hooksLabel,
@@ -264,11 +265,16 @@ export const bobAdapter: AdapterFor<typeof ID> = {
   },
 
   // A global entry stays silent where the workspace's own entry for its part runs (ADR 0004): Bob reads the workspace files only from the folder it was launched in.
-  async hookSpeaks(_ctx: UserContext, site: HookSite): Promise<boolean> {
+  async hookSilence(
+    _ctx: UserContext,
+    site: HookSite
+  ): Promise<string | undefined> {
     if (!site.global) {
-      return true;
+      return undefined;
     }
     const read = await configDocument(site.cwd, SETTINGS);
-    return !("doc" in read && projectPartEntry(site.part).has(read.doc));
+    return "doc" in read && projectPartEntry(site.part).has(read.doc)
+      ? globalSilence(join(site.cwd, SETTINGS), site.part)
+      : undefined;
   },
 };

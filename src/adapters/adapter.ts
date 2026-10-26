@@ -194,6 +194,11 @@ export function hookCommands(agent: HookAgent, global = false): string[] {
   return HOOK_PARTS.map((part) => hookCommand(agent, part, global));
 }
 
+/** Why a global hook entry for `part` stays silent: `file`, the project's settings, holds the project's own entry. */
+export function globalSilence(file: string, part: HookPart): string {
+  return `this --global entry stays silent because ${file} holds the project's own mdmem hook for the ${part} part, which injects it instead.`;
+}
+
 /** The label of an entry holding the session-start hooks that run `commands`. */
 export function hooksLabel(commands: readonly string[]): string {
   const quoted = commands.map((command) => `"${command}"`).join(", ");
@@ -419,11 +424,15 @@ export interface Adapter {
    */
   readonly submoduleClause?: string;
   /**
-   * Whether the agent's session-start hook speaks at `site`, a project where a hook
-   * may speak: a global entry stays silent where the project's own entries run.
-   * Absent for an agent whose hook always speaks there.
+   * Why the agent's session-start hook stays silent at `site`, one line naming the
+   * file that decides it, or undefined where it speaks: a global entry stays silent
+   * where the project's own entries run. Absent for an agent whose hook always
+   * speaks.
    */
-  hookSpeaks?: (ctx: UserContext, site: HookSite) => Promise<boolean>;
+  hookSilence?: (
+    ctx: UserContext,
+    site: HookSite
+  ) => Promise<string | undefined>;
   /**
    * Plan importing the memories the agent kept in its own directories into a store
    * being created, for an agent wired in either scope with its own memory off.

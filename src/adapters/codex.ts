@@ -256,12 +256,19 @@ export const codexAdapter: AdapterFor<typeof ID> = {
   },
 
   // Any mdmem server table counts, extra keys included: Codex then runs that server.
-  async hookSpeaks(ctx: UserContext, site: HookSite): Promise<boolean> {
+  async hookSilence(
+    ctx: UserContext,
+    site: HookSite
+  ): Promise<string | undefined> {
     const root = site.projectRoot();
-    return (
-      (await tomlTableExists(root, userServer(ctx))) ||
+    const user = userServer(ctx);
+    if (
+      (await tomlTableExists(root, user)) ||
       (await tomlTableExists(root, PROJECT_SERVER))
-    );
+    ) {
+      return undefined;
+    }
+    return `neither ${user.file} nor ${join(root, PROJECT_CONFIG)} registers the mdmem server, and Codex's hook speaks only where one does: run \`mdmem enable ${ID}\` to register it for every project, or \`mdmem enable ${ID} --project\` for this one.`;
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {

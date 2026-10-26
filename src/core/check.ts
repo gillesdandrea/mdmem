@@ -32,6 +32,25 @@ const INDEX_NEAR_FRACTION = 0.9;
 /** Claude Code keeps each pointer to one line under about this many characters. */
 export const POINTER_MAX_CHARS = 150;
 
+/**
+ * The header of the index of a store mdmem creates for the project at `project`:
+ * an HTML comment, hidden where Markdown renders, that tells an agent or a person
+ * who opens the store's directory what it is and how to use it without the mdmem
+ * tools. About 300 characters plus the path, counted in the index's limit. It names
+ * the project rather than the placement, so it stays true after a move. Written
+ * once, at creation; reindex keeps it as it keeps any line that is not a pointer,
+ * and never adds it to a store without one.
+ */
+export function indexHeader(project: string): string {
+  return [
+    `<!-- mdmem: this directory is the shared agent memory of the project at ${project}.`,
+    "Read this index, then the memory files you need. Save with `mdmem add` or the",
+    "mdmem MCP tool memory_write; after editing a file by hand run `mdmem reindex`.",
+    "`mdmem status` shows whether your agent is wired, `mdmem --help` the rest. -->",
+    "",
+  ].join("\n");
+}
+
 /** A memory that parsed, with the file it was read from and its raw text. */
 export interface LoadedMemory {
   file: string;

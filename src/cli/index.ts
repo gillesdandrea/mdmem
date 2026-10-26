@@ -33,7 +33,7 @@ import {
 } from "../adapters/report.ts";
 import type { StoreCreation } from "../adapters/report.ts";
 import { checkSummary, reindex } from "../core/check.ts";
-import { runHook } from "../core/hook.ts";
+import { runHook, stdinPayload } from "../core/hook.ts";
 import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import type { MemoryType } from "../core/memory.ts";
 import {
@@ -599,23 +599,27 @@ async function cmdStore(args: string[]): Promise<void> {
 /** Run by an agent's session-start hook, never by hand; it always exits 0. */
 async function cmdHook(args: string[]): Promise<void> {
   const [agent = "", part = "", ...flags] = args;
-  const output = await runHook({
+  const { stdout, silence } = await runHook({
     agent,
     part,
     global: flags.includes(GLOBAL_HOOK_FLAG),
-    readPayload: async () =>
-      process.stdin.isTTY ? "" : await Bun.stdin.text(),
+    readPayload: () =>
+      stdinPayload(process.stdin.isTTY, () => Bun.stdin.text()),
     cwd: process.cwd(),
     // The agent decides where its hook stays silent: a global entry beside the project's own, Codex's where no config registers the server.
-    speaks: async (hookAgent, site) => {
-      const speaks = getAdapter(hookAgent)?.hookSpeaks;
-      return speaks === undefined
-        ? true
-        : await speaks({ env: process.env, home: homedir() }, site);
+    silence: async (hookAgent, site) => {
+      const hookSilence = getAdapter(hookAgent)?.hookSilence;
+      return hookSilence === undefined
+        ? undefined
+        : await hookSilence({ env: process.env, home: homedir() }, site);
     },
   });
-  if (output !== "") {
-    print(output);
+  if (stdout !== "") {
+    print(stdout);
+  }
+  // stderr never reaches the agent's context: it tells whoever runs the hook by hand why it printed nothing.
+  if (silence !== undefined) {
+    process.stderr.write(`mdmem hook printed nothing: ${silence}\n`);
   }
 }
 

@@ -10,7 +10,13 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
-import { INDEX_FILE, loadMemories, refreshIndex, reindex } from "./check.ts";
+import {
+  INDEX_FILE,
+  indexHeader,
+  loadMemories,
+  refreshIndex,
+  reindex,
+} from "./check.ts";
 import type { IndexChange } from "./check.ts";
 import { isIgnoredByGit } from "./git.ts";
 import type { Memory, MemoryType } from "./memory.ts";
@@ -78,12 +84,14 @@ export async function writeProjectFile(store: MemoryStore): Promise<void> {
 }
 
 /**
- * Create `store`, with an empty index and its project file. It never edits
- * `.gitignore`: whether to ignore or commit a local store is the user's choice.
+ * Create `store`, with its project file and an index holding only its header
+ * (check.ts's indexHeader). It never edits `.gitignore`: whether to ignore or
+ * commit a local store is the user's choice.
  */
 export async function createStore(store: MemoryStore): Promise<MemoryStore> {
   await mkdir(store.root, { recursive: true });
   await writeProjectFile(store);
+  await store.create(INDEX_FILE, indexHeader(store.project));
   await reindex(store);
   return store;
 }

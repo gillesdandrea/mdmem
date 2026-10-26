@@ -15,6 +15,7 @@ import {
   agentStatus,
   commitLine,
   enableAdvice,
+  globalSilence,
   hookCommand,
   hooksLabel,
   MCP_SERVER,
@@ -400,12 +401,17 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
   },
 
   // A global entry stays silent where the project's own entry for its part runs (ADR 0004): Claude Code reads the project's settings only from the folder it was started in.
-  async hookSpeaks(_ctx: UserContext, site: HookSite): Promise<boolean> {
+  async hookSilence(
+    _ctx: UserContext,
+    site: HookSite
+  ): Promise<string | undefined> {
     if (!site.global) {
-      return true;
+      return undefined;
     }
     const read = await configDocument(site.cwd, SETTINGS);
-    return !("doc" in read && hookEntry(site.part, false).has(read.doc));
+    return "doc" in read && hookEntry(site.part, false).has(read.doc)
+      ? globalSilence(join(site.cwd, SETTINGS), site.part)
+      : undefined;
   },
 
   // Once per user and repository: the marker keeps a store created again from bringing back memories deleted since.

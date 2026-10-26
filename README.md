@@ -225,6 +225,10 @@ the agent was started in:
 9. **A resumed session.** The hooks print nothing on a resumed or forked
    session, whose history already holds what its start injected, so a session
    started before mdmem was wired still lacks it when resumed. Start a new one.
+10. **See what the hook injects.** Run `mdmem hook <agent> index` in the
+    folder: with no payload it prints nothing, and its stderr line gives the
+    `echo … | mdmem hook <agent> index` command that shows what the agent's
+    session gets there. Wherever the hook prints nothing, that line says why.
 
 Hooks that do not run leave an agent with no protocol and no index, and mdmem
 has no fallback. Every state `status` and the check report:
@@ -277,6 +281,20 @@ let the next save do it. mdmem reads memories as loosely as Claude Code writes
 them, and writes them strictly: the name must equal the file name. The rules:
 [How mdmem keeps the index](docs/reference.md#how-mdmem-keeps-the-index) and
 [Memory format](docs/reference.md#memory-format).
+
+A store mdmem creates opens its `MEMORY.md` with a header, an HTML comment that
+Markdown hides, for an agent or a person who opens the directory without the
+mdmem tools:
+
+```markdown
+<!-- mdmem: this directory is the shared agent memory of the project at /path/to/project.
+Read this index, then the memory files you need. Save with `mdmem add` or the
+mdmem MCP tool memory_write; after editing a file by hand run `mdmem reindex`.
+`mdmem status` shows whether your agent is wired, `mdmem --help` the rest. -->
+```
+
+mdmem writes it once, when it creates the store, and keeps it like any line it
+did not write; a store without it stays without it.
 
 ## MCP server
 

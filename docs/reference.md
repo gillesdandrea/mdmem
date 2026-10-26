@@ -76,9 +76,14 @@ through mdmem, and on `mdmem reindex`, mdmem updates `MEMORY.md` in place:
 - it keeps every other line (a title, headings, prose, a pointer's own title),
   so an index written by hand or by Claude Code survives.
 
-An empty store has an empty index. When an agent writes a memory file directly,
-run `mdmem reindex` to refresh the index, or let the next `add` or MCP write do
-it.
+A store mdmem creates (on the first memory write, or with `mdmem store local`)
+opens its index with a header: an HTML comment, hidden where Markdown renders,
+naming the project the store serves and saying how to use the store without the
+mdmem tools. It counts toward the index's 9,500 characters. mdmem writes it
+once; `reindex` keeps it like any other line and never adds it to a store
+without one, and a move between placements keeps it. When an agent writes a
+memory file directly, run `mdmem reindex` to refresh the index, or let the next
+`add` or MCP write do it.
 
 A memory that does not parse locks no one out. `search` answers from the
 memories that do and warns about the broken one on stderr; `status` counts the
@@ -179,13 +184,18 @@ not count), so a repository wired in both scopes gets each part once. Codex's
 one hook prints nothing where neither your `~/.codex/config.toml` nor the
 project's `.codex/config.toml` registers the mdmem server.
 
-The hook also prints nothing on a resumed or forked session, or for any event
-but SessionStart; empty stdin counts as an empty payload, so run by hand it
-prints nothing. A payload that is not a JSON object is reported where the hook
-would speak from the working directory, which is everywhere but where its
-agent's silences apply. It
-never fails a session: an error becomes a one-line context saying why the
-memory could not be loaded, and it exits 0.
+The hook also prints nothing on a resumed or forked session, for any event but
+SessionStart, and with no payload on stdin, as when it is run by hand.
+Wherever it prints nothing, it writes one line on stderr saying why, which never
+reaches the agent's context: no payload (with the `echo '<payload>' | mdmem hook
+<agent> <part>` command that shows what it would inject in the working
+directory), the event, a resumed or forked session, a global entry beside the
+project's own (naming the project's settings file), or Codex's hook where no
+config registers the server (naming both configs). A payload that is not a
+JSON object is reported where the hook would speak from the working directory,
+which is everywhere but where its agent's silences apply. It never fails a
+session: an error becomes a one-line context saying why the memory could not be
+loaded, and it exits 0.
 
 ### mdmem edit
 

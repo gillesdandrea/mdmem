@@ -21,11 +21,12 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
  * scope, whose agent decides where they stay silent (where the project's own entries
  * run, say).
  *
- * A hook never fails a session (ADR 0002): where it does not speak, on a resumed or
- * forked session or another event it prints nothing, and any error becomes a one-line
- * context saying why the memory could not be loaded. A payload that does not parse
- * is reported only where the hook would speak from the process's working directory;
- * elsewhere the hook prints nothing.
+ * A hook never fails a session (ADR 0002): where it does not speak (no payload, a
+ * resumed or forked session, another event, or a silence its agent decides) it prints
+ * nothing and says why on stderr, which never reaches the agent's context; any error
+ * becomes a one-line context saying why the memory could not be loaded. A payload
+ * that does not parse is reported only where the hook would speak from the process's
+ * working directory; elsewhere the hook prints nothing.
  */
 
 /** The supported agents, in the order mdmem lists them: only those with session-start hooks. The adapter registry is built from this list. */
@@ -62,11 +63,8 @@ function stringField(object: PlainObject, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-/** The payload read from stdin; empty stdin is an empty payload. */
+/** The payload read from stdin, which is not empty. */
 function parsePayload(text: string): HookPayload {
-  if (text.trim() === "") {
-    return {};
-  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -85,6 +83,17 @@ function parsePayload(text: string): HookPayload {
   };
 }
 
+/** Why `value` is not one of `allowed`, or undefined when it is. */
+function unknownName(
+  value: string,
+  allowed: readonly string[],
+  what: string
+): string | undefined {
+  return allowed.includes(value)
+    ? undefined
+    : `unknown ${what} "${value}" for mdmem hook (expected ${allowed.join(", ")})`;
+}
+
 function oneOf<T extends string>(
   value: string,
   allowed: readonly T[],
@@ -92,11 +101,20 @@ function oneOf<T extends string>(
 ): T {
   const found = allowed.find((candidate) => candidate === value);
   if (found === undefined) {
-    throw new Error(
-      `unknown ${what} "${value}" for mdmem hook (expected ${allowed.join(", ")})`
-    );
+    throw new Error(unknownName(value, allowed, what));
   }
   return found;
+}
+
+/**
+ * The hook payload on stdin, read with `read`. A terminal holds none, so the hook
+ * run by hand does not wait on it and says it was given no payload.
+ */
+export async function stdinPayload(
+  isTTY: boolean | undefined,
+  read: () => Promise<string>
+): Promise<string> {
+  return isTTY === true ? "" : await read();
 }
 
 /** The SessionStart output, in the form every supported agent takes. */
@@ -221,30 +239,42 @@ export interface HookRequest {
   /** Where to resolve the store when the payload names no cwd or does not parse. */
   cwd: string;
   /**
-   * Whether the agent's hook speaks at `site`, in a project where a hook may speak:
-   * a global entry stays silent where the project's own entries run, and Codex's
-   * one hook where no config registers the mdmem server.
+   * Why the agent's hook stays silent at `site`, one line naming the file that
+   * decides it, or undefined where it speaks: a global entry stays silent where the
+   * project's own entries run, and Codex's one hook where no config registers the
+   * mdmem server.
    */
-  speaks: (agent: HookAgent, site: HookSite) => Promise<boolean>;
+  silence: (agent: HookAgent, site: HookSite) => Promise<string | undefined>;
 }
 
-/** Where the store of a session in `cwd` is, or undefined where the hook stays silent. */
+/** What `mdmem hook` prints: the output for stdout, and why it stayed silent, for stderr. */
+export interface HookResult {
+  /** The SessionStart output, or an empty string when the hook stays silent. */
+  stdout: string;
+  /** Why the hook printed nothing, one line; undefined when it spoke. */
+  silence?: string;
+}
+
+/** The session's store, or why the hook stays silent there. */
+type SessionStore = { location: StoreLocation } | { silence: string };
+
+/** Where the store of a session in `cwd` is, or why the hook stays silent there. */
 async function sessionStore(
   request: HookRequest,
   cwd: string
-): Promise<StoreLocation | undefined> {
+): Promise<SessionStore> {
   const location = locateStore(cwd);
   const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
   const part = oneOf(request.part, HOOK_PARTS, "part");
   // The work tree as `mdmem enable --project` wires it: the session's own, else the project's directory.
   const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
-  const speaks = await request.speaks(agent, {
+  const silence = await request.silence(agent, {
     cwd,
     projectRoot,
     part,
     global: request.global,
   });
-  return speaks ? location : undefined;
+  return silence === undefined ? { location } : { silence };
 }
 
 /** The index part in a project with no store yet. */
@@ -252,52 +282,107 @@ export function noStoreYetContext(location: StoreLocation): string {
   return `Store: none yet; the first memory_write creates the home store ${location.home}/ with ${INDEX_FILE}.`;
 }
 
-/** The context to inject, or undefined when the hook stays silent. */
-async function hookContext(request: HookRequest): Promise<string | undefined> {
+/** `text` quoted for a POSIX shell. */
+function shellQuote(text: string): string {
+  return `'${text.replaceAll("'", `'\\''`)}'`;
+}
+
+/** Why a hook given no payload printed nothing, with the command that shows what it would inject in `request.cwd`, or the unknown agent or part it names. */
+function noPayloadSilence(request: HookRequest): string {
+  // A command with an unknown agent or part would fail once piped, so the hint names the mistake instead.
+  const unknown =
+    unknownName(request.agent, HOOK_AGENTS, "agent") ??
+    unknownName(request.part, HOOK_PARTS, "part");
+  if (unknown !== undefined) {
+    return `no hook payload on stdin, and ${unknown}.`;
+  }
+  const payload = JSON.stringify({
+    cwd: request.cwd,
+    hook_event_name: SESSION_START,
+    source: "startup",
+  });
+  const command = [
+    "mdmem hook",
+    request.agent,
+    request.part,
+    ...(request.global ? ["--global"] : []),
+  ].join(" ");
+  return `no hook payload on stdin. An agent's session-start hook runs this command with a JSON payload; to see what it would inject here, run: echo ${shellQuote(payload)} | ${command}`;
+}
+
+/** Why a hook printed nothing for `payload`'s event or source, or undefined when the hook may speak. */
+function eventSilence(payload: HookPayload): string | undefined {
+  if (payload.hookEventName === undefined) {
+    return `the payload names no hook_event_name; mdmem injects only on ${SESSION_START}.`;
+  }
+  if (payload.hookEventName !== SESSION_START) {
+    return `the event is ${payload.hookEventName}; mdmem injects only on ${SESSION_START}.`;
+  }
+  if (SKIPPED_SOURCES.has(payload.source)) {
+    const how = payload.source === "fork" ? "forked" : "resumed";
+    return `the session is ${how}, and its history already holds what its start injected; start a new session to inject the memory again.`;
+  }
+  return undefined;
+}
+
+/** The context to inject, or why the hook stays silent. */
+async function hookContext(
+  request: HookRequest
+): Promise<{ context: string } | { silence: string }> {
   const text = await request.readPayload();
+  if (text.trim() === "") {
+    return { silence: noPayloadSilence(request) };
+  }
   let payload: HookPayload;
   try {
     payload = parsePayload(text);
   } catch (error) {
     // With no payload to name the session's directory, the process's stands in: the error is reported only where the hook would have spoken.
-    if ((await sessionStore(request, request.cwd)) === undefined) {
-      return undefined;
+    const site = await sessionStore(request, request.cwd);
+    if ("silence" in site) {
+      return site;
     }
     throw error;
   }
-  if (
-    payload.hookEventName !== SESSION_START ||
-    SKIPPED_SOURCES.has(payload.source)
-  ) {
-    return undefined;
+  const skipped = eventSilence(payload);
+  if (skipped !== undefined) {
+    return { silence: skipped };
   }
-  const location = await sessionStore(
+  const site = await sessionStore(
     request,
     resolve(request.cwd, payload.cwd ?? ".")
   );
-  if (location === undefined) {
-    return undefined;
+  if ("silence" in site) {
+    return site;
   }
+  const { location } = site;
   if (request.part === "protocol") {
-    return getMemoryProtocol(location.dir);
+    return { context: getMemoryProtocol(location.dir) };
   }
-  return location.exists
-    ? await indexContext(storeAt(location))
-    : noStoreYetContext(location);
+  return {
+    context: location.exists
+      ? await indexContext(storeAt(location))
+      : noStoreYetContext(location),
+  };
 }
 
 /**
- * What `mdmem hook` prints on stdout: the agent's SessionStart output carrying the
- * part's context, or an empty string when the hook stays silent. It never throws:
- * an error becomes a one-line context saying the memory could not be loaded, and why.
+ * What `mdmem hook` prints: on stdout, the agent's SessionStart output carrying the
+ * part's context, or an empty string when the hook stays silent, with the reason
+ * for stderr. It never throws: an error becomes a one-line context saying the
+ * memory could not be loaded, and why.
  */
-export async function runHook(request: HookRequest): Promise<string> {
+export async function runHook(request: HookRequest): Promise<HookResult> {
   try {
-    const context = await hookContext(request);
-    return context === undefined ? "" : sessionStartOutput(context);
+    const result = await hookContext(request);
+    return "silence" in result
+      ? { stdout: "", silence: result.silence }
+      : { stdout: sessionStartOutput(result.context) };
   } catch (error) {
-    return sessionStartOutput(
-      `mdmem could not load the memory: ${oneLine(messageOf(error))}`
-    );
+    return {
+      stdout: sessionStartOutput(
+        `mdmem could not load the memory: ${oneLine(messageOf(error))}`
+      ),
+    };
   }
 }

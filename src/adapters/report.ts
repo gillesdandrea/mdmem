@@ -168,9 +168,10 @@ export interface UserOptions {
 }
 
 /**
- * Create `store`, which does not exist yet, for the project of `cwd`, with an empty
- * index and its project file. Creating it imports the memories of each agent wired
- * in either scope that kept its own: Claude Code's, once per user and project.
+ * Create `store`, which does not exist yet, for the project of `cwd`, with its
+ * project file and an index holding only its header (check.ts's indexHeader).
+ * Creating it imports the memories of each agent wired in either scope that kept
+ * its own: Claude Code's, once per user and project.
  */
 export async function createProjectStore(
   cwd: string,

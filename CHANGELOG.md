@@ -92,6 +92,19 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   changed on disk right after the agent's own `memory_write` is that write.
 - README's "Codex's own memory" section says Codex's own memory stays on
   beside mdmem, and why Claude Code's auto memory is turned off instead.
+- `mdmem hook` says on stderr why it printed nothing: no payload on stdin
+  (with the `echo … | mdmem hook <agent> <part>` command that shows what it
+  would inject in the working directory), an event other than SessionStart, a
+  resumed or forked session, a `--global` entry beside the project's own
+  (naming the project's settings file), or Codex's hook where no config
+  registers the server (naming both configs). Stdout and the exit code are
+  unchanged, and stderr never reaches the agent's context.
+- A store mdmem creates, on the first memory write or with
+  `mdmem store local`, opens its `MEMORY.md` with a header: an HTML comment
+  naming the project the store serves and saying how to use the store without
+  the mdmem tools, for an agent or a person who opens the directory. `reindex`
+  keeps it and never adds it to a store without one; a move keeps it. The
+  import of Claude Code's memories into a new store keeps it first.
 
 ### Changed
 

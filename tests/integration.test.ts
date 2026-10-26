@@ -39,7 +39,7 @@ import {
   checkProject,
   projectStatus,
 } from "../src/adapters/report.ts";
-import { checkSummary, reindex } from "../src/core/check.ts";
+import { checkSummary, INDEX_MAX_CHARS, reindex } from "../src/core/check.ts";
 import { HOOK_CONTEXT_MAX_CHARS, HOOK_PARTS } from "../src/core/hook.ts";
 import { claudeProjectDir, importMarker } from "../src/core/import.ts";
 import { projectKey } from "../src/core/key.ts";
@@ -2107,6 +2107,22 @@ function runHookCli(
   };
 }
 
+/** The stderr line of Codex's hook in `root`, a project whose configs do not register the server, with runHookCli's CODEX_HOME. */
+function codexSilence(root: string): string {
+  return `mdmem hook printed nothing: neither ${join(root, "codex-home", "config.toml")} nor ${join(root, CODEX_CONFIG)} registers the mdmem server, and Codex's hook speaks only where one does: run \`mdmem enable codex\` to register it for every project, or \`mdmem enable codex --project\` for this one.\n`;
+}
+
+/** The header mdmem writes at the top of MEMORY.md when it creates the store of the project at `root`. */
+function storeHeader(root: string): string {
+  return [
+    `<!-- mdmem: this directory is the shared agent memory of the project at ${root}.`,
+    "Read this index, then the memory files you need. Save with `mdmem add` or the",
+    "mdmem MCP tool memory_write; after editing a file by hand run `mdmem reindex`.",
+    "`mdmem status` shows whether your agent is wired, `mdmem --help` the rest. -->",
+    "",
+  ].join("\n");
+}
+
 /** A SessionStart payload for a new session in `cwd`. */
 function startPayload(cwd: string) {
   return { cwd, hook_event_name: "SessionStart", source: "startup" };
@@ -2164,7 +2180,7 @@ describe("hook", () => {
     });
   });
 
-  test("it speaks outside git without a store, naming the home store, and prints nothing on resume or fork, or for another event", async () => {
+  test("it speaks outside git without a store, naming the home store, and prints nothing on resume or fork, or for another event, saying why on stderr", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
       const bare = join(tmp, "project");
@@ -2190,16 +2206,31 @@ describe("hook", () => {
         `Store: none yet; the first memory_write creates the home store ${dir}/ with MEMORY.md.`
       );
       await withCliProject((root) => {
-        for (const payload of [
-          { ...startPayload(root), source: "resume" },
-          { ...startPayload(root), source: "fork" },
-          { cwd: root, hook_event_name: "UserPromptSubmit" },
-        ]) {
+        const history =
+          "and its history already holds what its start injected; start a new session to inject the memory again.";
+        for (const [payload, why] of [
+          [
+            { ...startPayload(root), source: "resume" },
+            `the session is resumed, ${history}`,
+          ],
+          [
+            { ...startPayload(root), source: "fork" },
+            `the session is forked, ${history}`,
+          ],
+          [
+            { cwd: root, hook_event_name: "UserPromptSubmit" },
+            "the event is UserPromptSubmit; mdmem injects only on SessionStart.",
+          ],
+          [
+            { cwd: root },
+            "the payload names no hook_event_name; mdmem injects only on SessionStart.",
+          ],
+        ] as const) {
           for (const part of HOOK_PARTS) {
             expect(runHookCli(root, part, payload)).toEqual({
               code: 0,
               out: "",
-              err: "",
+              err: `mdmem hook printed nothing: ${why}\n`,
             });
           }
         }
@@ -2207,6 +2238,25 @@ describe("hook", () => {
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  test("with no payload it prints nothing, and stderr shows the piped command that injects here", async () => {
+    await withCliProject((root) => {
+      const payload = JSON.stringify(startPayload(root));
+      for (const flags of [[], ["--global"]]) {
+        const command = ["mdmem hook bob index", ...flags].join(" ");
+        expect(runHookCli(root, "index", "", "bob", {}, flags)).toEqual({
+          code: 0,
+          out: "",
+          err: `mdmem hook printed nothing: no hook payload on stdin. An agent's session-start hook runs this command with a JSON payload; to see what it would inject here, run: echo '${payload}' | ${command}\n`,
+        });
+      }
+      expect(runHookCli(root, "bar", "", "foo")).toEqual({
+        code: 0,
+        out: "",
+        err: 'mdmem hook printed nothing: no hook payload on stdin, and unknown agent "foo" for mdmem hook (expected claude-code, bob, codex).\n',
+      });
+    });
   });
 
   test("a session started by clear or compact gets both parts, as one started by startup does", async () => {
@@ -2253,7 +2303,7 @@ describe("hook", () => {
         expect(runHookCli(root, part, fork, "codex")).toEqual({
           code: 0,
           out: "",
-          err: "",
+          err: "mdmem hook printed nothing: the session is forked, and its history already holds what its start injected; start a new session to inject the memory again.\n",
         });
       }
     });
@@ -2275,7 +2325,7 @@ describe("hook", () => {
         expect(runHookCli(root, "index", "[]", "codex")).toEqual({
           code: 0,
           out: "",
-          err: "",
+          err: codexSilence(root),
         });
       });
     } finally {
@@ -2283,10 +2333,10 @@ describe("hook", () => {
     }
   });
 
-  test("Codex's global hook prints nothing in a project whose .codex/config.toml does not register the mdmem server", async () => {
+  test("Codex's global hook prints nothing in a project whose .codex/config.toml does not register the mdmem server, naming both configs on stderr", async () => {
     await withCliProject(async (root) => {
       expect(runHookCli(root, "protocol", startPayload(root), "codex")).toEqual(
-        { code: 0, out: "", err: "" }
+        { code: 0, out: "", err: codexSilence(root) }
       );
 
       await mkdir(join(root, ".codex"));
@@ -2398,6 +2448,23 @@ describe("hook", () => {
       // the index itself is whole
       expect(context).toContain("\n\nMEMORY.md:\n- [m-0](m-0.md) — d\n");
       expect(context).toEndWith("- [m-99](m-99.md) — d");
+    });
+  });
+
+  test("a near-limit index under the header of a store mdmem created is injected whole", async () => {
+    await withCliProject(async (root, store) => {
+      await store.create("MEMORY.md", storeHeader(root));
+      // 380 pointers under the header: past 90% of the index's limit, and under it
+      await seedMemories(store, 380);
+      const index = await store.view("MEMORY.md");
+      expect(index).toStartWith(storeHeader(root));
+      expect([...index].length).toBeGreaterThan(INDEX_MAX_CHARS * 0.9);
+      expect([...index].length).toBeLessThanOrEqual(INDEX_MAX_CHARS);
+
+      const context = injected(
+        runHookCli(root, "index", startPayload(root)).out
+      );
+      expect(context).toEndWith(`\n\nMEMORY.md:\n${index.trimEnd()}`);
     });
   });
 
@@ -3089,6 +3156,12 @@ describe("scopes and store creation", () => {
         "b.md",
         memoryText("b", "From Claude.")
       );
+      await claudeMemory(
+        claudeEnv as AdapterContext,
+        root,
+        "MEMORY.md",
+        "- [Claude's b](b.md) — From Claude.\n"
+      );
       const add = [
         "add",
         "--type",
@@ -3110,7 +3183,11 @@ describe("scopes and store creation", () => {
       expect(first.out).not.toContain("Note: git");
       const store = new MemoryStore(dir, root);
       expect(store.exists("b.md")).toBe(true);
-      expect(await store.view("MEMORY.md")).toContain("(uses-bun.md)");
+      // the header stays first through the import and the save
+      const index = await store.view("MEMORY.md");
+      expect(index).toStartWith(storeHeader(root));
+      expect(index).toContain("- [Claude's b](b.md) — From Claude.\n");
+      expect(index).toContain("(uses-bun.md)");
       expect(existsSync(importMarker(store, claudeEnv))).toBe(true);
 
       // a store created again does not bring back what the first one imported
@@ -3335,13 +3412,20 @@ describe("scopes and store creation", () => {
         expect(status.out).toContain(`  ✓ ${title} (project)\n`);
       }
 
-      // the global entries stay silent beside the project's own; Codex has one hook
+      // the global entries stay silent beside the project's own, naming its file; Codex has one hook
       const payload = startPayload(root);
-      for (const agent of ["claude-code", "bob"]) {
+      for (const [agent, settings] of [
+        ["claude-code", ".claude/settings.json"],
+        ["bob", ".bob/settings.json"],
+      ] as const) {
         for (const part of HOOK_PARTS) {
           expect(
-            runHookCli(root, part, payload, agent, env, ["--global"]).out
-          ).toBe("");
+            runHookCli(root, part, payload, agent, env, ["--global"])
+          ).toEqual({
+            code: 0,
+            out: "",
+            err: `mdmem hook printed nothing: this --global entry stays silent because ${join(root, settings)} holds the project's own mdmem hook for the ${part} part, which injects it instead.\n`,
+          });
           expect(
             injected(runHookCli(root, part, payload, agent, env).out)
           ).not.toBe("");
@@ -3466,6 +3550,8 @@ describe("placements", () => {
       );
       expect(existsSync(homeStore)).toBe(false);
       expect(existsSync(join(local, "a.md"))).toBe(true);
+      const moved = await readFile(join(local, "MEMORY.md"), "utf-8");
+      expect(moved).toStartWith(storeHeader(root));
       expect(runCliWith(root, ["status"], env).out).toStartWith(
         `Store: local, ${local}\nMemories: 1\n`
       );
@@ -3489,6 +3575,7 @@ describe("placements", () => {
       expect(await readFile(join(homeStore, "project"), "utf-8")).toBe(
         `${root}\n`
       );
+      expect(await readFile(join(homeStore, "MEMORY.md"), "utf-8")).toBe(moved);
       expect(runCliWith(root, ["status"], env).out).toStartWith(
         `Store: home, ${homeStore}\nMemories: 1\n`
       );
@@ -3597,7 +3684,13 @@ describe("placements", () => {
         ].join("\n")
       );
       expect(await readFile(join(local, "project"), "utf-8")).toBe(`${root}\n`);
+      expect(await readFile(join(local, "MEMORY.md"), "utf-8")).toBe(
+        storeHeader(root)
+      );
       expect(runCliWith(root, addArgs("a"), env).out).toBe("Saved a.md\n");
+      expect(await readFile(join(local, "MEMORY.md"), "utf-8")).toStartWith(
+        storeHeader(root)
+      );
       expect(existsSync(join(local, "a.md"))).toBe(true);
       expect(existsSync(join(home, ".mdmem"))).toBe(false);
     });

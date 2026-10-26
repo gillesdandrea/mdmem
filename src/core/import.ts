@@ -568,7 +568,9 @@ export async function planClaudeImport(
       await store.create(file, raw);
     }
     if (pointers.length > 0) {
-      await store.create(INDEX_FILE, appendLines(storeIndex, pointers));
+      // Read again: a store created since the plan holds its header (check.ts's indexHeader).
+      const index = (await readIfPresent(storePath(store, INDEX_FILE))) ?? "";
+      await store.create(INDEX_FILE, appendLines(index, pointers));
     }
     result.warnings = [...secretWarnings(writes), ...(await reindex(store))];
     const fromSources = new Set(writes.map(({ from }) => from));
