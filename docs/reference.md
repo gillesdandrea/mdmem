@@ -288,7 +288,8 @@ The rest are `status` lines only, because they are your choice, depend on where
   reads them while `.mdmem/` exists, and the warning names
   `mdmem consolidate --from <home store>`.
 - A warning when `status` runs below the checkout's root of a project wired for
-  Bob: a Bob launched there reads neither `.bob/settings.json` nor
+  Bob in the project scope, unless the global scope holds both its hooks and
+  its server: a Bob launched there reads neither `.bob/settings.json` nor
   `.bob/mcp.json`, so it gets no protocol, no index and no mdmem tools.
 - A warning when `status` runs below the checkout's root of a project wired for
   Claude Code in the project scope, with none of mdmem's hooks in your user

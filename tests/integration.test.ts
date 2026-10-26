@@ -2685,6 +2685,56 @@ describe("status and check", () => {
     });
   });
 
+  test("status does not warn, below the root of a repository wiring Bob in both scopes, since the global wiring reaches a Bob launched there", async () => {
+    await withWiredRepo(async ({ root, ctx, store }) => {
+      await wire(bobAdapter.enable(ctx, "global"));
+      const sub = join(root, "src");
+      await mkdir(sub);
+      const below = adapterContext(sub, store, ctx.env, ctx.home);
+      const bobBelow = async () => {
+        const status = await projectStatus(below);
+        return status.agents.find(({ title }) => title === "IBM Bob");
+      };
+      const bob = await bobBelow();
+      expect(bob?.scopes.map(({ scope, enabled }) => [scope, enabled])).toEqual(
+        [
+          ["global", true],
+          ["project", true],
+        ]
+      );
+      expect(bob?.warnings).toEqual([]);
+      // a global scope without the server gives a Bob launched there no mdmem tools
+      await rm(join(ctx.home, ".bob", "settings", "mcp.json"));
+      const partly = await bobBelow();
+      expect(
+        partly?.scopes.map((scope) => [scope.scope, scope.enabled, scope.wired])
+      ).toEqual([
+        ["global", true, false],
+        ["project", true, true],
+      ]);
+      expect(partly?.problems).toEqual([]);
+      expect(partly?.warnings).toEqual([
+        expect.stringContaining(`launched here, below ${root}, it gets`),
+      ]);
+      // a global scope without the hooks starts its sessions without the protocol and the index, a problem as well
+      await wire(bobAdapter.enable(ctx, "global"));
+      await rm(join(ctx.home, ".bob", "settings", "settings.json"));
+      const noHooks = await bobBelow();
+      expect(
+        noHooks?.scopes.map((scope) => [
+          scope.scope,
+          scope.enabled,
+          scope.wired,
+        ])
+      ).toEqual([
+        ["global", true, false],
+        ["project", true, true],
+      ]);
+      expect(noHooks?.problems).toEqual([expect.stringContaining("hook")]);
+      expect(noHooks?.warnings).toEqual(partly?.warnings);
+    });
+  });
+
   test("status warns, below the root of a project wiring Claude Code in the project scope alone, that a Claude Code started there reads none of its settings", async () => {
     await withWiredRepo(async ({ root, ctx, store }) => {
       const sub = join(root, "src");

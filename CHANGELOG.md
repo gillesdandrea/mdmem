@@ -174,6 +174,10 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   protocol and no index. The warning says to start it at the root or wire the
   global scope; a repository whose user settings also hold mdmem's hooks gets
   no warning.
+- `mdmem status` no longer warns, below the root of a repository wired for Bob
+  in both scopes, that a Bob launched there gets no memory protocol, no index
+  and no mdmem tools: the global scope's hooks speak there and its `mcp.json`
+  registers the server, so that Bob gets all three.
 
 ## [0.2.0] - 2026-10-21
 

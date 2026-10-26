@@ -24,6 +24,7 @@ import type {
   AgentStatus,
   ProjectContext,
   Scope,
+  ScopeStatus,
   UserContext,
   WiringPlan,
 } from "./adapter.ts";
@@ -149,12 +150,14 @@ async function disabledHooksProblem(
     : [];
 }
 
-/** Run below the checkout's root, where a Bob launched here reads none of the workspace files. */
+/** Run below the checkout's root, where a Bob launched here reads none of the workspace files: it gets the wiring only from a global scope that holds both the hooks and the server. */
 function belowRootWarning(
   ctx: AdapterContext,
-  project: ProjectContext
+  project: ProjectContext,
+  globalScope: ScopeStatus | undefined
 ): string[] {
-  const root = rootAbove(ctx, project);
+  const root =
+    globalScope?.wired === true ? undefined : rootAbove(ctx, project);
   return root === undefined
     ? []
     : [
@@ -252,7 +255,13 @@ export const bobAdapter: AdapterFor<typeof ID> = {
               : await disabledHooksProblem(workspace)),
           ],
           warnings:
-            workspace === undefined ? [] : belowRootWarning(ctx, workspace),
+            workspace === undefined
+              ? []
+              : belowRootWarning(
+                  ctx,
+                  workspace,
+                  scopes.find(({ scope }) => scope === "global")
+                ),
           notes:
             workspace === undefined
               ? []
