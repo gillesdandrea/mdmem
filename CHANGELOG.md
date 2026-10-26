@@ -197,6 +197,23 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   in both scopes, that a Bob launched there gets no memory protocol, no index
   and no mdmem tools: the global scope's hooks speak there and its `mcp.json`
   registers the server, so that Bob gets all three.
+- Bob's below-root warning names what a partly wired global scope leaves out:
+  no mdmem tools when it holds only the hooks, no memory protocol and no index
+  when it holds only the server. It used to claim all three were missing. It
+  also names `mdmem enable bob` as a fix beside launching Bob at the root.
+- `enable --project` and `disable --project` refuse in the home directory and
+  say to use the global scope: there Claude Code's and Codex's project files
+  are, by default, their user-wide files, so `enable claude-code --project` put
+  the project hooks in
+  `~/.claude/settings.json`, where every session in every project ran them
+  beside the global ones. `mdmem status` in the home directory shows the global
+  scope only, instead of listing the same files under both scopes.
+- `mdmem store local` refuses in a repository whose git directory is not named
+  `.git` (a bare `x.git`, a worktree of one, or a work tree made with
+  `--separate-git-dir`), where it created the local store inside the git
+  directory, in no work tree and so impossible to commit. It names the home
+  store the project keeps. Beside a bare repository at `<dir>/.git`, and outside
+  git, it still creates the local store.
 
 ## [0.2.0] - 2026-10-21
 

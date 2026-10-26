@@ -17,6 +17,7 @@ import {
   rootAbove,
   rootOf,
   scopeStatus,
+  wiredProject,
 } from "./adapter.ts";
 import type {
   AdapterContext,
@@ -150,7 +151,18 @@ async function disabledHooksProblem(
     : [];
 }
 
-/** Run below the checkout's root, where a Bob launched here reads none of the workspace files: it gets the wiring only from a global scope that holds both the hooks and the server. */
+/** What a Bob launched below the root misses, given what the global scope holds: its hooks, its server, both or neither. */
+function missedBelowRoot(globalScope: ScopeStatus | undefined): string {
+  const present = globalScope?.entries.filter((entry) => entry.present) ?? [];
+  if (present.some((entry) => hooksIn(entry) > 0)) {
+    return "no mdmem tools";
+  }
+  return present.length > 0
+    ? "no memory protocol and no index"
+    : "no memory protocol, no index and no mdmem tools";
+}
+
+/** Run below the checkout's root, where a Bob launched here reads none of the workspace files: it gets the wiring only from the global scope, and all of it only when that scope holds both the hooks and the server. */
 function belowRootWarning(
   ctx: AdapterContext,
   project: ProjectContext,
@@ -161,7 +173,7 @@ function belowRootWarning(
   return root === undefined
     ? []
     : [
-        `${TITLE} reads ${SETTINGS} (the session-start hooks) and ${MCP_CONFIG} (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets no memory protocol, no index and no mdmem tools. Launch Bob at ${root}.`,
+        `${TITLE} reads ${SETTINGS} (the session-start hooks) and ${MCP_CONFIG} (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets ${missedBelowRoot(globalScope)}. Launch Bob at ${root}, or run \`mdmem enable ${ID}\` to wire it in every folder.`,
       ];
 }
 
@@ -216,7 +228,7 @@ export const bobAdapter: AdapterFor<typeof ID> = {
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const global = await configStatus(rootOf(ctx), globalFiles(ctx));
-    const { project } = ctx;
+    const project = wiredProject(ctx);
     const inProject =
       project === undefined
         ? undefined

@@ -110,6 +110,7 @@ const PAGES: Record<string, CommandPage> = {
       ...WIRING_REFUSALS,
       "a key of mdmem's holds another value, such as another mcpServers.mdmem or autoMemoryEnabled: true",
       "with --project, in a bare repository or the folder holding one",
+      "with --project, in the home directory, which the global scope wires",
     ],
   },
   disable: {
@@ -129,7 +130,10 @@ const PAGES: Record<string, CommandPage> = {
       AGENTS,
     ],
     example: "mdmem disable bob --project",
-    refuses: WIRING_REFUSALS,
+    refuses: [
+      ...WIRING_REFUSALS,
+      "with --project, in the home directory, which the global scope wires",
+    ],
   },
   status: {
     usage: "mdmem status",
@@ -343,6 +347,7 @@ const PAGES: Record<string, CommandPage> = {
       "the argument is not local, home or list",
       "the destination already holds memories: the refusal names the other store and how to fold it in",
       "store local in the home directory, where ~/.mdmem holds the home stores",
+      "store local in a repository whose git directory is not named .git (a bare x.git, a worktree of one, --separate-git-dir), where .mdmem would sit inside that git directory",
     ],
   },
   mcp: {

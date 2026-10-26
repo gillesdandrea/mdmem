@@ -29,6 +29,7 @@ import {
   rootAbove,
   rootOf,
   scopeStatus,
+  wiredProject,
 } from "./adapter.ts";
 import type {
   AdapterContext,
@@ -159,12 +160,16 @@ interface SettingsFile {
 /**
  * Claude Code's settings files in the order it reads a setting: the local project
  * settings, then the committed ones, then the user's; the user's alone outside a
- * project. Managed settings and --settings are not read.
+ * project. A project file that is the user's own, as `~/.claude/settings.json` is at
+ * the home directory by default, is read once, as the user's. Managed settings and
+ * --settings are not read.
  */
 function readSettings(ctx: AdapterContext): Promise<SettingsFile[]> {
+  const user = userSettings(ctx);
+  const project = ctx.project === undefined ? [] : [SETTINGS_LOCAL, SETTINGS];
   const files = [
-    ...(ctx.project === undefined ? [] : [SETTINGS_LOCAL, SETTINGS]),
-    userSettings(ctx),
+    ...project.filter((file) => resolve(rootOf(ctx), file) !== resolve(user)),
+    user,
   ];
   return Promise.all(
     files.map(async (file) => ({
@@ -380,17 +385,16 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const global = await configStatus(rootOf(ctx), globalFiles(ctx));
-    const { project } = ctx;
+    const project = wiredProject(ctx);
     const inProject =
       project === undefined
         ? undefined
-        : {
-            ...(await configStatus(project.root, PROJECT_FILES)),
-            // The local settings hold none of mdmem's entries, but Claude Code reads them first.
-            local: await configDocument(project.root, SETTINGS_LOCAL),
-            // In a project at the home directory, the user settings are the project's, reported once.
-            settings: resolve(project.root, SETTINGS),
-          };
+        : await configStatus(project.root, PROJECT_FILES);
+    // The local settings hold none of mdmem's entries, but Claude Code reads them first, at the home directory too.
+    const local =
+      ctx.project === undefined
+        ? undefined
+        : await configDocument(ctx.project.root, SETTINGS_LOCAL);
     const scopes = [
       scopeStatus("global", global.entries, enabledBy(global.entries)),
       ...(inProject === undefined
@@ -403,19 +407,16 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
             ),
           ]),
     ];
-    const globalUnreadable = global.unreadable.filter(
-      ({ file }) => resolve(file) !== inProject?.settings
-    );
     return agentStatus(
       claudeCodeAdapter,
       {
         scopes,
         unreadable: [
-          ...(inProject !== undefined && "unreadable" in inProject.local
-            ? [inProject.local.unreadable]
+          ...(local !== undefined && "unreadable" in local
+            ? [local.unreadable]
             : []),
           ...(inProject?.unreadable ?? []),
-          ...globalUnreadable,
+          ...global.unreadable,
         ],
         warnings: [],
       },

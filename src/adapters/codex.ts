@@ -20,6 +20,7 @@ import {
   rootOf,
   scopeStatus,
   unreadableRefusal,
+  wiredProject,
 } from "./adapter.ts";
 import type {
   AdapterContext,
@@ -342,7 +343,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
     ];
     const globalHooks = await configStatus(global.root, globalFiles);
     const globalServer = await tomlTableStatus(global.root, global.server);
-    const { project } = ctx;
+    const project = wiredProject(ctx);
     const inProject =
       project === undefined
         ? undefined

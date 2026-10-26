@@ -80,6 +80,11 @@ export function mainCheckoutRoot(dir: string): string | null {
   return main === top ? null : main;
 }
 
+/** The git common dir of the repository holding `dir`, its outermost superproject's in a submodule, else null outside git. */
+function repositoryGitDir(dir: string): string | null {
+  return gitCommonDir(outermostSuperproject(dir) ?? dir);
+}
+
 /**
  * The directory that keys the repository holding `dir`, or null outside git. A submodule
  * belongs to its outermost superproject. From there, the key is the parent of the git
@@ -87,11 +92,22 @@ export function mainCheckoutRoot(dir: string): string | null {
  * bare repository at `<dir>/.git`), else the common dir itself (a bare `x.git`).
  */
 export function repositoryRoot(dir: string): string | null {
-  const commonDir = gitCommonDir(outermostSuperproject(dir) ?? dir);
+  const commonDir = repositoryGitDir(dir);
   if (commonDir === null) {
     return null;
   }
   return basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
+}
+
+/**
+ * Whether `repositoryRoot(dir)` is the git common dir itself, one not named `.git`
+ * (a bare `x.git`, a worktree of one, or a work tree made with --separate-git-dir),
+ * so anything at the root sits inside the git directory, in no work tree. False for
+ * a git directory named `.git`, bare or not, whose root is its parent, and outside git.
+ */
+export function rootIsGitDir(dir: string): boolean {
+  const commonDir = repositoryGitDir(dir);
+  return commonDir !== null && basename(commonDir) !== ".git";
 }
 
 /** `git check-ignore` exits 0 when the path is ignored, 1 when it is not, and 128 on an error. */

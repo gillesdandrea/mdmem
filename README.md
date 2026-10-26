@@ -102,7 +102,10 @@ does not trust, or a project hook Codex has not had reviewed, gets nothing
 until you trust or review it. `mdmem status` notes each agent wired in both
 scopes. Running `enable` again changes nothing, and `mdmem disable` (with
 `--project` for the repository's files) removes exactly mdmem's entries and
-leaves the store.
+leaves the store. Your home directory is wired by the global scope: there
+Claude Code's and Codex's project files are, by default, their user-wide
+files, so `--project` is refused there and `mdmem status` shows the global
+scope only.
 
 | Agent | Global scope writes | `--project` writes | Approvals mdmem cannot give for you |
 |---|---|---|---|

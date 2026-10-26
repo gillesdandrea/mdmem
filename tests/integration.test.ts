@@ -2722,7 +2722,7 @@ describe("status and check", () => {
       const status = await projectStatus(below);
       const bob = status.agents.find(({ title }) => title === "IBM Bob");
       expect(bob?.warnings).toEqual([
-        `IBM Bob reads .bob/settings.json (the session-start hooks) and .bob/mcp.json (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets no memory protocol, no index and no mdmem tools. Launch Bob at ${root}.`,
+        `IBM Bob reads .bob/settings.json (the session-start hooks) and .bob/mcp.json (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets no memory protocol, no index and no mdmem tools. Launch Bob at ${root}, or run \`mdmem enable bob\` to wire it in every folder.`,
       ]);
       // where status runs is not a problem with the project
       expect(await checkProject(below)).toMatchObject({ problems: [] });
@@ -2759,9 +2759,10 @@ describe("status and check", () => {
         ["project", true, true],
       ]);
       expect(partly?.problems).toEqual([]);
-      expect(partly?.warnings).toEqual([
-        expect.stringContaining(`launched here, below ${root}, it gets`),
-      ]);
+      const belowRoot = (missed: string) =>
+        `IBM Bob reads .bob/settings.json (the session-start hooks) and .bob/mcp.json (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets ${missed}. Launch Bob at ${root}, or run \`mdmem enable bob\` to wire it in every folder.`;
+      // the global hooks speak there, so only the tools are missing
+      expect(partly?.warnings).toEqual([belowRoot("no mdmem tools")]);
       // a global scope without the hooks starts its sessions without the protocol and the index, a problem as well
       await wire(bobAdapter.enable(ctx, "global"));
       await rm(join(ctx.home, ".bob", "settings", "settings.json"));
@@ -2777,7 +2778,9 @@ describe("status and check", () => {
         ["project", true, true],
       ]);
       expect(noHooks?.problems).toEqual([expect.stringContaining("hook")]);
-      expect(noHooks?.warnings).toEqual(partly?.warnings);
+      expect(noHooks?.warnings).toEqual([
+        belowRoot("no memory protocol and no index"),
+      ]);
       // enabled in both scopes but wired in one: no note claims both
       expect(noHooks?.notes).not.toContainEqual(
         expect.stringContaining(bothScopes)
@@ -3116,7 +3119,7 @@ describe("status and check", () => {
     });
   });
 
-  test("a project at the home directory reports Claude Code's settings it cannot read once, as the project's", async () => {
+  test("a project at the home directory has the global scope only, and reports Claude Code's settings it cannot read once, as the user's", async () => {
     await withWiredRepo(async ({ root, ctx }) => {
       await writeFile(join(root, CLAUDE_SETTINGS), "{ broken", "utf-8");
       const atHome = {
@@ -3125,8 +3128,11 @@ describe("status and check", () => {
         env: { ...ctx.env, CLAUDE_CONFIG_DIR: undefined },
       };
       const status = await claudeCodeAdapter.status(atHome);
-      expect(status.problems).toEqual([
-        `Claude Code: ${CLAUDE_SETTINGS} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`,
+      expect(status.scopes.map(({ scope }) => scope)).toEqual(["global"]);
+      // the user settings hold none of mdmem's global entries, so Claude Code is not enabled and the file is a warning
+      expect(status.problems).toEqual([]);
+      expect(status.warnings).toEqual([
+        `${join(root, CLAUDE_SETTINGS)} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the command again`,
       ]);
     });
   });
@@ -3486,6 +3492,59 @@ describe("scopes and store creation", () => {
       expect(existsSync(join(dir, ".bob/settings.json"))).toBe(true);
       expect(runCliWith(dir, ["status"], env).out).toContain(
         "✓ IBM Bob (project)"
+      );
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("in the home directory, enable --project and disable --project refuse, pointing to the global scope, and status shows the global scope only", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-scope-")));
+    try {
+      const home = join(tmp, "home");
+      await mkdir(home);
+      // the agents' user-wide files where they are by default, so the project's files in the home directory are the same files
+      const env = {
+        HOME: home,
+        CLAUDE_CONFIG_DIR: join(home, ".claude"),
+        CODEX_HOME: join(home, ".codex"),
+      };
+      const agents = ["claude-code", "bob", "codex"];
+      expect(runCliWith(home, ["enable", ...agents], env).code).toBe(0);
+      const userFiles = [
+        ".claude/settings.json",
+        ".claude.json",
+        ".bob/settings/settings.json",
+        ".bob/settings/mcp.json",
+        ".codex/hooks.json",
+        ".codex/config.toml",
+      ].map((file) => join(home, file));
+      const before = await Promise.all(userFiles.map(readText));
+      for (const mode of ["enable", "disable"]) {
+        const refused = runCliWith(home, [mode, ...agents, "--project"], env);
+        expect(refused.code).toBe(1);
+        expect(refused.err).toBe(
+          `mdmem: ${home} is your home directory, which the global scope wires (there Claude Code's and Codex's project files are, by default, their user-wide files): run \`mdmem ${mode}\` without --project\n`
+        );
+      }
+      expect(await Promise.all(userFiles.map(readText))).toEqual(before);
+      expect(existsSync(join(home, ".bob", "settings.json"))).toBe(false);
+
+      const status = runCliWith(home, ["status"], env);
+      expect(status.code).toBe(0);
+      for (const title of ["Claude Code", "IBM Bob", "Codex CLI"]) {
+        expect(status.out).toContain(`  ✓ ${title} (global)\n`);
+      }
+      expect(status.out).not.toContain("(project)");
+
+      // Claude Code launched in the home directory still reads ~/.claude/settings.local.json first
+      await writeFile(
+        join(home, ".claude", "settings.local.json"),
+        JSON.stringify({ autoMemoryEnabled: true }),
+        "utf-8"
+      );
+      expect(runCliWith(home, ["doctor"], env).out).toContain(
+        `Claude Code's auto memory is on: .claude/settings.local.json sets autoMemoryEnabled to true, overriding .claude/settings.json, ${AUTO_MEMORY_CONSEQUENCE} — remove it from .claude/settings.local.json`
       );
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -3877,6 +3936,49 @@ describe("placements", () => {
       expect(existsSync(join(local, "a.md"))).toBe(true);
       expect(existsSync(join(home, ".mdmem"))).toBe(false);
     });
+  });
+
+  test("store local refuses in a bare x.git and its worktree, where the store would sit in its git directory, and creates the store beside a bare <dir>/.git", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-bare-")));
+    try {
+      const env = { HOME: join(tmp, "home") };
+      const source = join(tmp, "source");
+      await mkdir(source);
+      await gitRepo(source);
+      const bare = join(tmp, "x.git");
+      git(tmp, "clone", "-q", "--bare", source, bare);
+      const refused = runCliWith(bare, ["store", "local"], env);
+      expect(refused.code).toBe(1);
+      expect(refused.err).toBe(
+        `mdmem: ${join(bare, ".mdmem")} would sit inside the repository's git directory ${bare}, which no work tree holds, so it could never be committed: the project keeps its home store ${join(tmp, "home", ".mdmem", projectKey(bare))}\n`
+      );
+      expect(existsSync(join(bare, ".mdmem"))).toBe(false);
+      // a worktree of x.git is keyed by x.git too, so its local store would sit there as well
+      const worktree = join(tmp, "wt");
+      git(bare, "worktree", "add", "-q", worktree);
+      expect(runCliWith(worktree, ["store", "local"], env)).toMatchObject({
+        code: 1,
+        err: refused.err,
+      });
+      expect(existsSync(join(bare, ".mdmem"))).toBe(false);
+      // a local store already there, made by hand or by an older mdmem, is the one in use: move it out
+      await mkdir(join(bare, ".mdmem"));
+      expect(runCliWith(bare, ["store", "local"], env)).toMatchObject({
+        code: 1,
+        err: `mdmem: the local store ${join(bare, ".mdmem")} sits inside the repository's git directory ${bare}, which no work tree holds, so it can never be committed: move it with \`mdmem store home\`\n`,
+      });
+      await rm(join(bare, ".mdmem"), { recursive: true });
+
+      const container = join(tmp, "c");
+      await mkdir(container);
+      git(tmp, "clone", "-q", "--bare", source, join(container, ".git"));
+      const created = runCliWith(container, ["store", "local"], env);
+      expect(created.err).toBe("");
+      expect(created.code).toBe(0);
+      expect(existsSync(join(container, ".mdmem", "MEMORY.md"))).toBe(true);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 
   test("store list prints every home store with its project and memory count, naming one whose project was deleted", async () => {

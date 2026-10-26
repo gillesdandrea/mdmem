@@ -24,6 +24,7 @@ import {
   checkProject,
   createProjectStore,
   creationLines,
+  disableContext,
   enableContext,
   ensureStore,
   formatProjectCheck,
@@ -33,6 +34,7 @@ import {
 } from "../adapters/report.ts";
 import type { StoreCreation } from "../adapters/report.ts";
 import { checkSummary, reindex } from "../core/check.ts";
+import { rootIsGitDir } from "../core/git.ts";
 import { runHook, stdinPayload } from "../core/hook.ts";
 import { memoryFileFor, MEMORY_TYPES } from "../core/memory.ts";
 import type { MemoryType } from "../core/memory.ts";
@@ -388,7 +390,7 @@ async function cmdWiring(
   const cwd = process.cwd();
   // The project scope of enable needs a work tree; neither command needs a store, nor creates one.
   const ctx =
-    mode === "enable" ? enableContext(cwd, scope) : locateContext(cwd);
+    mode === "enable" ? enableContext(cwd, scope) : disableContext(cwd, scope);
   // Plan every agent before writing any, so a refusal leaves every file as it was.
   const plans = await planWiring(adapters, (adapter) =>
     mode === "enable" ? adapter.enable(ctx, scope) : adapter.disable(ctx, scope)
@@ -513,6 +515,14 @@ async function moveStore(to: Placement): Promise<void> {
   if (to === "local" && realDir(location.local) === realDir(homeStoresDir())) {
     die(
       `${location.local} holds the home stores, so the home directory's project keeps its home store ${location.home}: run \`mdmem store local\` in a project`
+    );
+  }
+  if (to === "local" && rootIsGitDir(cwd)) {
+    const localExists = location.exists && location.placement === "local";
+    die(
+      localExists
+        ? `the local store ${location.local} sits inside the repository's git directory ${location.root}, which no work tree holds, so it can never be committed: move it with \`mdmem store home\``
+        : `${location.local} would sit inside the repository's git directory ${location.root}, which no work tree holds, so it could never be committed: the project keeps its home store ${location.home}`
     );
   }
   const fromExists = location.exists && location.placement !== to;

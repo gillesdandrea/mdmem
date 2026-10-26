@@ -68,6 +68,27 @@ export function projectOf(ctx: AdapterContext): ProjectContext {
   return ctx.project;
 }
 
+/** Whether the project's root is the home directory, where the global scope is the one that wires it. */
+export function projectAtHome(
+  ctx: Pick<AdapterContext, "home">,
+  project: ProjectContext
+): boolean {
+  return realDir(project.root) === realDir(ctx.home);
+}
+
+/**
+ * The project whose files the project scope wires: `ctx.project`, except at the
+ * home directory, which only the global scope wires (there Claude Code's and
+ * Codex's project files are the global scope's own under the default config
+ * directories).
+ */
+export function wiredProject(ctx: AdapterContext): ProjectContext | undefined {
+  const { project } = ctx;
+  return project === undefined || projectAtHome(ctx, project)
+    ? undefined
+    : project;
+}
+
 /** The project's root, resolved, when the working directory is below it; undefined at the root. */
 export function rootAbove(
   ctx: AdapterContext,

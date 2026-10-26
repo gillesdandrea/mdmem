@@ -25,7 +25,7 @@ import {
   storeAt,
 } from "../core/store.ts";
 import type { MemoryStore, Placement } from "../core/store.ts";
-import { bothScopesNote, wiredInBothScopes } from "./adapter.ts";
+import { bothScopesNote, projectAtHome, wiredInBothScopes } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -83,11 +83,29 @@ export function locateContext(
 }
 
 /**
+ * `ctx`, for a project-scope command, refused when the project's root is the home
+ * directory, which the global scope wires: there Claude Code's and Codex's project
+ * files are their user-wide files under the default config directories.
+ */
+function refuseAtHome(
+  ctx: AdapterContext,
+  mode: "enable" | "disable"
+): AdapterContext {
+  const { project } = ctx;
+  if (project !== undefined && projectAtHome(ctx, project)) {
+    throw new RefusalError(
+      `${project.root} is your home directory, which the global scope wires (there Claude Code's and Codex's project files are, by default, their user-wide files): run \`mdmem ${mode}\` without --project`
+    );
+  }
+  return ctx;
+}
+
+/**
  * The context `mdmem enable` works in. The global scope needs neither a project
  * nor a store. The project scope is refused in a repository with no work tree here
  * (a bare repository, or the folder holding one), where no agent reads the files
- * enable would write; elsewhere its project is the repository or, outside git, the
- * working directory. It creates no store (ADR 0005).
+ * enable would write, and at the home directory; elsewhere its project is the
+ * repository or, outside git, the working directory. It creates no store (ADR 0005).
  */
 export function enableContext(cwd: string, scope: Scope): AdapterContext {
   if (scope === "global") {
@@ -105,7 +123,13 @@ export function enableContext(cwd: string, scope: Scope): AdapterContext {
       `${cwd} is not in a work tree (a bare repository, or the folder holding one), and agents read their files only from a work tree: ${where}`
     );
   }
-  return locateContext(cwd);
+  return refuseAtHome(locateContext(cwd), "enable");
+}
+
+/** The context `mdmem disable` works in: the project scope is refused at the home directory, as enable's is. It needs no store. */
+export function disableContext(cwd: string, scope: Scope): AdapterContext {
+  const ctx = locateContext(cwd);
+  return scope === "project" ? refuseAtHome(ctx, "disable") : ctx;
 }
 
 /** What happened to a project's store on a write: created or not, and what creating it imported. */

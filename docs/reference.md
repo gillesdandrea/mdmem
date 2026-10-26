@@ -46,7 +46,13 @@ back; when the store is already there, or `mdmem store local` creates it, they
 print one path and that command. A move writes the store's `project` file,
 naming this project's root. Both refuse
 when the destination already holds memories, naming the other store: fold one
-into the other with `mdmem consolidate --from <dir>` first. A destination that
+into the other with `mdmem consolidate --from <dir>` first. `mdmem store
+local` also refuses in the home directory, where `~/.mdmem` holds the home
+stores, and in a repository whose root is its git directory, one not named
+`.git` (a bare `x.git`, a worktree of one, or a work tree made with
+`--separate-git-dir`): `.mdmem/` there would be in no work tree, so it could
+never be committed, and the project keeps its home store. Beside a bare repository at `<dir>/.git`, the local store is
+`<dir>/.mdmem/`. A destination that
 holds no memories, only its index, is replaced. `mdmem store list` prints every
 home store, one line each: its key, the project its `project` file names (or
 `no project file`), its memory count, and `project missing` when that directory no longer exists. mdmem
@@ -152,7 +158,11 @@ the command with no file written. The global scope runs anywhere and needs no
 store. `enable --project` runs in a work tree, or outside git in the working
 directory, which is then the project; in a bare repository, or the folder
 holding one as `.git`, it refuses and names the repository's worktrees, since
-agents read their files only from a work tree. Neither command creates a
+agents read their files only from a work tree. In your home directory, which
+the global scope wires (there Claude Code's and Codex's project files are, by
+default, the global scope's own), `enable --project` and `disable --project` refuse and
+say to run the command without `--project`, and `mdmem status` shows the global
+scope only. Neither command creates a
 store, and `disable` needs none, so it works after the store was deleted.
 mdmem 0.2.0's `init`, `enable --prefer` and
 `disable --global` are refused, naming what replaced them.
@@ -301,7 +311,11 @@ The rest are `status` lines only, because they are your choice, depend on where
 - A warning when `status` runs below the checkout's root of a project wired for
   Bob in the project scope, unless the global scope holds both its hooks and
   its server: a Bob launched there reads neither `.bob/settings.json` nor
-  `.bob/mcp.json`, so it gets no protocol, no index and no mdmem tools.
+  `.bob/mcp.json`, so it gets only what the global scope holds. The warning
+  names what is missing: no mdmem tools when the global scope holds only the
+  hooks, no protocol and no index when it holds only the server, and all three
+  when it holds neither. It says to launch Bob at the root or run
+  `mdmem enable bob`.
 - A warning when `status` runs below the checkout's root of a project wired for
   Claude Code in the project scope, with none of mdmem's hooks in your user
   settings: a Claude Code started there does not read the project's
