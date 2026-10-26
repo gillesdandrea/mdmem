@@ -140,8 +140,9 @@ sessions there and to save everything about the project, how to work in it and
 what the user wants to the store. Claude Code's auto memory is different: it
 holds facts the agent saves deliberately, in the store's own format, and so
 competes with the store. `mdmem enable claude-code` turns it off and imports its
-memories once, when the store is created
-([ADR 0003](docs/adr/0003-one-store-per-project-injected-by-hooks.md)).
+memories once, when the store is created.
+[ADR 0003](docs/adr/0003-one-store-per-project-injected-by-hooks.md) records
+both decisions.
 
 ## Team workflow
 
