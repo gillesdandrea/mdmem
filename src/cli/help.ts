@@ -63,7 +63,7 @@ const WIRING_FILES: Section = {
     ],
     [
       "codex",
-      "the hooks in ~/.codex/hooks.json ($CODEX_HOME when set) in both scopes; the server in ~/.codex/config.toml, or .codex/config.toml",
+      "~/.codex/hooks.json and ~/.codex/config.toml ($CODEX_HOME when set); .codex/hooks.json and .codex/config.toml",
     ],
   ],
 };
@@ -115,7 +115,7 @@ const PAGES: Record<string, CommandPage> = {
   disable: {
     usage: "mdmem disable <agent…> | --all [--project]",
     about:
-      "Remove exactly mdmem's wiring from agents in one scope, leaving everything else in their files as it was. It needs no store and leaves the store as it is, so it works after the store was deleted. Codex's hook serves both scopes, so the global scope removes it and --project keeps it.",
+      "Remove exactly mdmem's wiring from agents in one scope, leaving everything else in their files as it was. It needs no store and leaves the store as it is, so it works after the store was deleted.",
     sections: [
       {
         heading: "Options:",
@@ -294,7 +294,7 @@ const PAGES: Record<string, CommandPage> = {
   hook: {
     usage: "mdmem hook <agent> <part> [--global]",
     about:
-      "Run by an agent's session-start hook, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index as context for the session. It speaks in every directory, git or not; with no store yet, the index part names the home store the first save creates. Codex's hook stays silent where neither ~/.codex/config.toml nor .codex/config.toml registers the server. Where it prints nothing, one line on stderr says why; with no payload, that line gives the command that shows what it would inject here, or names an unknown agent or part.",
+      "Run by an agent's session-start hook, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index as context for the session. It speaks in every directory, git or not; with no store yet, the index part names the home store the first save creates. Where it prints nothing, one line on stderr says why; with no payload, that line gives the command that shows what it would inject here, or names an unknown agent or part.",
     sections: [
       {
         heading: "Arguments:",

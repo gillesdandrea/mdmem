@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 /**
@@ -60,6 +61,23 @@ export function outermostSuperproject(dir: string): string | null {
 /** The top of the work tree holding `dir` (a linked worktree or submodule is its own), else null (a bare repository, or outside git). */
 export function workTreeRoot(dir: string): string | null {
   return gitOutput(dir, ["rev-parse", "--show-toplevel"]);
+}
+
+/** The main checkout's work tree when `dir` is in a linked worktree, else null (a main checkout, a submodule, a bare repository, or outside git). */
+export function mainCheckoutRoot(dir: string): string | null {
+  const commonDir = gitCommonDir(dir);
+  const top = workTreeRoot(dir);
+  if (commonDir === null || top === null || basename(commonDir) !== ".git") {
+    return null;
+  }
+  // git prints the top with symlinks resolved, and the common dir as reached from `dir`.
+  let main = dirname(commonDir);
+  try {
+    main = realpathSync(main);
+  } catch {
+    // git just named it, so it exists; keep the path as git gave it
+  }
+  return main === top ? null : main;
 }
 
 /**

@@ -180,18 +180,15 @@ index part is the line
 `--global` marks the global
 scope's hook entries: a global entry prints nothing where the project's own
 entry for the same part is present (a project's server registration alone does
-not count), so a repository wired in both scopes gets each part once. Codex's
-one hook prints nothing where neither your `~/.codex/config.toml` nor the
-project's `.codex/config.toml` registers the mdmem server.
+not count), so a repository wired in both scopes gets each part once.
 
 The hook also prints nothing on a resumed or forked session, for any event but
 SessionStart, and with no payload on stdin, as when it is run by hand.
 Wherever it prints nothing, it writes one line on stderr saying why, which never
 reaches the agent's context: no payload (with the `echo '<payload>' | mdmem hook
 <agent> <part>` command that shows what it would inject in the working
-directory), the event, a resumed or forked session, a global entry beside the
-project's own (naming the project's settings file), or Codex's hook where no
-config registers the server (naming both configs). A payload that is not a
+directory), the event, a resumed or forked session, or a global entry beside the
+project's own (naming the project's settings or hooks file). A payload that is not a
 JSON object is reported where the hook would speak from the working directory,
 which is everywhere but where its agent's silences apply. It never fails a
 session: an error becomes a one-line context saying why the memory could not be
@@ -233,8 +230,7 @@ mdmem has no fallback, so `mdmem status` and the check (`mdmem doctor`,
 `memory_check`) report the states that silently break sharing. Both read each
 agent's wiring in both scopes, and work without a store and outside any
 project, where they report the wiring alone. An agent counts as enabled in a
-scope when some of mdmem's entries there are present (for Codex, its server
-registration), and as wired when every entry of at least one scope is present;
+scope when some of mdmem's entries there are present, and as wired when every entry of at least one scope is present;
 a repository wired in both scopes is two `status` lines, not a problem. A state
 that breaks saving or injection and that you can fix is a check problem:
 `doctor` lists it and exits 1, and `status` prints it as a warning.
@@ -242,23 +238,23 @@ that breaks saving or injection and that you can fix is a check problem:
 - An agent's config file that exists but cannot be read: not valid JSON or
   TOML, or JSON that is not an object. A project file (`.claude/settings.json`,
   `.claude/settings.local.json`, `.mcp.json`, `.bob/settings.json`,
-  `.bob/mcp.json`, `.codex/config.toml`) is reported whether or not the agent
-  is enabled, since mdmem cannot tell what it wires. A user-wide file (Claude
-  Code's user settings and `.claude.json`, Bob's `~/.bob/settings/` files,
-  Codex's `hooks.json` and `config.toml`) is reported only for an agent enabled
-  in some scope; otherwise `status` warns of it, and `memory_check` called from
-  Codex leaves Codex's out as it leaves out its hook below. The problem names
-  the file and why it cannot be read, and replaces the missing entries and
-  other problems that file would give: fix it, then run the check again.
+  `.bob/mcp.json`, `.codex/hooks.json`, `.codex/config.toml`) is reported
+  whether or not the agent is enabled, since mdmem cannot tell what it wires.
+  A user-wide file (Claude Code's user settings and `.claude.json`, Bob's
+  `~/.bob/settings/` files, Codex's `hooks.json` and `config.toml`) is
+  reported only for an agent enabled in some scope; otherwise `status` warns
+  of it, and `memory_check` called from Codex leaves Codex's out as it leaves
+  out its global hooks below. The problem names the file and why it cannot be
+  read, and replaces the missing entries and other problems that file would
+  give: fix it, then run the check again.
   `mdmem enable` reads every file holding a scope's entries and refuses any
   that cannot be read, so while one cannot be read, the agent's other problems
   that `enable` fixes in that scope say to fix that file first. It does not
   read `.claude/settings.local.json`: while only that cannot be read, the
   agent's other problems still say to run `mdmem enable`.
 - A session-start hook missing in a scope the agent is enabled in, the fix
-  naming that scope's command (`mdmem enable <agent>`, or with `--project`),
-  including Codex's one hook in `hooks.json` when either config registers the
-  server. `memory_check` called from Codex leaves Codex's user files out unless
+  naming that scope's command (`mdmem enable <agent>`, or with `--project`).
+  `memory_check` called from Codex leaves Codex's user files out unless
   `CODEX_HOME` reaches the server: Codex starts MCP servers with only a few
   environment variables (`HOME`, `PATH` and the like, not `CODEX_HOME`), so the
   server cannot tell where Codex's home is. Listing it in the server's table,
@@ -303,8 +299,8 @@ The rest are `status` lines only, because they are your choice, depend on where
   submodule's settings, not the project's, so mdmem's setting that turns its
   auto memory off does not apply there.
 - A note under each agent enabled in the project scope on folder trust, which
-  decides whether its project files run, and for Codex on its one-time review
-  of the hook: mdmem checks neither.
+  decides whether its project files run, and under Codex in either scope on
+  its review of the hooks: mdmem checks neither.
 
 ## Claude Code
 
@@ -435,19 +431,19 @@ in a subdirectory of a repository wired in both scopes still gets them.
 
 ## Codex CLI
 
-`mdmem enable codex` merges two entries, leaving the files' other content as it
-was:
+`mdmem enable codex` merges two entries into Codex's files, leaving their other
+content as it was: in the global scope `~/.codex/hooks.json` and
+`~/.codex/config.toml` (under `$CODEX_HOME` when it is set), and with
+`--project` the repository's `.codex/hooks.json` and `.codex/config.toml`.
 
-- in `~/.codex/hooks.json` (`$CODEX_HOME/hooks.json` when `CODEX_HOME` is
-  set), in both scopes, one `SessionStart` hook group with no matcher, holding
+- In the hooks file, one `SessionStart` hook group with no matcher, holding
   two command handlers, `mdmem hook codex protocol` and
-  `mdmem hook codex index`, each with a 10-second timeout and
-  `"additionalContextLimit": 0`. Without that limit, Codex replaces a hook
-  context over about 2,500 tokens with a preview and the path of a temporary
-  file. `mdmem hook` skips a resumed or forked session itself.
-- the mdmem server, in your `~/.codex/config.toml` (`$CODEX_HOME/config.toml`)
-  in the global scope, or with `--project` in the project's
-  `.codex/config.toml`:
+  `mdmem hook codex index`, each followed by `--global` in the global scope and
+  with a 10-second timeout and `"additionalContextLimit": 0`. Without that
+  limit, Codex replaces a hook context over about 2,500 tokens with a preview
+  and the path of a temporary file. `mdmem hook` skips a resumed or forked
+  session itself.
+- In the config, the mdmem server:
 
   ```toml
   [mcp_servers.mdmem]
@@ -463,39 +459,39 @@ was:
   running another command makes `enable` refuse, naming the file and the table,
   and `disable` leaves it.
 
-The hook is global because Codex ties a hook's approval to the absolute path of
-the file that declares it: a hook in each worktree's `.codex/hooks.json` would
-need approving in every worktree. Codex asks you to review the new hook once,
-at its next start or in `/hooks`. Codex also ties the approval to the group's
+Codex runs a hook only once you have reviewed it, at its next interactive start
+or in `/hooks`; `codex exec` never asks, and runs no hook you have not
+reviewed. Codex ties the review to the path of the hooks file, to the group's
 position in `hooks.SessionStart` and to its content, so adding or removing a
-`SessionStart` group before mdmem's in that file, or editing mdmem's, makes
-Codex ask again; an edited group still runs mdmem's commands, so `enable` does
-not add a second one.
+`SessionStart` group before mdmem's, or editing mdmem's, makes Codex ask again;
+an edited group still runs mdmem's commands, so `enable` does not add a second
+one. The global hooks are reviewed once per machine. The project's are reviewed
+once per clone: in a linked worktree Codex reads the hooks from the main
+checkout's `.codex/hooks.json`, whose review it shares, and only when the
+worktree's own commit has a `.codex/` folder (Codex 0.164.0).
 
-Once trusted, the hook runs in every project and worktree, and the scope is
-where the server is registered: the hook speaks where your
-`~/.codex/config.toml` or the project's `.codex/config.toml` registers it, and
-prints nothing elsewhere. The hook reads `$CODEX_HOME` when Codex passes it,
-else `~/.codex`; whether Codex passes `CODEX_HOME` to hooks is unverified.
-Running `mdmem enable codex --project` in another project finds the hook
-already there and adds only that project's server.
-
-Codex reads a project's `.codex/config.toml` only in a folder you have trusted,
+Codex reads a project's `.codex/` folders only in a folder you have trusted,
 and trusting it for one run with a `-c` override does not count; in an
-untrusted one the mdmem tools are missing and agents fall back to writing files
-directly.
+untrusted one the project scope's hooks and server are missing, so unless the
+global scope is wired the mdmem tools are missing and agents fall back to
+writing files directly. It reads them
+from the folder it was started in up to the work tree's root, so the project
+scope works in any subdirectory. The global entries stay silent wherever one of
+those hooks files holds the project's own entry for their part, so a
+repository wired in both scopes gets each part once. When the user config and
+the project's both register the server, Codex runs the project's.
 
-`mdmem disable codex --project` removes the project's server, deleting
-`.codex/config.toml` when nothing else is left in it, and keeps the hook, which
-is then silent in that project unless your `~/.codex/config.toml` registers the
-server. `mdmem disable codex` removes the server from your
-`~/.codex/config.toml` and mdmem's handlers from `~/.codex/hooks.json`,
-deleting either file when it held nothing else; repositories wired with
-`--project` then need `mdmem enable codex --project` again to get the hook
-back. Removing a server table also drops the comment lines written directly
-above it, inside it or after it, and those directly above the table that
-follows it, with the blank lines around them. `mdmem status` lists each scope's
-server and the hook, each present or missing.
+`mdmem disable codex` (with `--project` for the repository's files) removes
+exactly these entries and deletes a file that held nothing else. Removing a
+server table also drops the comment lines written directly above it, inside it
+or after it, and those directly above the table that follows it, with the
+blank lines around them. `mdmem status` lists each entry as present or missing.
+
+mdmem 0.2.0 wrote the project scope's unmarked group into
+`~/.codex/hooks.json`, where it injects in every project beside each project's
+own hook. `mdmem status` and `mdmem enable codex --project` warn of it;
+`mdmem enable codex` replaces it with the marked group and says so, and
+`mdmem disable codex` removes it.
 
 ## MCP server
 

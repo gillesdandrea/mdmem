@@ -606,7 +606,7 @@ async function cmdHook(args: string[]): Promise<void> {
     readPayload: () =>
       stdinPayload(process.stdin.isTTY, () => Bun.stdin.text()),
     cwd: process.cwd(),
-    // The agent decides where its hook stays silent: a global entry beside the project's own, Codex's where no config registers the server.
+    // The agent decides where its global entry stays silent: beside the project's own.
     silence: async (hookAgent, site) => {
       const hookSilence = getAdapter(hookAgent)?.hookSilence;
       return hookSilence === undefined

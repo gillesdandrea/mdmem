@@ -241,8 +241,7 @@ export interface HookRequest {
   /**
    * Why the agent's hook stays silent at `site`, one line naming the file that
    * decides it, or undefined where it speaks: a global entry stays silent where the
-   * project's own entries run, and Codex's one hook where no config registers the
-   * mdmem server.
+   * project's own entries run.
    */
   silence: (agent: HookAgent, site: HookSite) => Promise<string | undefined>;
 }

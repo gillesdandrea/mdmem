@@ -1,10 +1,15 @@
-import { join, resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
+import { mainCheckoutRoot } from "../core/git.ts";
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookSite } from "../core/hook.ts";
+import type { HookPart, HookSite } from "../core/hook.ts";
+import { realDir } from "../core/store.ts";
 import {
   agentStatus,
   commitLine,
+  globalSilence,
+  hookCommand,
   hookCommands,
   hooksLabel,
   MCP_SERVER,
@@ -27,18 +32,20 @@ import type {
   WiringPlan,
 } from "./adapter.ts";
 import {
-  hookGroupEntry,
+  configDocument,
   configStatus,
   describePlan,
+  hookGroupEntry,
   planConfigs,
   writeConfigs,
 } from "./json-config.ts";
-import type { JsonConfigFile } from "./json-config.ts";
-import {
-  planTomlTable,
-  tomlTableExists,
-  tomlTableStatus,
-} from "./toml-config.ts";
+import type {
+  HookHandler,
+  JsonConfigFile,
+  JsonEntry,
+  PlannedFile,
+} from "./json-config.ts";
+import { planTomlTable, tomlTableStatus } from "./toml-config.ts";
 import type { TomlTableEntry } from "./toml-config.ts";
 
 const ID = "codex";
@@ -47,30 +54,66 @@ const TITLE = "Codex CLI";
 /** The variable Codex reads its home from. */
 export const CODEX_HOME_ENV = "CODEX_HOME";
 
-// Codex CLI's session-start hook is one unmarked entry in $CODEX_HOME/hooks.json in
-// both scopes (ADR 0003, ADR 0004): Codex pins a hook's approval to the absolute
-// path of the file declaring it, so a hook in each worktree's .codex/hooks.json would
-// need approving in every worktree, while one in $CODEX_HOME/hooks.json is approved
-// once. The scope is where the mdmem MCP server is registered: $CODEX_HOME/config.toml
-// for the global scope, the project's .codex/config.toml, committed with the
-// repository and read only in a trusted folder, for the project scope. mdmem hook
-// codex prints nothing where neither registers it.
-const PROJECT_CONFIG = ".codex/config.toml";
+// Codex CLI is wired in either scope (ADR 0004): two session-start hooks injecting
+// the protocol and the index, and the mdmem MCP server. The global scope writes
+// $CODEX_HOME/hooks.json and $CODEX_HOME/config.toml; the project scope, the
+// repository's .codex/hooks.json and .codex/config.toml, committed with it (ADR 0003).
+// Codex reads a project's .codex/ folders from the launch folder up to the work
+// tree's root, a linked worktree's hooks from the main checkout's matching folder,
+// and runs a hook only once the user has reviewed it (verified in Codex 0.164.0).
+const HOOKS = ".codex/hooks.json";
+const CONFIG = ".codex/config.toml";
 // Seconds; Codex's default is 600.
 const HOOK_TIMEOUT = 10;
+const HOOKS_PATH = ["hooks", "SessionStart"];
 
-const commands = hookCommands(ID);
-
-// No matcher: mdmem hook skips a resumed or forked session itself.
-// additionalContextLimit 0 lifts Codex's cap of about 2,500 tokens per context, past
-// which it replaces the context with a preview and a temp-file path.
-const HOOK_GROUP = {
-  hooks: commands.map((command) => ({
+/** A command handler as Codex takes it. */
+function handler(command: string): HookHandler {
+  // additionalContextLimit 0 lifts Codex's cap of about 2,500 tokens per context, past
+  // which it replaces the context with a preview and a temp-file path.
+  return {
     type: "command",
     command,
     timeout: HOOK_TIMEOUT,
     additionalContextLimit: 0,
-  })),
+  };
+}
+
+// No matcher: mdmem hook skips a resumed or forked session itself.
+function hookEntry(global: boolean): JsonEntry {
+  const commands = hookCommands(ID, global);
+  return hookGroupEntry(hooksLabel(commands), HOOKS_PATH, {
+    hooks: commands.map(handler),
+  });
+}
+
+/** The project entry of one part, which a global entry of that part defers to. */
+function projectPartEntry(part: HookPart): JsonEntry {
+  const command = hookCommand(ID, part);
+  return hookGroupEntry(hooksLabel([command]), HOOKS_PATH, {
+    hooks: [handler(command)],
+  });
+}
+
+const PROJECT_HOOK = hookEntry(false);
+const GLOBAL_HOOK = hookEntry(true);
+// mdmem 0.2.0 wrote the project's unmarked group into $CODEX_HOME/hooks.json for both
+// scopes; there it speaks in every project, beside each project's own hook.
+const UNMARKED_GLOBAL_HOOK = PROJECT_HOOK;
+
+/** The global hook group, replacing 0.2.0's unmarked one in the same file. */
+const GLOBAL_HOOK_MIGRATING: JsonEntry = {
+  ...GLOBAL_HOOK,
+  has: (doc) =>
+    GLOBAL_HOOK.has(doc) && !(UNMARKED_GLOBAL_HOOK.hasPart?.(doc) ?? false),
+  add: (doc) => {
+    if (UNMARKED_GLOBAL_HOOK.hasPart?.(doc) ?? false) {
+      UNMARKED_GLOBAL_HOOK.remove(doc);
+    }
+    if (!GLOBAL_HOOK.has(doc)) {
+      GLOBAL_HOOK.add(doc);
+    }
+  },
 };
 
 /** The server table in `file`. */
@@ -84,12 +127,7 @@ function serverEntry(file: string): TomlTableEntry {
   };
 }
 
-const PROJECT_SERVER = serverEntry(PROJECT_CONFIG);
-
-/**
- * Codex's home: CODEX_HOME when set, else ~/.codex. A hook reads it too; whether
- * Codex passes CODEX_HOME to hooks is unverified, so without it ~/.codex is read.
- */
+/** Codex's home: CODEX_HOME when set, else ~/.codex. */
 function codexHome({ env, home }: UserContext): string {
   const fromEnv = env[CODEX_HOME_ENV];
   return fromEnv === undefined || fromEnv === ""
@@ -97,22 +135,26 @@ function codexHome({ env, home }: UserContext): string {
     : resolve(fromEnv);
 }
 
-/** The user config's server table, by its absolute path: the global scope's registration. */
-function userServer(ctx: UserContext): TomlTableEntry {
-  return serverEntry(join(codexHome(ctx), "config.toml"));
+/** A scope's files: the hooks file and the server's config, relative for the project's, absolute for the global scope's. */
+interface CodexFiles {
+  root: string;
+  hooks: string;
+  server: TomlTableEntry;
 }
 
-/** The user-wide hooks file, by its absolute path, shared by both scopes. */
-function hooksFile(ctx: UserContext): JsonConfigFile {
+function scopeFiles(ctx: AdapterContext, scope: Scope): CodexFiles {
+  if (scope === "project") {
+    return {
+      root: projectOf(ctx).root,
+      hooks: HOOKS,
+      server: serverEntry(CONFIG),
+    };
+  }
+  const home = codexHome(ctx);
   return {
-    file: join(codexHome(ctx), "hooks.json"),
-    entries: [
-      hookGroupEntry(
-        hooksLabel(commands),
-        ["hooks", "SessionStart"],
-        HOOK_GROUP
-      ),
-    ],
+    root: rootOf(ctx),
+    hooks: join(home, "hooks.json"),
+    server: serverEntry(join(home, "config.toml")),
   };
 }
 
@@ -129,39 +171,63 @@ function serverWiringEntry(
   };
 }
 
-/** What Codex's project-scope disable says of the hook it leaves. */
-async function keptHookLines(
-  ctx: AdapterContext,
+/** Whether the global hooks file holds 0.2.0's unmarked group; false when it cannot be read. */
+async function holdsUnmarkedGroup(
   root: string,
-  serverRemoved: boolean
-): Promise<{ kept: string[]; warnings: string[] }> {
-  const file = hooksFile(ctx);
-  const { entries, unreadable } = await configStatus(root, [file]);
-  const warnings = unreadable.map(unreadableRefusal);
-  if (!entries.some(({ present }) => present)) {
-    return { kept: [], warnings };
+  file: string
+): Promise<boolean> {
+  const read = await configDocument(root, file);
+  return "doc" in read && (UNMARKED_GLOBAL_HOOK.hasPart?.(read.doc) ?? false);
+}
+
+/** What to do about 0.2.0's unmarked group left in the global hooks file `file`. */
+function unmarkedGroupWarning(file: string): string {
+  return `${file} holds mdmem 0.2.0's unmarked hook group, which injects in every project beside the project's own hook — run \`mdmem enable ${ID}\` to replace it with the global scope's, or \`mdmem disable ${ID}\` to remove it`;
+}
+
+/** A scope's files that cannot be read: its hooks file's and its config's. */
+function scopeUnreadable(
+  hooks: { unreadable: UnreadableFile[] },
+  server: { unreadable?: UnreadableFile }
+): UnreadableFile[] {
+  return [
+    ...hooks.unreadable,
+    ...(server.unreadable === undefined ? [] : [server.unreadable]),
+  ];
+}
+
+/** Whether `path` is a directory. */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
   }
-  const user = userServer(ctx);
-  if (await tomlTableExists(root, user)) {
-    return {
-      kept: [
-        `The hook in ${file.file} stays, and keeps speaking in every project, since ${user.file} registers the mdmem server.`,
-      ],
-      warnings,
-    };
+}
+
+/**
+ * The hooks files Codex reads for a session in `cwd`: each folder from `cwd` up to
+ * the work tree's root `root` that holds a .codex directory gives one, read in a
+ * linked worktree from the main checkout's matching folder.
+ */
+function sessionHooksFiles(cwd: string, root: string): string[] {
+  const top = realDir(root);
+  const start = realDir(cwd);
+  const inside = start === top || start.startsWith(`${top}${sep}`);
+  const dirs: string[] = [];
+  for (let dir = start; ; dir = dirname(dir)) {
+    dirs.push(dir);
+    if (!inside || dir === top || dir === dirname(dir)) {
+      break;
+    }
   }
-  const removeIt = `\`mdmem disable ${ID}\` removes it.`;
-  // A server table other than mdmem's own is kept, and the hook still runs beside it.
-  const silenced =
-    serverRemoved || !(await tomlTableExists(root, PROJECT_SERVER));
-  return {
-    kept: [
-      silenced
-        ? `The hook in ${file.file} stays, and is now silent in this project, whose ${PROJECT_CONFIG} no longer registers the mdmem server. ${removeIt}`
-        : `The hook in ${file.file} stays. ${removeIt}`,
-    ],
-    warnings,
-  };
+  const main = mainCheckoutRoot(start);
+  return dirs
+    .filter((dir) => isDirectory(join(dir, ".codex")))
+    .map((dir) =>
+      main === null ? join(dir, HOOKS) : join(main, relative(top, dir), HOOKS)
+    )
+    .filter((file) => existsSync(file));
 }
 
 export const codexAdapter: AdapterFor<typeof ID> = {
@@ -176,35 +242,54 @@ export const codexAdapter: AdapterFor<typeof ID> = {
   }),
 
   async enable(ctx: AdapterContext, scope: Scope): Promise<WiringPlan> {
-    const root = scope === "project" ? projectOf(ctx).root : rootOf(ctx);
-    const server = scope === "project" ? PROJECT_SERVER : userServer(ctx);
+    const { root, hooks, server } = scopeFiles(ctx, scope);
+    const global = scope === "global";
+    const globalHooks = scopeFiles(ctx, "global").hooks;
+    const unmarked = await holdsUnmarkedGroup(rootOf(ctx), globalHooks);
     // Plan both files before writing either, so an unparseable one refuses with nothing written.
-    const file = hooksFile(ctx);
-    const hooks = await planConfigs(root, [file], "add");
-    const serverPlan = await planTomlTable(root, server, "add");
-    const plan = [...hooks, serverPlan];
+    const hooksPlan = await planConfigs(
+      root,
+      [
+        {
+          file: hooks,
+          entries: [global ? GLOBAL_HOOK_MIGRATING : PROJECT_HOOK],
+        },
+      ],
+      "add"
+    );
+    const plan: PlannedFile[] = [
+      ...hooksPlan,
+      await planTomlTable(root, server, "add"),
+    ];
+    const hooksChanged = hooksPlan.some(({ changed }) => changed.length > 0);
+    const after: string[] = [];
+    if (!global) {
+      after.push(
+        commitLine(
+          [HOOKS, CONFIG],
+          `they wire ${TITLE}`,
+          "Codex reads them only in a trusted folder, and runs the hooks only once each person has reviewed them in an interactive session (`codex exec` never asks), once per clone: its worktrees share the review."
+        )
+      );
+    }
+    if (global && unmarked) {
+      after.push(
+        `replaced mdmem 0.2.0's unmarked hook group in ${hooks} with the global scope's, marked --global.`
+      );
+    }
+    if (global && hooksChanged) {
+      after.push(
+        `Codex asks you once to review the hooks in ${hooks}, at its next interactive start or in /hooks; until then it runs neither, and \`codex exec\` never asks.`
+      );
+    }
     return {
       write: async () => {
         await writeConfigs(plan);
-        const review = hooks.some(({ changed }) => changed.length > 0)
-          ? [
-              `Codex asks you once to review the new hook in ${file.file}, at its next start or in /hooks: trust it, and it runs in every project, printing nothing where neither ${userServer(ctx).file} nor the project's ${PROJECT_CONFIG} registers the mdmem server.`,
-            ]
-          : [];
-        const commit =
-          scope === "project"
-            ? [
-                commitLine(
-                  [PROJECT_CONFIG],
-                  "it registers the mdmem MCP server",
-                  "Codex reads it only in a trusted folder."
-                ),
-              ]
-            : [];
         return {
           title: TITLE,
-          actions: [...describePlan(plan, "add"), ...review, ...commit],
-          warnings: [],
+          actions: [...describePlan(plan, "add"), ...after],
+          warnings:
+            !global && unmarked ? [unmarkedGroupWarning(globalHooks)] : [],
         };
       },
     };
@@ -214,123 +299,127 @@ export const codexAdapter: AdapterFor<typeof ID> = {
     if (scope === "project" && ctx.project === undefined) {
       return outsideProjectPlan(TITLE);
     }
-    if (scope === "project") {
-      const { root } = projectOf(ctx);
-      const server = await planTomlTable(root, PROJECT_SERVER, "remove");
-      const { kept, warnings } = await keptHookLines(
-        ctx,
-        root,
-        server.changed.length > 0
-      );
-      return {
-        write: async () => {
-          await writeConfigs([server]);
-          return {
-            title: TITLE,
-            actions: [...describePlan([server], "remove"), ...kept],
-            warnings,
-          };
-        },
-      };
-    }
-    const root = rootOf(ctx);
-    const server = await planTomlTable(root, userServer(ctx), "remove");
-    const hooks = await planConfigs(root, [hooksFile(ctx)], "remove");
-    const plan = [server, ...hooks];
-    // The one hook serves the project scope too.
-    const shared = hooks.some(({ changed }) => changed.length > 0)
-      ? [
-          `The hook served the project scope too: in a repository whose ${PROJECT_CONFIG} registers the mdmem server, Codex sessions now start without the memory until \`mdmem enable ${ID} --project\` runs there again.`,
-        ]
-      : [];
+    const { root, hooks, server } = scopeFiles(ctx, scope);
+    // The global scope also takes out 0.2.0's unmarked group, which its file may still hold.
+    const entries =
+      scope === "global" ? [GLOBAL_HOOK, UNMARKED_GLOBAL_HOOK] : [PROJECT_HOOK];
+    const plan = [
+      ...(await planConfigs(root, [{ file: hooks, entries }], "remove")),
+      await planTomlTable(root, server, "remove"),
+    ];
     return {
       write: async () => {
         await writeConfigs(plan);
         return {
           title: TITLE,
-          actions: [...describePlan(plan, "remove"), ...shared],
+          actions: describePlan(plan, "remove"),
           warnings: [],
         };
       },
     };
   },
 
-  // Any mdmem server table counts, extra keys included: Codex then runs that server.
+  // A global entry stays silent where a project hooks file Codex reads for the session holds the project's own entry for its part (ADR 0004).
   async hookSilence(
-    ctx: UserContext,
+    _ctx: UserContext,
     site: HookSite
   ): Promise<string | undefined> {
-    const root = site.projectRoot();
-    const user = userServer(ctx);
-    if (
-      (await tomlTableExists(root, user)) ||
-      (await tomlTableExists(root, PROJECT_SERVER))
-    ) {
+    if (!site.global) {
       return undefined;
     }
-    return `neither ${user.file} nor ${join(root, PROJECT_CONFIG)} registers the mdmem server, and Codex's hook speaks only where one does: run \`mdmem enable ${ID}\` to register it for every project, or \`mdmem enable ${ID} --project\` for this one.`;
+    const entry = projectPartEntry(site.part);
+    for (const file of sessionHooksFiles(site.cwd, site.projectRoot())) {
+      // oxlint-disable-next-line no-await-in-loop -- a few files, the nearest first
+      const read = await configDocument(site.cwd, file);
+      if ("doc" in read && entry.has(read.doc)) {
+        return globalSilence(file, site.part);
+      }
+    }
+    return undefined;
   },
 
   async status(ctx: AdapterContext): Promise<AgentStatus> {
-    const root = rootOf(ctx);
-    const user = userServer(ctx);
-    const hooks = await configStatus(root, [hooksFile(ctx)]);
-    const userStatus = await tomlTableStatus(root, user);
+    const global = scopeFiles(ctx, "global");
+    const globalFiles: JsonConfigFile[] = [
+      { file: global.hooks, entries: [GLOBAL_HOOK] },
+    ];
+    const globalHooks = await configStatus(global.root, globalFiles);
+    const globalServer = await tomlTableStatus(global.root, global.server);
     const { project } = ctx;
-    const projectStatus =
+    const inProject =
       project === undefined
         ? undefined
-        : await tomlTableStatus(project.root, PROJECT_SERVER);
-    // The hook alone wires no scope: it is shared by both, and by every project.
+        : {
+            hooks: await configStatus(project.root, [
+              { file: HOOKS, entries: [PROJECT_HOOK] },
+            ]),
+            server: await tomlTableStatus(project.root, serverEntry(CONFIG)),
+          };
     const scopes = [
-      scopeStatus(
-        "global",
-        [serverWiringEntry(user, userStatus), ...hooks.entries],
-        userStatus.present
-      ),
-      ...(projectStatus === undefined
+      {
+        scope: "global" as const,
+        entries: [
+          ...globalHooks.entries,
+          serverWiringEntry(global.server, globalServer),
+        ],
+      },
+      ...(inProject === undefined
         ? []
         : [
-            scopeStatus(
-              "project",
-              [
-                serverWiringEntry(PROJECT_SERVER, projectStatus),
-                ...hooks.entries,
+            {
+              scope: "project" as const,
+              entries: [
+                ...inProject.hooks.entries,
+                serverWiringEntry(serverEntry(CONFIG), inProject.server),
               ],
-              projectStatus.present
-            ),
+            },
           ]),
-    ];
+    ].map(({ scope, entries }) =>
+      scopeStatus(
+        scope,
+        entries,
+        entries.some(({ present }) => present)
+      )
+    );
     // Without CODEX_HOME, the user files read may not be the ones Codex reads, so they stay status warnings.
     const userKnown = !ctx.unknownEnv?.includes(CODEX_HOME_ENV);
-    const userUnreadable = [
-      ...hooks.unreadable,
-      ...(userStatus.unreadable === undefined ? [] : [userStatus.unreadable]),
-    ];
-    const unreadable = [
-      ...(projectStatus?.unreadable === undefined
+    const userUnreadable = scopeUnreadable(globalHooks, globalServer);
+    const projectUnreadable =
+      inProject === undefined
         ? []
-        : [projectStatus.unreadable]),
-      ...(userKnown ? userUnreadable : []),
-    ];
-    const warnings = userKnown ? [] : userUnreadable.map(unreadableRefusal);
+        : scopeUnreadable(inProject.hooks, inProject.server);
+    const unmarked =
+      userKnown && (await holdsUnmarkedGroup(global.root, global.hooks));
     return agentStatus(
       codexAdapter,
-      { scopes, unreadable, warnings },
+      {
+        scopes,
+        unreadable: [
+          ...projectUnreadable,
+          ...(userKnown ? userUnreadable : []),
+        ],
+        warnings: [
+          ...(userKnown ? [] : userUnreadable.map(unreadableRefusal)),
+          ...(unmarked ? [unmarkedGroupWarning(global.hooks)] : []),
+        ],
+      },
       (enabled) => ({
-        // One hook for both scopes, reported once, with the global scope's fix when it is enabled.
-        problems: userKnown
-          ? missingHooksProblem(
-              codexAdapter,
-              enabled.has("global") ? "global" : "project",
-              hooks.entries,
-              () => HOOK_PARTS.length
+        problems: scopes
+          .filter(
+            ({ scope }) =>
+              enabled.has(scope) && (scope === "project" || userKnown)
+          )
+          .flatMap(({ scope, entries }) =>
+            missingHooksProblem(codexAdapter, scope, entries, ({ label }) =>
+              label === PROJECT_HOOK.label || label === GLOBAL_HOOK.label
+                ? HOOK_PARTS.length
+                : 0
             )
-          : [],
+          ),
         notes: [
           enabled.has("project")
-            ? `${TITLE} reads ${PROJECT_CONFIG} only in a trusted folder, and runs the hook only once you have reviewed it: mdmem does not check either.`
-            : `${TITLE} runs the hook only once you have reviewed it: mdmem does not check that.`,
+            ? `${TITLE} reads ${HOOKS} and ${CONFIG} only in a trusted folder, and runs a hook only once you have reviewed it in an interactive session (\`codex exec\` never asks): mdmem does not check either.`
+            : `${TITLE} runs a hook only once you have reviewed it in an interactive session (\`codex exec\` never asks): mdmem does not check that.`,
         ],
       })
     );

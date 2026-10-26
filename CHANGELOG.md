@@ -12,10 +12,18 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 - `mdmem enable` without `--project` now writes each agent's user-wide files,
   so the agent is wired in every repository on the machine (the global scope);
   `mdmem enable --project` writes the repository's files, as 0.2.0's `enable`
-  did. `mdmem disable` mirrors it, and `disable --global` is gone: in the
-  global scope, `mdmem disable codex` removes Codex's hook and its user-wide
-  server. A repository 0.2.0 wired keeps working unchanged, as one wired in the
-  project scope.
+  did. `mdmem disable` mirrors it, and `disable --global` is gone. A
+  repository 0.2.0 wired for Claude Code or Bob keeps working unchanged, as one
+  wired in the project scope.
+- Codex's project scope writes its hooks to the repository's
+  `.codex/hooks.json`, beside the server in `.codex/config.toml`, and no longer
+  to `~/.codex/hooks.json`. A repository 0.2.0 wired for Codex has the server
+  but no hooks: run `mdmem enable codex --project` there once and commit
+  `.codex/hooks.json`, then review the hooks in an interactive Codex session.
+  0.2.0's unmarked hook group in `~/.codex/hooks.json` now injects beside each
+  project's own hook: `mdmem enable codex` replaces it with the global scope's
+  marked group, saying so, and `mdmem disable codex` removes it; `mdmem status`
+  and `mdmem enable codex --project` warn of it.
 - `enable --prefer` is gone: Claude Code's memories are imported when a store
   is created, which holds nothing they could conflict with, instead of by
   `enable claude-code`. A store that already exists gets no import.
@@ -42,8 +50,9 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   `[mcp_servers.mdmem]` in `~/.codex/config.toml`. Its hook entries run
   `mdmem hook <agent> <part> --global`, which stays silent where the project's
   own entry for that part is present, so a repository wired in both scopes
-  gets the protocol and the index once. Codex keeps one hook for both scopes,
-  speaking where either config registers the server.
+  gets the protocol and the index once. Codex's global entries also stay
+  silent below the root and in a linked worktree, where Codex reads the
+  project's `.codex/hooks.json` too (Codex 0.164.0).
 - The store is created on the first save: with no store yet, the first
   `memory_write` or `mdmem add` creates the home store with its `MEMORY.md`
   and a `project` file naming the root it serves, reporting its placement and
@@ -95,9 +104,8 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 - `mdmem hook` says on stderr why it printed nothing: no payload on stdin
   (with the `echo … | mdmem hook <agent> <part>` command that shows what it
   would inject in the working directory), an event other than SessionStart, a
-  resumed or forked session, a `--global` entry beside the project's own
-  (naming the project's settings file), or Codex's hook where no config
-  registers the server (naming both configs). Stdout and the exit code are
+  resumed or forked session, or a `--global` entry beside the project's own
+  (naming the project's settings or hooks file). Stdout and the exit code are
   unchanged, and stderr never reaches the agent's context.
 - A store mdmem creates, on the first memory write or with
   `mdmem store local`, opens its `MEMORY.md` with a header: an HTML comment

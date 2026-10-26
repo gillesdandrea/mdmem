@@ -104,15 +104,19 @@ const codexlessEnv = (dir: string) => ({
   HOME: join(dir, "home"),
 });
 
-/** Register the mdmem server for Codex in the session's project, then whether memory_check reports Codex's global hook missing. */
+/** Register the mdmem server in Codex's user config, at ~/.codex and at the CODEX_HOME the tests pass, then whether memory_check reports Codex's global hooks missing. */
 async function codexHookProblem({ client, store }: Session): Promise<boolean> {
   const project = dirname(store.root);
-  await mkdir(join(project, ".codex"));
-  await writeFile(
-    join(project, ".codex/config.toml"),
-    '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\n',
-    "utf-8"
-  );
+  for (const home of ["home/.codex", "codex"]) {
+    // oxlint-disable-next-line no-await-in-loop -- two files
+    await mkdir(join(project, home), { recursive: true });
+    // oxlint-disable-next-line no-await-in-loop -- two files
+    await writeFile(
+      join(project, home, "config.toml"),
+      '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\n',
+      "utf-8"
+    );
+  }
   const result = await client.callTool({ name: "memory_check", arguments: {} });
   return textOf(result).includes("Codex CLI: missing SessionStart hooks");
 }

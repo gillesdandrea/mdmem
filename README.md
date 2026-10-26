@@ -50,7 +50,7 @@ mdmem status                # show the store and each agent's wiring in both sco
 
 Every wired agent now sees the memory, in this repository and its worktrees. An
 agent's own first `memory_write` creates the store just as `add` does. Codex
-asks you to review its hook once; with `--project`, each agent also needs you
+asks you to review its hooks once; with `--project`, each agent also needs you
 to trust the folder, and Claude Code to approve the project's server; see
 [What happens in each agent](#what-happens-in-each-agent).
 
@@ -98,7 +98,7 @@ leaves the store.
 | Agent | Global scope writes | `--project` writes | Approvals mdmem cannot give for you |
 |---|---|---|---|
 | Claude Code | `~/.claude/settings.json`, `~/.claude.json` | `.claude/settings.json`, `.mcp.json` | project scope: trust the folder, approve the project's mdmem server |
-| Codex CLI | `~/.codex/hooks.json`, `~/.codex/config.toml` | `.codex/config.toml`, and the hook in `~/.codex/hooks.json`, shared by both scopes | review the hook once; project scope: trust the folder |
+| Codex CLI | `~/.codex/hooks.json`, `~/.codex/config.toml` | `.codex/hooks.json`, `.codex/config.toml` | review the hooks once (project scope: once per clone, interactively); project scope: trust the folder |
 | IBM Bob | `~/.bob/settings/settings.json`, `~/.bob/settings/mcp.json` | `.bob/settings.json`, `.bob/mcp.json` | project scope: trust the folder, launch Bob at the repository's root |
 
 With `--project`, commit the files `enable` names. Everyone working in the
@@ -115,13 +115,15 @@ Claude Code runs the hooks only once you trust the folder, and connects the
 project's server only once you approve it. Details:
 [Claude Code](docs/reference.md#claude-code).
 
-**Codex CLI.** The hook lives in `~/.codex/hooks.json` in both scopes, because
-Codex ties a hook's approval to the path of the file that declares it: one
-global hook is reviewed once, at Codex's next start or in `/hooks`, instead of
-once per worktree. The scope is where the server is registered, and the hook
-speaks only where your `~/.codex/config.toml` or the project's
-`.codex/config.toml` registers it. Details:
-[Codex CLI](docs/reference.md#codex-cli).
+**Codex CLI.** Codex runs a hook only once you have reviewed it in an
+interactive session, at its next start or in `/hooks`, and ties that review to
+the hooks file's path. The global scope's hooks are reviewed once per machine.
+The project scope's are reviewed once per clone by each person, and its
+worktrees share that review; `codex exec` never asks, so a headless session in a
+clone nobody reviewed runs no hook. Prefer the global scope, unless the team
+needs the wiring committed and each member reviews the project's hooks once.
+Codex reads the project's files only in a trusted folder, from any
+subdirectory. Details: [Codex CLI](docs/reference.md#codex-cli).
 
 **IBM Bob.** In the project scope, Bob runs workspace hooks and servers only in
 a trusted folder, and reads them only from the folder it was launched in, so
@@ -179,7 +181,7 @@ retry. Between clones, git merges memories like any other file.
 **Project-scope wiring and teammates.** The committed files wire every clone,
 including a teammate without mdmem: their Claude Code's auto memory is off,
 the committed hooks fail without blocking the session, and the committed
-servers fail to start (for Codex, only the server is committed). A worktree
+servers fail to start. A worktree
 checked out from a commit before the wiring is not wired, and `mdmem status`
 there says so; the global scope has neither gap.
 
@@ -188,7 +190,7 @@ there says so; the global scope has neither gap.
 ### The agent has no memory
 
 `mdmem enable` succeeding means the files are written, not that memory works:
-it cannot check folder trust in any agent, Codex's review of its hook, or
+it cannot check folder trust in any agent, Codex's review of its hooks, or
 Claude Code's approval of a project's server. Go down this list in the folder
 the agent was started in:
 
@@ -203,9 +205,11 @@ the agent was started in:
 3. **Folder trust.** Claude Code, Bob and Codex run a project's files only in a
    folder you have trusted. In the project scope, accept the trust dialog.
 4. **Codex's hook review.** Codex runs a new hook only once you have reviewed
-   it, at its next start or in `/hooks`, and asks again when a `SessionStart`
-   group before mdmem's in `~/.codex/hooks.json` is added or removed, or
-   mdmem's is edited.
+   it in an interactive session, at its next start or in `/hooks`; `codex exec`
+   never asks, so a clone nobody reviewed runs no project hook. It asks again
+   when a `SessionStart` group before mdmem's is added or removed, or mdmem's is
+   edited. In a repository wired in both scopes, review the project's hooks:
+   the global ones stay silent beside them.
 5. **Claude Code's server approval** (project scope). Claude Code asks each
    user to approve the server in `.mcp.json`; until then the mdmem tools are
    missing, and the agent writes memory files directly, which its sandbox
@@ -219,17 +223,13 @@ the agent was started in:
    subdirectory they get no protocol and no index, Bob no mdmem tools, and
    Claude Code keeps its auto memory on unless your user settings turn it off.
    Start them at the root, or wire the global scope.
-8. **A Codex worktree without `.codex/config.toml`** (project scope). A
-   worktree checked out from a commit before the wiring has no
-   `.codex/config.toml`, so Codex's hook prints nothing there. Bring the commit
-   in, or register the server globally with `mdmem enable codex`.
-9. **A resumed session.** The hooks print nothing on a resumed or forked
+8. **A resumed session.** The hooks print nothing on a resumed or forked
    session, whose history already holds what its start injected, so a session
    started before mdmem was wired still lacks it when resumed. Start a new one.
-10. **See what the hook injects.** Run `mdmem hook <agent> index` in the
-    folder: with no payload it prints nothing, and its stderr line gives the
-    `echo … | mdmem hook <agent> index` command that shows what the agent's
-    session gets there. Wherever the hook prints nothing, that line says why.
+9. **See what the hook injects.** Run `mdmem hook <agent> index` in the
+   folder: with no payload it prints nothing, and its stderr line gives the
+   `echo … | mdmem hook <agent> index` command that shows what the agent's
+   session gets there. Wherever the hook prints nothing, that line says why.
 
 Hooks that do not run leave an agent with no protocol and no index, and mdmem
 has no fallback. Every state `status` and the check report:

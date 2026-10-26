@@ -655,6 +655,13 @@ const codexHooksFile = z
   })
   .strict();
 
+const CODEX_HOOKS_FILE = ".codex/hooks.json";
+const CODEX_GLOBAL_GROUP = {
+  hooks: CODEX_HOOK_GROUP.hooks.map((handler) => ({
+    ...handler,
+    command: `${handler.command} --global`,
+  })),
+};
 const CODEX_HOOKS = {
   hooks: {
     PreToolUse: [
@@ -676,13 +683,25 @@ args = ["a"]
 model = "mini"
 `;
 
+/** `CODEX_HOOKS` with `group` added to its SessionStart groups, as JSON text. */
+function codexHooksWith(group: unknown): string {
+  const hooks = {
+    hooks: {
+      ...CODEX_HOOKS.hooks,
+      SessionStart: [...CODEX_HOOKS.hooks.SessionStart, group],
+    },
+  };
+  return `${JSON.stringify(hooks, null, 2)}\n`;
+}
+
 /**
- * A project with the given hooks.json and .codex/config.toml texts, whose Codex
- * home is `codexHome` (as CODEX_HOME), else ~/.codex under the temp home.
+ * A project with the given texts: `hooks` in Codex's home's hooks.json,
+ * `projectHooks` and `toml` in the project's .codex/; Codex's home is `codexHome`
+ * (as CODEX_HOME), else ~/.codex under the temp home.
  */
 async function codexProject(
   codexHome: string | undefined,
-  files: { hooks?: string; toml?: string } = {}
+  files: { hooks?: string; projectHooks?: string; toml?: string } = {}
 ): Promise<{ root: string; ctx: AdapterContext; hooksPath: string }> {
   const project = await tempProject();
   const ctx =
@@ -695,38 +714,37 @@ async function codexProject(
     await mkdir(home, { recursive: true });
     await writeFile(hooksPath, files.hooks, "utf-8");
   }
-  if (files.toml !== undefined) {
+  const projectFiles = [
+    [CODEX_HOOKS_FILE, files.projectHooks],
+    [CODEX_CONFIG, files.toml],
+  ] as const;
+  if (projectFiles.some(([, text]) => text !== undefined)) {
     await mkdir(join(project.root, ".codex"));
-    await writeFile(join(project.root, CODEX_CONFIG), files.toml, "utf-8");
   }
+  await Promise.all(
+    projectFiles.map(([file, text]) =>
+      text === undefined
+        ? undefined
+        : writeFile(join(project.root, file), text, "utf-8")
+    )
+  );
   return { root: project.root, ctx, hooksPath };
 }
 
 describe("codex wiring", () => {
-  test("enable merges the hook group into the global hooks.json and the server into .codex/config.toml, keeping the rest, and another project finds the hook present", async () => {
-    const shared = await realpath(
-      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
-    );
-    const codexHome = join(shared, "codex-home");
-    const first = await codexProject(codexHome, {
-      hooks: CODEX_HOOKS_TEXT,
+  test("enable --project merges the hook group into .codex/hooks.json and the server into .codex/config.toml, keeping the rest, and writes nothing in Codex's home", async () => {
+    const { root, ctx, hooksPath } = await codexProject(undefined, {
+      projectHooks: CODEX_HOOKS_TEXT,
       toml: CODEX_TOML,
     });
-    const second = await codexProject(codexHome);
     try {
-      const enabled = await wire(codexAdapter.enable(first.ctx, "project"));
-      const wiredHooks = {
-        hooks: {
-          ...CODEX_HOOKS.hooks,
-          SessionStart: [...CODEX_HOOKS.hooks.SessionStart, CODEX_HOOK_GROUP],
-        },
-      };
-      const hooks = await readText(first.hooksPath);
-      expect(hooks).toBe(`${JSON.stringify(wiredHooks, null, 2)}\n`);
+      const enabled = await wire(codexAdapter.enable(ctx, "project"));
+      const hooks = await readText(join(root, CODEX_HOOKS_FILE));
+      expect(hooks).toBe(codexHooksWith(CODEX_HOOK_GROUP));
       expect(codexHooksFile.safeParse(JSON.parse(hooks ?? "{}")).success).toBe(
         true
       );
-      const toml = await readText(join(first.root, CODEX_CONFIG));
+      const toml = await readText(join(root, CODEX_CONFIG));
       expect(toml).toBe(`${CODEX_TOML}\n${CODEX_SECTION}`);
       expect(Bun.TOML.parse(toml ?? "")).toEqual({
         model: "gpt-5",
@@ -736,81 +754,66 @@ describe("codex wiring", () => {
         },
         profiles: { fast: { model: "mini" } },
       });
-      expect(
-        enabled.actions.some((a) => a.includes("review the new hook"))
-      ).toBe(true);
-      expect(await wired(codexAdapter, first.ctx)).toBe(true);
-
-      // a second run changes nothing
-      const again = await wire(codexAdapter.enable(first.ctx, "project"));
-      expect(again.actions).toContain(
-        `${first.hooksPath} already holds mdmem's entries`
+      expect(existsSync(dirname(hooksPath))).toBe(false);
+      expect(enabled.actions.at(-1)).toStartWith(
+        `Commit ${CODEX_HOOKS_FILE} and ${CODEX_CONFIG}: they wire Codex CLI`
       );
-      expect(again.actions).toContain(
-        `${CODEX_CONFIG} already holds mdmem's entries`
-      );
-      expect(await readText(first.hooksPath)).toBe(hooks);
-      expect(await readText(join(first.root, CODEX_CONFIG))).toBe(toml);
-
-      // another project: the global hook is already there, the project gets its own server
-      const other = await wire(codexAdapter.enable(second.ctx, "project"));
-      expect(other.actions).toContain(
-        `${second.hooksPath} already holds mdmem's entries`
-      );
-      expect(other.actions.some((a) => a.includes("review the new hook"))).toBe(
-        false
-      );
-      expect(await readText(first.hooksPath)).toBe(hooks);
-      expect(await readText(join(second.root, CODEX_CONFIG))).toBe(
-        CODEX_SECTION
-      );
-    } finally {
-      await Promise.all(
-        [shared, first.root, second.root].map((dir) =>
-          rm(dir, { recursive: true, force: true })
-        )
-      );
-    }
-  });
-
-  test("disable --project removes the project's server and keeps the hook; disable in the global scope removes the hook too", async () => {
-    // no CODEX_HOME: the hook goes in ~/.codex/hooks.json
-    const { root, ctx, hooksPath } = await codexProject(undefined, {
-      hooks: CODEX_HOOKS_TEXT,
-      toml: CODEX_TOML,
-    });
-    try {
-      await wire(codexAdapter.enable(ctx, "project"));
-      expect(await readText(hooksPath)).not.toBe(CODEX_HOOKS_TEXT);
-
-      const disabled = await wire(codexAdapter.disable(ctx, "project"));
-      expect(await readText(join(root, CODEX_CONFIG))).toBe(CODEX_TOML);
-      expect(disabled.actions).toContain(
-        `The hook in ${hooksPath} stays, and is now silent in this project, whose ${CODEX_CONFIG} no longer registers the mdmem server. \`mdmem disable codex\` removes it.`
-      );
+      expect(enabled.warnings).toEqual([]);
       const status = await codexAdapter.status(ctx);
       expect(
-        projectEntries(status).map(({ file, present }) => [file, present])
+        status.scopes.map((one) => [one.scope, one.wired, one.enabled])
       ).toEqual([
-        [CODEX_CONFIG, false],
-        [hooksPath, true],
+        ["global", false, false],
+        ["project", true, true],
       ]);
+      expect(status.problems).toEqual([]);
 
-      const global = await wire(codexAdapter.disable(ctx, "global"));
-      expect(await readText(hooksPath)).toBe(CODEX_HOOKS_TEXT);
-      expect(global.actions.at(-1)).toBe(
-        `The hook served the project scope too: in a repository whose ${CODEX_CONFIG} registers the mdmem server, Codex sessions now start without the memory until \`mdmem enable codex --project\` runs there again.`
-      );
-      const after = await codexAdapter.status(ctx);
-      expect(
-        after.scopes.flatMap(({ entries }) => entries).some((e) => e.present)
-      ).toBe(false);
+      // a second run changes nothing
+      const again = await wire(codexAdapter.enable(ctx, "project"));
+      expect(again.actions.slice(0, 2)).toEqual([
+        `${CODEX_HOOKS_FILE} already holds mdmem's entries`,
+        `${CODEX_CONFIG} already holds mdmem's entries`,
+      ]);
+      expect(await readText(join(root, CODEX_HOOKS_FILE))).toBe(hooks);
+      expect(await readText(join(root, CODEX_CONFIG))).toBe(toml);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("global enable registers the server in the user config.toml beside the hook, and the hook then speaks in a project with no config of its own; disable deletes files that held only mdmem's entries", async () => {
+  test("disable --project removes exactly the project's hook group and server, leaving the global scope's", async () => {
+    const { root, ctx, hooksPath } = await codexProject(undefined, {
+      projectHooks: CODEX_HOOKS_TEXT,
+      toml: CODEX_TOML,
+    });
+    try {
+      await wire(codexAdapter.enable(ctx, "global"));
+      await wire(codexAdapter.enable(ctx, "project"));
+      const globalHooks = await readText(hooksPath);
+
+      const disabled = await wire(codexAdapter.disable(ctx, "project"));
+      expect(disabled.actions).toEqual([
+        `removed in ${CODEX_HOOKS_FILE}: SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index"`,
+        `removed in ${CODEX_CONFIG}: [mcp_servers.mdmem]`,
+      ]);
+      expect(await readText(join(root, CODEX_HOOKS_FILE))).toBe(
+        CODEX_HOOKS_TEXT
+      );
+      expect(await readText(join(root, CODEX_CONFIG))).toBe(CODEX_TOML);
+      expect(await readText(hooksPath)).toBe(globalHooks);
+      const status = await codexAdapter.status(ctx);
+      expect(
+        status.scopes.map((one) => [one.scope, one.wired, one.enabled])
+      ).toEqual([
+        ["global", true, true],
+        ["project", false, false],
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("global enable writes the --global hook group to hooks.json and the server to config.toml in Codex's home; disable deletes files that held only mdmem's entries", async () => {
     const shared = await realpath(
       await mkdtemp(join(tmpdir(), "mdmem-codex-"))
     );
@@ -820,9 +823,14 @@ describe("codex wiring", () => {
     try {
       const enabled = await wire(codexAdapter.enable(ctx, "global"));
       expect(await readText(userConfig)).toBe(CODEX_SECTION);
-      expect(existsSync(hooksPath)).toBe(true);
-      expect(existsSync(join(root, CODEX_CONFIG))).toBe(false);
+      expect(JSON.parse((await readText(hooksPath)) ?? "{}")).toEqual({
+        hooks: { SessionStart: [CODEX_GLOBAL_GROUP] },
+      });
+      expect(existsSync(join(root, ".codex"))).toBe(false);
       expect(enabled.actions.join("\n")).not.toContain("Commit");
+      expect(enabled.actions.at(-1)).toBe(
+        `Codex asks you once to review the hooks in ${hooksPath}, at its next interactive start or in /hooks; until then it runs neither, and \`codex exec\` never asks.`
+      );
       const status = await codexAdapter.status(ctx);
       expect(
         status.scopes.map((one) => [one.scope, one.wired, one.enabled])
@@ -833,9 +841,9 @@ describe("codex wiring", () => {
       expect(status.problems).toEqual([]);
 
       const disabled = await wire(codexAdapter.disable(ctx, "global"));
-      expect(disabled.actions.slice(0, 2)).toEqual([
-        `deleted ${userConfig}: it held only mdmem's entries`,
+      expect(disabled.actions).toEqual([
         `deleted ${hooksPath}: it held only mdmem's entries`,
+        `deleted ${userConfig}: it held only mdmem's entries`,
       ]);
       expect(existsSync(userConfig)).toBe(false);
       expect(existsSync(hooksPath)).toBe(false);
@@ -846,11 +854,45 @@ describe("codex wiring", () => {
     }
   });
 
+  test("0.2.0's unmarked group in Codex's home is warned of by status and enable --project, and global enable replaces it, saying so", async () => {
+    const { root, ctx, hooksPath } = await codexProject(undefined, {
+      hooks: codexHooksWith(CODEX_HOOK_GROUP),
+    });
+    const warning = `${hooksPath} holds mdmem 0.2.0's unmarked hook group, which injects in every project beside the project's own hook — run \`mdmem enable codex\` to replace it with the global scope's, or \`mdmem disable codex\` to remove it`;
+    try {
+      const before = await codexAdapter.status(ctx);
+      expect(before.enabled).toBe(false);
+      expect(before.warnings).toEqual([warning]);
+
+      const project = await wire(codexAdapter.enable(ctx, "project"));
+      expect(project.warnings).toEqual([warning]);
+      expect(await readText(hooksPath)).toBe(codexHooksWith(CODEX_HOOK_GROUP));
+
+      const enabled = await wire(codexAdapter.enable(ctx, "global"));
+      expect(await readText(hooksPath)).toBe(
+        codexHooksWith(CODEX_GLOBAL_GROUP)
+      );
+      expect(enabled.actions).toContain(
+        `replaced mdmem 0.2.0's unmarked hook group in ${hooksPath} with the global scope's, marked --global.`
+      );
+      const after = await codexAdapter.status(ctx);
+      expect(after.warnings).toEqual([]);
+
+      // global disable takes out an unmarked group left beside the marked one
+      await writeFile(
+        hooksPath,
+        `${JSON.stringify({ hooks: { SessionStart: [CODEX_HOOK_GROUP, CODEX_GLOBAL_GROUP] } })}\n`,
+        "utf-8"
+      );
+      await wire(codexAdapter.disable(ctx, "global"));
+      expect(existsSync(hooksPath)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("an unparseable .codex/config.toml is refused before the hook is written", async () => {
-    const shared = await realpath(
-      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
-    );
-    const { root, ctx, hooksPath } = await codexProject(join(shared, "home"), {
+    const { root, ctx } = await codexProject(undefined, {
       toml: "model = \n",
     });
     try {
@@ -860,19 +902,14 @@ describe("codex wiring", () => {
       await expect(refused).rejects.toThrow(
         `${CODEX_CONFIG} is not valid TOML (Error parsing TOML (1, 1): Expected value, reached EOF): fix it, then run the command again`
       );
-      expect(existsSync(hooksPath)).toBe(false);
+      expect(existsSync(join(root, CODEX_HOOKS_FILE))).toBe(false);
       expect(await readText(join(root, CODEX_CONFIG))).toBe("model = \n");
     } finally {
-      await Promise.all(
-        [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
-      );
+      await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("a server table and global hook group of mdmem's edited by hand count as wired, are kept by enable, and disable removes them", async () => {
-    const shared = await realpath(
-      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
-    );
+  test("a server table and hook group of mdmem's edited by hand count as wired, are kept by enable, and disable removes them", async () => {
     const group = {
       hooks: CODEX_HOOK_GROUP.hooks.map((handler) => ({
         ...handler,
@@ -881,59 +918,44 @@ describe("codex wiring", () => {
     };
     const hooksText = `${JSON.stringify({ hooks: { SessionStart: [group] } }, null, 2)}\n`;
     const toml = `model = "x"\n\n${CODEX_SECTION}startup_timeout_sec = 30\nenv = { FOO = "bar" }\n`;
-    const { root, ctx, hooksPath } = await codexProject(join(shared, "home"), {
-      hooks: hooksText,
+    const { root, ctx } = await codexProject(undefined, {
+      projectHooks: hooksText,
       toml,
     });
     try {
       expect(await wired(codexAdapter, ctx)).toBe(true);
       await wire(codexAdapter.enable(ctx, "project"));
-      expect(await readText(hooksPath)).toBe(hooksText);
+      expect(await readText(join(root, CODEX_HOOKS_FILE))).toBe(hooksText);
       expect(await readText(join(root, CODEX_CONFIG))).toBe(toml);
 
       await wire(codexAdapter.disable(ctx, "project"));
-      await wire(codexAdapter.disable(ctx, "global"));
       expect(await readText(join(root, CODEX_CONFIG))).toBe('model = "x"\n');
-      expect(existsSync(hooksPath)).toBe(false);
+      expect(existsSync(join(root, CODEX_HOOKS_FILE))).toBe(false);
     } finally {
-      await Promise.all(
-        [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
-      );
+      await rm(root, { recursive: true, force: true });
     }
   });
 
   test("enable refuses a [mcp_servers.mdmem] with another command, naming the file and the table, before the hook is written", async () => {
-    const shared = await realpath(
-      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
-    );
     const toml =
       '[mcp_servers.mdmem]\ncommand = "bun"\nargs = ["run", "/dev/mdmem/src/cli/index.ts", "mcp"]\n';
-    const { root, ctx, hooksPath } = await codexProject(join(shared, "home"), {
-      toml,
-    });
+    const { root, ctx } = await codexProject(undefined, { toml });
     try {
       await expect(codexAdapter.enable(ctx, "project")).rejects.toThrow(
         new RefusalError(
           `${CODEX_CONFIG}: [mcp_servers.mdmem] holds a value that is not mdmem's, so mdmem will not overwrite it: remove or rename it, or set its command to "mdmem" and its args to ["mcp"], then run the command again`
         )
       );
-      expect(existsSync(hooksPath)).toBe(false);
+      expect(existsSync(join(root, CODEX_HOOKS_FILE))).toBe(false);
       expect(await readText(join(root, CODEX_CONFIG))).toBe(toml);
     } finally {
-      await Promise.all(
-        [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
-      );
+      await rm(root, { recursive: true, force: true });
     }
   });
 
   test("enable appends the server in a CRLF config.toml's own line ending", async () => {
-    const shared = await realpath(
-      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
-    );
     const crlf = 'model = "x"\r\n[a]\r\nb = 1\r\n';
-    const { root, ctx } = await codexProject(join(shared, "home"), {
-      toml: crlf,
-    });
+    const { root, ctx } = await codexProject(undefined, { toml: crlf });
     try {
       await wire(codexAdapter.enable(ctx, "project"));
       expect(await readText(join(root, CODEX_CONFIG))).toBe(
@@ -941,20 +963,13 @@ describe("codex wiring", () => {
       );
       expect(await wired(codexAdapter, ctx)).toBe(true);
     } finally {
-      await Promise.all(
-        [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
-      );
+      await rm(root, { recursive: true, force: true });
     }
   });
 
   test("enable adds the server to an inline mcp_servers table in place, and disable takes it out", async () => {
-    const shared = await realpath(
-      await mkdtemp(join(tmpdir(), "mdmem-codex-"))
-    );
     const inline = 'model = "x"\nmcp_servers = { other = { command = "o" } }\n';
-    const { root, ctx } = await codexProject(join(shared, "home"), {
-      toml: inline,
-    });
+    const { root, ctx } = await codexProject(undefined, { toml: inline });
     try {
       await wire(codexAdapter.enable(ctx, "project"));
       expect(await readText(join(root, CODEX_CONFIG))).toBe(
@@ -970,51 +985,47 @@ describe("codex wiring", () => {
         mcp_servers: { other: { command: "o" } },
       });
     } finally {
-      await Promise.all(
-        [shared, root].map((dir) => rm(dir, { recursive: true, force: true }))
-      );
+      await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("status reports a config.toml it cannot read as a problem, and a hooks.json only in a project wired for Codex", async () => {
+  test("status reports the project's files it cannot read as problems, and Codex's home's hooks.json only once the global scope is enabled", async () => {
     const shared = await realpath(
       await mkdtemp(join(tmpdir(), "mdmem-codex-"))
     );
-    const { ctx, root, hooksPath } = await codexProject(join(shared, "home"), {
+    const codexHome = join(shared, "home");
+    const { ctx, root, hooksPath } = await codexProject(codexHome, {
       hooks: "{ not json",
+      projectHooks: "[]",
       toml: "model = \n",
     });
     const hooksUnreadable = `${hooksPath} is not valid JSON (JSON Parse error: Expected '}')`;
     try {
       const status = await codexAdapter.status(ctx);
       expect(status.enabled).toBe(false);
-      // one line, as the refusal is
+      // one line each, as the refusal is
       expect(status.problems).toEqual([
+        `Codex CLI: ${CODEX_HOOKS_FILE} does not hold a JSON object: fix it, then run the check again`,
         `Codex CLI: ${CODEX_CONFIG} is not valid TOML (Error parsing TOML (1, 1): Expected value, reached EOF): fix it, then run the check again`,
       ]);
-      // the hooks file is user-wide: a project not wired for Codex only warns of it
+      // the hooks file is user-wide: with the global scope not enabled, it is only a warning
       expect(status.warnings).toEqual([
         `${hooksUnreadable}: fix it, then run the command again`,
       ]);
 
-      await writeFile(join(root, CODEX_CONFIG), CODEX_SECTION, "utf-8");
+      await writeFile(join(codexHome, "config.toml"), CODEX_SECTION, "utf-8");
       const enabled = await codexAdapter.status(ctx);
-      expect(enabled.problems).toEqual([
-        `Codex CLI: ${hooksUnreadable}: fix it, then run the check again`,
-      ]);
+      expect(enabled.problems).toContain(
+        `Codex CLI: ${hooksUnreadable}: fix it, then run the check again`
+      );
       expect(enabled.warnings).toEqual([]);
       // where CODEX_HOME cannot be known, the hooks file stays a warning
       const unknown = await codexAdapter.status({
         ...ctx,
         unknownEnv: ["CODEX_HOME"],
       });
-      expect(unknown.problems).toEqual([]);
+      expect(unknown.problems.join("\n")).not.toContain(hooksPath);
       expect(unknown.warnings).toEqual([
-        `${hooksUnreadable}: fix it, then run the command again`,
-      ]);
-
-      const disabled = await wire(codexAdapter.disable(ctx, "project"));
-      expect(disabled.warnings).toEqual([
         `${hooksUnreadable}: fix it, then run the command again`,
       ]);
     } finally {
@@ -1747,7 +1758,8 @@ describe("cli", () => {
       expect(all.out).toContain("\nCodex CLI:\n");
       expect(existsSync(join(root, CLAUDE_SETTINGS))).toBe(true);
       expect(existsSync(join(root, ".codex/config.toml"))).toBe(true);
-      expect(existsSync(join(root, "codex-home/hooks.json"))).toBe(true);
+      expect(existsSync(join(root, ".codex/hooks.json"))).toBe(true);
+      expect(existsSync(join(root, "codex-home/hooks.json"))).toBe(false);
       expect(existsSync(join(root, ".bob"))).toBe(false);
     });
   });
@@ -1890,7 +1902,9 @@ describe("cli", () => {
       expect(
         runCliWith(project, ["enable", "codex", "--project"], env).code
       ).toBe(0);
+      expect(runCliWith(project, ["enable", "codex"], env).code).toBe(0);
       const hooksPath = join(tmp, "codex-home", "hooks.json");
+      const userConfig = join(tmp, "codex-home", "config.toml");
       expect(existsSync(hooksPath)).toBe(true);
 
       // no repository and no store: the global scope leaves the directory's own .codex/config.toml alone
@@ -1904,15 +1918,15 @@ describe("cli", () => {
       expect(disable.out).toBe(
         [
           "Codex CLI:",
-          `  ${join(tmp, "codex-home", "config.toml")} holds none of mdmem's entries`,
           `  deleted ${hooksPath}: it held only mdmem's entries`,
-          `  The hook served the project scope too: in a repository whose ${CODEX_CONFIG} registers the mdmem server, Codex sessions now start without the memory until \`mdmem enable codex --project\` runs there again.`,
+          `  deleted ${userConfig}: it held only mdmem's entries`,
           "",
         ].join("\n")
       );
       expect(existsSync(hooksPath)).toBe(false);
       expect(await readText(join(outside, CODEX_CONFIG))).toBe(toml);
       expect(existsSync(join(project, CODEX_CONFIG))).toBe(true);
+      expect(existsSync(join(project, CODEX_HOOKS_FILE))).toBe(true);
 
       const bob = runCliWith(outside, ["disable", "bob", "--project"], env);
       expect(bob.code).toBe(0);
@@ -2107,9 +2121,13 @@ function runHookCli(
   };
 }
 
-/** The stderr line of Codex's hook in `root`, a project whose configs do not register the server, with runHookCli's CODEX_HOME. */
-function codexSilence(root: string): string {
-  return `mdmem hook printed nothing: neither ${join(root, "codex-home", "config.toml")} nor ${join(root, CODEX_CONFIG)} registers the mdmem server, and Codex's hook speaks only where one does: run \`mdmem enable codex\` to register it for every project, or \`mdmem enable codex --project\` for this one.\n`;
+/** What `mdmem hook <agent> protocol --global` prints when `file` holds the project's own entry. */
+function deferred(file: string) {
+  return {
+    code: 0,
+    out: "",
+    err: `mdmem hook printed nothing: this --global entry stays silent because ${file} holds the project's own mdmem hook for the protocol part, which injects it instead.\n`,
+  };
 }
 
 /** The header mdmem writes at the top of MEMORY.md when it creates the store of the project at `root`. */
@@ -2276,12 +2294,9 @@ describe("hook", () => {
     });
   });
 
-  test("Bob's and Codex's hooks inject both parts through the CLI, Codex's in a project whose .codex/config.toml registers the server, and nothing in a forked Codex session", async () => {
+  test("Bob's and Codex's hooks inject both parts through the CLI, and nothing in a forked Codex session", async () => {
     await withCliProject(async (root, store) => {
       await seedMemories(store, 1);
-      // Codex's hook speaks only where .codex/config.toml registers the server
-      await mkdir(join(root, ".codex"));
-      await writeFile(join(root, CODEX_CONFIG), CODEX_SECTION, "utf-8");
       const storeDir = join(root, ".mdmem");
       const index = await readFile(join(storeDir, "MEMORY.md"), "utf-8");
       for (const agent of ["bob", "codex"]) {
@@ -2297,7 +2312,7 @@ describe("hook", () => {
           `Store: local, ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
         );
       }
-      // the same project wired for Codex: a forked Codex session gets neither part
+      // a forked Codex session gets neither part
       const fork = { ...startPayload(root), source: "fork" };
       for (const part of HOOK_PARTS) {
         expect(runHookCli(root, part, fork, "codex")).toEqual({
@@ -2309,7 +2324,7 @@ describe("hook", () => {
     });
   });
 
-  test("a payload that does not parse is reported outside git too, and prints nothing in a project not wired for Codex", async () => {
+  test("a payload that does not parse is reported outside git too, and prints nothing for a --global entry beside the project's own", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
       const bare = join(tmp, "project");
@@ -2321,11 +2336,19 @@ describe("hook", () => {
       expect(injected(hook.out)).toBe(
         "mdmem could not load the memory: the hook payload is not a JSON object"
       );
-      await withCliProject((root) => {
-        expect(runHookCli(root, "index", "[]", "codex")).toEqual({
+      await withCliProject(async (root) => {
+        await mkdir(join(root, ".codex"));
+        await writeFile(
+          join(root, CODEX_HOOKS_FILE),
+          JSON.stringify({ hooks: { SessionStart: [CODEX_HOOK_GROUP] } }),
+          "utf-8"
+        );
+        expect(
+          runHookCli(root, "index", "[]", "codex", {}, ["--global"])
+        ).toEqual({
           code: 0,
           out: "",
-          err: codexSilence(root),
+          err: `mdmem hook printed nothing: this --global entry stays silent because ${join(root, CODEX_HOOKS_FILE)} holds the project's own mdmem hook for the index part, which injects it instead.\n`,
         });
       });
     } finally {
@@ -2333,53 +2356,57 @@ describe("hook", () => {
     }
   });
 
-  test("Codex's global hook prints nothing in a project whose .codex/config.toml does not register the mdmem server, naming both configs on stderr", async () => {
-    await withCliProject(async (root) => {
-      expect(runHookCli(root, "protocol", startPayload(root), "codex")).toEqual(
-        { code: 0, out: "", err: codexSilence(root) }
-      );
+  test("Codex's global hook speaks where no .codex/hooks.json Codex reads holds the project's entry, and in a linked worktree defers to the main checkout's", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
+    try {
+      const repo = join(tmp, "repo");
+      await mkdir(repo);
+      await gitRepo(repo);
+      const worktree = join(tmp, "wt");
+      git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
+      const group = JSON.stringify({
+        hooks: { SessionStart: [CODEX_HOOK_GROUP] },
+      });
+      const global = (cwd: string) =>
+        runHookCli(cwd, "protocol", startPayload(cwd), "codex", {}, [
+          "--global",
+        ]);
+      // no project hooks file: the global entry speaks
+      expect(injected(global(repo).out)).not.toBe("");
+      // a .codex/hooks.json without mdmem's entry does not silence it
+      await mkdir(join(repo, ".codex"));
+      await writeFile(join(repo, CODEX_HOOKS_FILE), CODEX_HOOKS_TEXT, "utf-8");
+      expect(injected(global(repo).out)).not.toBe("");
 
-      await mkdir(join(root, ".codex"));
+      await writeFile(join(repo, CODEX_HOOKS_FILE), group, "utf-8");
+      expect(global(repo)).toEqual(deferred(join(repo, CODEX_HOOKS_FILE)));
+      // the project's own entry always speaks
+      expect(
+        injected(runHookCli(repo, "protocol", startPayload(repo), "codex").out)
+      ).not.toBe("");
+      // from a subdirectory, Codex reads every .codex/ up to the root, a nearer one without hooks.json too
+      const deep = join(repo, "sub", "deep");
+      await mkdir(deep, { recursive: true });
+      expect(global(deep)).toEqual(deferred(join(repo, CODEX_HOOKS_FILE)));
+      await mkdir(join(repo, "sub", ".codex"));
+      expect(global(deep)).toEqual(deferred(join(repo, CODEX_HOOKS_FILE)));
+
+      // a linked worktree without .codex/: Codex reads no project hooks there
+      expect(injected(global(worktree).out)).not.toBe("");
+      // with one, Codex reads the main checkout's hooks file in its place
+      await mkdir(join(worktree, ".codex"));
       await writeFile(
-        join(root, CODEX_CONFIG),
-        '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\n',
+        join(worktree, CODEX_HOOKS_FILE),
+        CODEX_HOOKS_TEXT,
         "utf-8"
       );
-      const hook = runHookCli(root, "protocol", startPayload(root), "codex");
-      expect(hook.code).toBe(0);
-      expect(injected(hook.out)).toBe(getMemoryProtocol(join(root, ".mdmem")));
-
-      // a server table the user extended still registers the server
-      await writeFile(
-        join(root, CODEX_CONFIG),
-        '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\nstartup_timeout_sec = 20\n',
-        "utf-8"
-      );
-      const extended = runHookCli(
-        root,
-        "protocol",
-        startPayload(root),
-        "codex"
-      );
-      expect(injected(extended.out)).toBe(
-        getMemoryProtocol(join(root, ".mdmem"))
-      );
-
-      // disable keeps a table that is not mdmem's own (another command), so the hook is not called silent
-      const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex") };
-      expect(runCliWith(root, ["enable", "codex", "--project"], env).code).toBe(
-        0
-      );
-      await writeFile(
-        join(root, CODEX_CONFIG),
-        '[mcp_servers.mdmem]\ncommand = "mdmem-dev"\nargs = ["mcp"]\n',
-        "utf-8"
-      );
-      const disable = runCliWith(root, ["disable", "codex", "--project"], env);
-      expect(disable.out).toBe(
-        `Codex CLI:\n  ${CODEX_CONFIG} holds none of mdmem's entries\n  The hook in ${join(root, "codex", "hooks.json")} stays. \`mdmem disable codex\` removes it.\n`
-      );
-    });
+      expect(global(worktree)).toEqual(deferred(join(repo, CODEX_HOOKS_FILE)));
+      await writeFile(join(repo, CODEX_HOOKS_FILE), CODEX_HOOKS_TEXT, "utf-8");
+      await writeFile(join(worktree, CODEX_HOOKS_FILE), group, "utf-8");
+      expect(injected(global(worktree).out)).not.toBe("");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 
   test("a payload cwd in a linked worktree resolves the main checkout's store", async () => {
@@ -2603,7 +2630,7 @@ describe("status and check", () => {
       expect(status.agents.flatMap(({ notes }) => notes)).toEqual([
         "Claude Code runs the project's hooks only in a folder whose trust dialog you accepted, and connects the .mcp.json server only once you approve it: mdmem does not check either.",
         "IBM Bob runs workspace hooks and MCP servers only in a trusted folder: mdmem does not check whether this one is.",
-        "Codex CLI reads .codex/config.toml only in a trusted folder, and runs the hook only once you have reviewed it: mdmem does not check either.",
+        "Codex CLI reads .codex/hooks.json and .codex/config.toml only in a trusted folder, and runs a hook only once you have reviewed it in an interactive session (`codex exec` never asks): mdmem does not check either.",
       ]);
     });
   });
@@ -2857,7 +2884,7 @@ describe("status and check", () => {
     });
   });
 
-  test("the check reports hooks that will not run: an entry missing, Claude Code's and Bob's hooks off, Codex's global hook missing", async () => {
+  test("the check reports hooks that will not run: an entry missing, Claude Code's and Bob's hooks off, Codex's project hooks missing", async () => {
     await withWiredRepo(async ({ root, ctx }) => {
       const settings = join(root, CLAUDE_SETTINGS);
       const claude = JSON.parse(await readFile(settings, "utf-8")) as {
@@ -2876,14 +2903,13 @@ describe("status and check", () => {
         JSON.stringify({ ...bobSettings, disableWorkspaceHooks: true }),
         "utf-8"
       );
-      const hooksPath = join(ctx.env.CODEX_HOME ?? "", "hooks.json");
-      await rm(hooksPath);
+      await rm(join(root, CODEX_HOOKS_FILE));
 
       expect(await projectProblems(ctx)).toEqual([
         'Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (.claude/settings.json), so its sessions start without what that hook injects — run `mdmem enable claude-code --project`',
         "Claude Code: .claude/settings.json sets disableAllHooks to true, so Claude Code runs no hooks and its sessions start without the memory protocol and the index — remove it",
         "IBM Bob: .bob/settings.json sets disableWorkspaceHooks to true, so Bob runs none of the workspace's hooks and its sessions start without the memory protocol and the index — remove it",
-        `Codex CLI: missing SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index" (${hooksPath}), so its sessions start without what those hooks inject — run \`mdmem enable codex --project\``,
+        `Codex CLI: missing SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index" (${CODEX_HOOKS_FILE}), so its sessions start without what those hooks inject — run \`mdmem enable codex --project\``,
       ]);
     });
   });
@@ -3462,11 +3488,12 @@ describe("scopes and store creation", () => {
         expect(status.out).toContain(`  ✓ ${title} (project)\n`);
       }
 
-      // the global entries stay silent beside the project's own, naming its file; Codex has one hook
+      // the global entries stay silent beside the project's own, naming its file
       const payload = startPayload(root);
       for (const [agent, settings] of [
         ["claude-code", ".claude/settings.json"],
         ["bob", ".bob/settings.json"],
+        ["codex", ".codex/hooks.json"],
       ] as const) {
         for (const part of HOOK_PARTS) {
           expect(
@@ -3496,6 +3523,16 @@ describe("scopes and store creation", () => {
         );
         expect(injected(below.out)).toBe(getMemoryProtocol(dir));
       }
+      // Codex reads .codex/ up to the work tree's root, so its global hook stays silent below it too
+      expect(
+        runHookCli(sub, "protocol", startPayload(sub), "codex", env, [
+          "--global",
+        ])
+      ).toEqual({
+        code: 0,
+        out: "",
+        err: `mdmem hook printed nothing: this --global entry stays silent because ${join(root, CODEX_HOOKS_FILE)} holds the project's own mdmem hook for the protocol part, which injects it instead.\n`,
+      });
 
       // a project's server registration alone does not silence the global hook
       expect(
