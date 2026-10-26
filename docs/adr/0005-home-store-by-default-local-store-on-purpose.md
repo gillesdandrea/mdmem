@@ -1,0 +1,25 @@
+# Home store by default, local store on purpose
+
+A project's store lives in one of two placements. The **home store**, the default, is `~/.mdmem/<key>/`, where the key is the project's root path encoded as Claude Code encodes its own project keys (every character that is not an ASCII letter or digit becomes `-`, a long key is cut and hashed), so `~/.mdmem/` and `~/.claude/projects/` name a project the same way. The **local store** is `.mdmem/` at the project's root, created only on purpose with `mdmem store local`, for a team that wants to commit it. The root is the repository, the parent of the git common dir, so every worktree, subdirectory and submodule shares one store; outside git it is the working directory itself, with no walk-up, as Claude Code does. One rule resolves the store everywhere, in the hook, the MCP server and the CLI: the local store if `<root>/.mdmem/` exists, else the home store. Any memory write creates the store that rule names; the hook speaks in every directory, git or not.
+
+We chose this on 2026-10-26 over the in-tree store alone (ADR 0003, ADR 0004), which put a visible `.mdmem/` in every repository an agent saved in, raised the gitignore question everywhere, could not serve a directory outside git without an explicit store, and created a store inside a bare repository's git directory; and over the home store alone, which would have left a team no way to share memory through git. Placement is a property of the project, never of an agent: two agents told different placements would stop sharing, which is the one thing mdmem is for.
+
+## Considered and declined
+
+- **Default by git state** (home outside git, local in a repository): re-creates the in-tree costs in every repository and makes "where are my memories" depend on `git init`. Declined; the local store is the opt-in for one purpose, sharing through git.
+- **A first-commit hash as the key**, which would share a store across clones and survive a move: declined for now; the path key has no `git init` seam, since a directory keeps its path when it becomes a repository, and the hash key stays a later option.
+- **Claude Code's own memory directory as the home store**, which would let Claude's auto memory stay on with no import: declined. Claude's key encoding is undocumented and changed between 2.1.302 (per launch directory) and 2.1.306 (per repository root, verified 2026-10-25); Claude's own consolidation would edit files behind mdmem's index; a user without Claude Code would get a `~/.claude/` tree. mdmem keeps the encoding as its own key from now on, so a change in Claude's never moves a store.
+- **A `--local` flag on `enable`**: declined, one way to change placement.
+- **A `--yes` on `mdmem store local|home`**: declined; the move is reversible by the opposite command and refuses rather than overwrites.
+- **A mechanical merge of two stores**: declined; deciding conflicts is the consolidation's job.
+
+## Consequences
+
+- A home store has the same layout as a local one, the memories and `MEMORY.md` directly in the directory, plus a small `project` file naming the root it serves; a move between placements is a directory move. `mdmem store` prints the placement and path; `mdmem store local` and `mdmem store home` move the store and refuse when the destination already holds memories, naming the other store; `mdmem store list` prints every home store with its key, project path, memory count and whether the project still exists. No automatic pruning.
+- When both placements hold memories, the local one wins, `mdmem status` warns and names the other, and the consolidation prompt takes the other store as a second source to fold in.
+- `enable --project` writes wiring files only; it creates no store. The import of Claude Code's memories runs at store creation, whichever placement is created, and is a copy between two directories of the same key.
+- Outside git a session in a subdirectory is its own project with its own home store, as in Claude Code.
+- Every line that names the store names its placement: `Store: home, ~/.mdmem/<key>` or `Store: local, <root>/.mdmem`. The gitignore note appears for a local store only.
+- The no-tools fallback (reading the store's files, writing a memory file, `mdmem reindex`) works only where the agent can reach the store: a sandboxed agent (Codex, child processes included) cannot write a home store without the MCP tools, and the protocol says so. The MCP server, which runs outside the sandboxes, is the write path (ADR 0003).
+- The hook's remaining silences are a missing payload, a resumed or forked session, and `--global` where the project's own hook speaks.
+- `.memory/` means nothing to mdmem any more; the two stores that existed were renamed by hand. ADR 0003's first paragraph and ADR 0004's outside-git rule are superseded by this record.

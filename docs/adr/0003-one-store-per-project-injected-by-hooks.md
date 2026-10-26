@@ -1,5 +1,7 @@
 # One store per project, injected by hooks, saved through MCP
 
+> Superseded in part by [ADR 0005](0005-home-store-by-default-local-store-on-purpose.md): the store is `~/.mdmem/<key>/` by default and `.mdmem/` at the root only on purpose; outside git the working directory is the project, with no walk-up. The wiring and the MCP write path stand.
+
 > Superseded in part by [ADR 0004](0004-two-wiring-scopes-store-on-first-save.md): the consequences on wiring as committed project files and on Codex's per-project server describe the project scope only; the global scope wires the agent's user-wide files and creates the store on the first save.
 
 A project has one memory store, a real `.memory/` directory at the repository's root: the parent of the git common dir, or a bare repository's own directory. Every worktree and subdirectory resolves to it, a submodule uses its superproject's, and without git it is the first `.memory/` above the working directory. Each supported agent (Claude Code, IBM Bob, Codex CLI) is wired the same way: session-start hooks run `mdmem` to inject the memory protocol and the index, and the agent saves through the mdmem MCP server. In a project using mdmem, Claude Code's own auto memory is turned off, and its existing memories are imported once.

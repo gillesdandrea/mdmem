@@ -7,11 +7,23 @@ A project's file-based memory, in the same format as Claude Code's auto memory, 
 ### Memory store
 
 **Memory store**:
-A project's shared memory: the `.memory/` directory of memory documents, read and written by every agent on the project.
+A project's shared memory: a directory of memory documents, read and written by every agent on the project, in one of two placements.
 _Avoid_: memory directory (Claude Code's private auto memory), memory folder, brain
 
+**Placement**:
+Where a project's memory store lives: home or local. A property of the project, never of an agent.
+_Avoid_: location, mode, scope (an agent's wiring)
+
+**Home store**:
+A memory store under `~/.mdmem/`, keyed by its project's path, invisible in the project's tree and never shared through git; the default placement.
+_Avoid_: global store, user store
+
+**Local store**:
+A memory store at `.mdmem/` in the project's root, created on purpose, which travels with the repository when committed.
+_Avoid_: tree store, project store, in-repo store
+
 **Project**:
-The unit that owns one memory store: a git repository, every worktree, subdirectory and submodule included; outside git, the directory holding `.memory/`.
+The unit that owns one memory store: a git repository, every worktree, subdirectory and submodule included; outside git, the working directory itself.
 _Avoid_: workspace (an agent's launch folder), repo (when worktrees are meant too)
 
 **Memory document**:
