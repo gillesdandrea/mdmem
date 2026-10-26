@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import {
   checkStore,
@@ -21,12 +21,12 @@ import {
 import { HOOK_CONTEXT_MAX_CHARS } from "../src/core/hook.ts";
 import {
   claudeProjectDir,
-  claudeProjectKey,
   formatImport,
   importClaudeMemories,
   planClaudeImport,
 } from "../src/core/import.ts";
 import type { ImportOptions } from "../src/core/import.ts";
+import { projectKey } from "../src/core/key.ts";
 import { parseMemory, serializeMemory } from "../src/core/memory.ts";
 import type { Memory, MemoryType } from "../src/core/memory.ts";
 import type { MemoryInput } from "../src/core/operations.ts";
@@ -765,16 +765,19 @@ describe("check", () => {
   });
 });
 
+/** A home store path as long as a deep project's: the protocol names it, and still fits its cap. */
+const LONG_STORE = `/Users/someone/.mdmem/${"-very-long-project-path".repeat(9)}`;
+
 describe("templates", () => {
   test("the memory protocol renders every placeholder and stays under one hook entry's cap", () => {
-    const protocol = getMemoryProtocol();
+    const protocol = getMemoryProtocol(LONG_STORE);
     expect(protocol).not.toContain("{{");
     expect(protocol).toContain("9,500 characters");
     expect([...protocol].length).toBeLessThan(HOOK_CONTEXT_MAX_CHARS);
   });
 
   test("the memory protocol stays within its cap, about three times Claude Code's memory block, and keeps its rules", () => {
-    const protocol = getMemoryProtocol();
+    const protocol = getMemoryProtocol(LONG_STORE);
     expect([...protocol].length).toBeLessThanOrEqual(PROTOCOL_MAX_CHARS);
     for (const needle of [
       "memory_list",
@@ -816,17 +819,35 @@ describe("templates", () => {
     ],
     [
       "expect the changed-on-disk notice after a memory_write",
-      "After your own `memory_write`, your harness may report that a file under `.memory/` changed on disk: that is the write you just made, not another edit, and needs no re-read.",
+      "After your own `memory_write`, your harness may report that a file in the store changed on disk: that is the write you just made, not another edit, and needs no re-read.",
+    ],
+    [
+      "write in the store's directory without the tools, and tell the user when a home store is out of reach",
+      "Without the mdmem tools, write `<name>.md` in `/home/u/.mdmem/-p` directly, then run `mdmem reindex`; delete with `mdmem delete <name>`. A home store, under `~/.mdmem/`, lies outside the project: a sandboxed agent may not reach it without the tools, so tell the user when you cannot save there.",
     ],
   ])("the memory protocol says to %s", (_behavior, sentence) => {
     // The template is hard-wrapped, so compare sentences across its line breaks.
-    expect(getMemoryProtocol().replaceAll("\n", " ")).toContain(sentence);
+    expect(
+      getMemoryProtocol("/home/u/.mdmem/-p").replaceAll("\n", " ")
+    ).toContain(sentence);
   });
 
   test("the consolidation prompt renders with no leftover placeholder", () => {
-    const prompt = getConsolidatePrompt("/project/.memory");
+    const prompt = getConsolidatePrompt("/project/.mdmem");
     expect(prompt).not.toContain("{{");
-    expect(prompt).toContain("Memory store: `/project/.memory`");
+    expect(prompt).toContain("Memory store: `/project/.mdmem`\n\n");
+    expect(prompt).not.toContain("second store");
+  });
+
+  test("the consolidation prompt with a second store says to merge it in, then delete it", () => {
+    const prompt = getConsolidatePrompt(
+      "/project/.mdmem",
+      undefined,
+      "/home/u/.mdmem/-project"
+    );
+    expect(prompt).toContain(
+      "Memory store: `/project/.mdmem`\n\nA second store to fold in: `/home/u/.mdmem/-project`. Read each of its memories and merge it into the memory store above, as Phase 3 merges new signal; once every one is merged, delete that store's directory, or ask the user to.\n"
+    );
   });
 });
 
@@ -871,29 +892,55 @@ describe("location", () => {
     return path;
   }
 
-  test("a checkout, its linked worktrees and subdirectories share the main checkout's store", async () => {
+  test("a checkout, its linked worktrees and subdirectories share one store, the home store until a local one exists", async () => {
+    const home = await dir("home");
     const repo = await dir("repo");
     await gitRepo(repo);
     git(repo, "worktree", "add", "-q", join(tmp, "wt"), "-b", "wt");
     const deep = await dir("repo", "pkg", "deep");
-    // inside git, a .memory lower down is ignored
-    await dir("repo", "pkg", ".memory");
+    // a .mdmem below the root is not the project's
+    await dir("repo", "pkg", ".mdmem");
+    const homeStore = join(home, ".mdmem", projectKey(repo));
+    const starts = [repo, join(tmp, "wt"), deep];
 
-    expect(locateStore(repo)).toEqual({
-      root: repo,
-      dir: join(repo, ".memory"),
-      exists: false,
-      inRepository: true,
-    });
-    await dir("repo", ".memory");
-    for (const start of [repo, join(tmp, "wt"), deep]) {
-      expect(locateStore(start)).toEqual({
+    for (const start of starts) {
+      expect(locateStore(start, home)).toEqual({
         root: repo,
-        dir: join(repo, ".memory"),
-        exists: true,
-        inRepository: true,
+        dir: homeStore,
+        placement: "home",
+        exists: false,
+        local: join(repo, ".mdmem"),
+        home: homeStore,
       });
     }
+    await mkdir(homeStore, { recursive: true });
+    for (const start of starts) {
+      expect(locateStore(start, home)).toMatchObject({
+        dir: homeStore,
+        placement: "home",
+        exists: true,
+      });
+    }
+    await dir("repo", ".mdmem");
+    for (const start of starts) {
+      expect(locateStore(start, home)).toMatchObject({
+        root: repo,
+        dir: join(repo, ".mdmem"),
+        placement: "local",
+        exists: true,
+        home: homeStore,
+      });
+    }
+  });
+
+  test("the home store's key is the one the import reads Claude Code's project directory by", async () => {
+    const home = await dir("home");
+    const root = await dir("my project_1.x");
+    const { home: homeStore } = locateStore(root, home);
+    expect(basename(homeStore)).toBe(
+      basename(claudeProjectDir(root, { env: {}, home }))
+    );
+    expect(basename(homeStore)).toBe(projectKey(root));
   });
 
   test(
@@ -942,35 +989,40 @@ describe("location", () => {
     expect(locateStore(join(tmp, "x.git")).root).toBe(join(tmp, "x.git"));
   });
 
-  // The no-git tests stop the walk at the temp dir, so a stray .memory above it cannot leak in.
-  test("without git, the first .memory above, else the working directory", async () => {
-    const start = await dir("proj", "a", "b");
-    expect(locateStore(start, tmp)).toEqual({
-      root: start,
-      dir: join(start, ".memory"),
+  test("without git, the working directory is the project, with no walk-up: two siblings get two home stores", async () => {
+    const home = await dir("home");
+    // a local store above the working directory is another project's
+    await dir("proj", ".mdmem");
+    const a = await dir("proj", "a");
+    const b = await dir("proj", "b");
+
+    const [inA, inB] = [locateStore(a, home), locateStore(b, home)];
+    expect(inA).toEqual({
+      root: a,
+      dir: join(home, ".mdmem", projectKey(a)),
+      placement: "home",
       exists: false,
-      inRepository: false,
+      local: join(a, ".mdmem"),
+      home: join(home, ".mdmem", projectKey(a)),
     });
-    await dir("proj", ".memory");
-    expect(locateStore(start, tmp)).toEqual({
-      root: join(tmp, "proj"),
-      dir: join(tmp, "proj", ".memory"),
-      exists: true,
-      inRepository: false,
+    expect(inB.root).toBe(b);
+    expect(inB.dir).not.toBe(inA.dir);
+    await dir("proj", "a", ".mdmem");
+    expect(locateStore(a, home)).toMatchObject({
+      dir: join(a, ".mdmem"),
+      placement: "local",
     });
   });
 
-  test("without git, the walk stops before the home directory", async () => {
+  test("in the home directory, ~/.mdmem holds the home stores and is never a local store", async () => {
     const home = await dir("home");
-    await dir("home", ".memory");
-    await dir(".memory");
-    const start = await dir("home", "a", "b");
+    await dir("home", ".mdmem", "-some-project");
 
-    expect(locateStore(start, home)).toEqual({
-      root: start,
-      dir: join(start, ".memory"),
+    expect(locateStore(home, home)).toMatchObject({
+      root: home,
+      dir: join(home, ".mdmem", projectKey(home)),
+      placement: "home",
       exists: false,
-      inRepository: false,
     });
   });
 });
@@ -1020,7 +1072,7 @@ describe("import from Claude Code", () => {
     home = join(tmp, "home");
     await mkdir(repo);
     await gitRepo(repo);
-    store = new MemoryStore(join(repo, ".memory"));
+    store = new MemoryStore(join(repo, ".mdmem"));
     await reindex(store);
     options = { home, env: {} };
   });
@@ -1030,23 +1082,21 @@ describe("import from Claude Code", () => {
 
   /** The Claude memory directory of `path`'s key under the temp home. */
   function claudeDir(path = repo): string {
-    return join(home, ".claude", "projects", claudeProjectKey(path), "memory");
+    return join(home, ".claude", "projects", projectKey(path), "memory");
   }
 
   test("the key mirrors Claude Code's encoding, and the environment can override the directory and the key", () => {
-    expect(claudeProjectKey("/private/tmp/x/main")).toBe("-private-tmp-x-main");
-    expect(claudeProjectKey("/srv/repos/bare.git")).toBe("-srv-repos-bare-git");
-    expect(claudeProjectKey(`${PROBE_DIR}/key probe_a.b~c+d@e(f)#é`)).toBe(
+    expect(projectKey("/private/tmp/x/main")).toBe("-private-tmp-x-main");
+    expect(projectKey("/srv/repos/bare.git")).toBe("-srv-repos-bare-git");
+    expect(projectKey(`${PROBE_DIR}/key probe_a.b~c+d@e(f)#é`)).toBe(
       `${PROBE_KEY}-key-probe-a-b-c-d-e-f---`
     );
-    expect(claudeProjectKey(`${PROBE_DIR}/emo😀x`)).toBe(`${PROBE_KEY}-emo--x`);
+    expect(projectKey(`${PROBE_DIR}/emo😀x`)).toBe(`${PROBE_KEY}-emo--x`);
     // Over 200 characters: cut, then a hash, positive and negative before Math.abs.
     expect(
-      claudeProjectKey(
-        `${PROBE_DIR}/longprobe/${"a".repeat(124)}/${"b".repeat(44)}`
-      )
+      projectKey(`${PROBE_DIR}/longprobe/${"a".repeat(124)}/${"b".repeat(44)}`)
     ).toBe(`${PROBE_KEY}-longprobe-${"a".repeat(80)}-xi76tx`);
-    expect(claudeProjectKey(`${PROBE_DIR}/longneg0/${"c".repeat(150)}`)).toBe(
+    expect(projectKey(`${PROBE_DIR}/longneg0/${"c".repeat(150)}`)).toBe(
       `${PROBE_KEY}-longneg0-${"c".repeat(81)}-tpx2ye`
     );
 
@@ -1143,7 +1193,7 @@ describe("import from Claude Code", () => {
     // Claude's pointer describes Claude's version, so a kept file does not take it.
     expect(await store.view("MEMORY.md")).toBe("");
     expect(formatImport(result)).toEqual([
-      "Nothing to import: .memory/ keeps its own version of every file that differs.",
+      "Nothing to import: the store keeps its own version of every file that differs.",
       "Other versions, not imported, left in Claude's directories:",
       `    a.md (from ${claudeDir()})`,
       "These directories can be deleted once you no longer need the versions not imported, which are nowhere else:",
@@ -1180,14 +1230,14 @@ describe("import from Claude Code", () => {
   });
 
   test("a store that does not exist yet when the import is planned gets no backup", async () => {
-    const fresh = new MemoryStore(join(tmp, "fresh", ".memory"));
+    const fresh = new MemoryStore(join(tmp, "fresh", ".mdmem"));
     await mkdir(dirname(fresh.root));
     await put(
       join(
         home,
         ".claude",
         "projects",
-        claudeProjectKey(dirname(fresh.root)),
+        projectKey(dirname(fresh.root)),
         "memory"
       ),
       "a.md",
@@ -1198,7 +1248,7 @@ describe("import from Claude Code", () => {
     const result = await write();
     expect(result.backup).toBeUndefined();
     expect(fresh.exists("a.md")).toBe(true);
-    expect(formatImport(result)[0]).toBe("Copied into .memory/:");
+    expect(formatImport(result)[0]).toBe("Copied into the store:");
   });
 
   test("honours CLAUDE_CONFIG_DIR and CLAUDE_CODE_PROJECT_DIR_NAME for the sources and the backup", async () => {
@@ -1229,7 +1279,7 @@ describe("import from Claude Code", () => {
     await put(claudeDir(), "a.md", claudeMemoryText("a", "At the real key"));
 
     const result = await importClaudeMemories(
-      new MemoryStore(join(link, ".memory")),
+      new MemoryStore(join(link, ".mdmem")),
       options
     );
 

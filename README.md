@@ -5,14 +5,18 @@ Shared, Claude-style file-based memory for any coding agent.
 Claude Code's auto memory is yours alone: one directory per user and per
 checkout under `~/.claude/projects/<key>/memory/`, invisible to Codex, Bob and
 your teammates, and a linked worktree gets its own. mdmem keeps the same memory
-format in the project, `.memory/` at the repository's root, so every agent you
-run there (Claude Code, Codex CLI, IBM Bob) reads and writes one store, every
-worktree shares it, and, if you commit it, so does every teammate. Agents save
-through a small MCP server rather than by editing files, because their
-sandboxes refuse writes outside the working directory, which is where the store
-is from a linked worktree ([ADR 0003](docs/adr/0003-one-store-per-project-injected-by-hooks.md)).
+format in one store per project, so every agent you run there (Claude Code,
+Codex CLI, IBM Bob) reads and writes one store and every worktree shares it.
+The store lives in your home directory, `~/.mdmem/<key>/`, unless you move it
+into the project with `mdmem store local` to share it with your teammates
+through git. Agents save through a small MCP server rather than by editing
+files, because their sandboxes refuse writes outside the working directory,
+which is where a home store always is
+([ADR 0003](docs/adr/0003-one-store-per-project-injected-by-hooks.md),
+[ADR 0005](docs/adr/0005-home-store-by-default-local-store-on-purpose.md)).
 
-- **One store** per repository, shared by its worktrees and subdirectories.
+- **One store** per project: a repository with its worktrees and
+  subdirectories, or outside git the directory you work in.
 - **Every agent**: a memory one agent saves is in the others' next session.
 - **Claude Code's format**: one Markdown file per fact and a `MEMORY.md` index;
   where Claude Code is wired, its existing memories are imported when the store
@@ -37,10 +41,10 @@ Everyone who clones a repository wired with `--project` needs it too.
 
 ```bash
 mdmem enable --all          # wire the agents found on this machine, once, for every repository
-cd ~/dev/my-project         # any git repository
+cd ~/dev/my-project         # any project, a git repository or not
 mdmem add --type feedback --name uses-bun \
   --description "This project uses bun, not node" \
-  --body "Use bun for scripts and tests."   # creates .memory/ at the repository's root
+  --body "Use bun for scripts and tests."   # creates the home store, ~/.mdmem/<key>/
 mdmem status                # show the store and each agent's wiring in both scopes
 ```
 
@@ -52,6 +56,26 @@ to trust the folder, and Claude Code to approve the project's server; see
 
 To wire one repository for everyone who clones it instead, run
 `mdmem enable --all --project` in it and commit the files it names.
+
+## Where the store lives
+
+A project's store has one of two placements, and every agent, the hooks, the
+MCP server and the CLI find it by the same rule: the local store when
+`.mdmem/` exists at the project's root, else the home store.
+
+- **Home store** (the default): `~/.mdmem/<key>/`, where the key is the
+  project's root path encoded as Claude Code names its project directories.
+  Nothing appears in the repository, and it works in any directory, git or not.
+- **Local store**: `.mdmem/` at the repository's root, for a team that commits
+  it. `mdmem store local` moves the home store there, and `mdmem store home`
+  moves it back; each refuses when the other store already holds memories.
+
+The project's root is the repository, so its worktrees, subdirectories and
+submodules share one store; outside git it is the working directory itself.
+`mdmem store` prints the placement and path, and `mdmem store list` lists every
+home store with its project, flagging one whose project directory is gone.
+Both placements hold the same files: the memories, `MEMORY.md`, and a `project`
+file naming the root the store serves.
 
 ## What happens in each agent
 
@@ -83,9 +107,10 @@ repository then needs mdmem on their PATH, and so bun, until mdmem is on npm.
 **Claude Code.** `enable claude-code` turns Claude's own auto memory off (on
 the whole machine in the global scope, for the repository in the project
 scope), adds the two hooks, and allows the mdmem tools so they run without
-asking. When the store is created in a repository where Claude Code is wired,
-in either scope, mdmem imports the memories Claude Code kept for the repository
-and its worktrees, once, and lists what it copied. In the project scope,
+asking. When the store is created in a project where Claude Code is wired, in
+either scope and in either placement, mdmem imports the memories Claude Code
+kept for the project and its worktrees, once, and lists what it copied.
+`enable` itself creates no store. In the project scope,
 Claude Code runs the hooks only once you trust the folder, and connects the
 project's server only once you approve it. Details:
 [Claude Code](docs/reference.md#claude-code).
@@ -120,17 +145,20 @@ memories once, when the store is created
 
 ## Team workflow
 
-**Ignore `.memory/` or commit it.** mdmem never edits `.gitignore`; the command
-that creates the store, and `mdmem status`, say when git does not ignore it.
+**Share the store through git with `mdmem store local`.** The home store is
+shared by your agents and your worktrees on this machine, not with your
+teammates. `mdmem store local` moves it to `.mdmem/` at the repository's root;
+commit that directory, and your teammates get the memories with the code and
+review changes to them in pull requests. mdmem never edits `.gitignore`;
+`mdmem store local` and `mdmem status` say when git does not ignore `.mdmem/`.
+A committed local store suits projects without worktrees: each linked worktree
+checks out its own copy of `.mdmem/`, which mdmem ignores there, since every
+worktree uses the main checkout's store.
 
-- Ignored, the store is shared by your agents and your worktrees on this
-  machine, not with your teammates. To ignore it in every repository at once,
-  add `.memory/` to your global gitignore
-  (`git config --global core.excludesFile`).
-- Committed, your teammates get the memories with the code and review changes
-  to them in pull requests. It suits projects without worktrees: each linked
-  worktree checks out its own copy of `.memory/`, which mdmem ignores there,
-  since every worktree uses the main checkout's store.
+**A clone meets a local store.** Once `.mdmem/` exists, every agent uses it, and
+a home store a teammate already had for the project is no longer read.
+`mdmem status` warns when that home store holds memories, and names the command
+that folds them in: `mdmem consolidate --from <home store>`.
 
 **Several people writing one store.** A committed store has no per-person part.
 A `user` memory describes whoever's agent saved it, and every teammate's agent
@@ -179,8 +207,9 @@ the agent was started in:
    mdmem's is edited.
 5. **Claude Code's server approval** (project scope). Claude Code asks each
    user to approve the server in `.mcp.json`; until then the mdmem tools are
-   missing, and the agent writes memory files directly. Approve it, then run
-   `mdmem reindex` to bring the index up to date.
+   missing, and the agent writes memory files directly, which its sandbox
+   refuses for a home store. Approve it, then run `mdmem reindex` to bring the
+   index up to date.
 6. **Hooks switched off.** `disableAllHooks: true` in Claude Code's settings,
    or `disableWorkspaceHooks: true` in `.bob/settings.json`. `status` reports
    both.
@@ -218,7 +247,7 @@ Shorten descriptions, or merge or delete memories, for instance through a
 
 ## Memory format
 
-One file, one fact: `.memory/<name>.md`.
+One file, one fact: `<name>.md` in the store.
 
 ```markdown
 ---
@@ -256,7 +285,8 @@ the same memory-store tools as Claude Code, `memory_list`, `memory_read`,
 `memory_write` and `memory_delete`, plus `memory_search`, `memory_check` and
 the prompt `consolidate`. Every write and delete carries the version the agent
 last read (`new` for a new memory), and a write over a newer version is refused
-with the current content. The first `memory_write` creates the store. Each
+with the current content. The first `memory_write` creates the store, in its
+home placement unless a local store exists. Each
 tool's arguments and results:
 [MCP server](docs/reference.md#mcp-server).
 
@@ -276,7 +306,10 @@ prompt for any agent, run when you ask for one:
   ```
 
 With an agent named (`--agent`, or the prompt's `agent` argument), the prompt
-tells the agent where its past sessions of the project are. The agent orients
+tells the agent where its past sessions of the project are. With a second store
+named (`--from <dir>`, or the prompt's `from` argument), such as a home store a
+local one hides, the agent merges its memories into the project's store, then
+deletes it. The agent orients
 on the store, looks for memories the code has drifted from, merges and dates
 what it learned, deletes stale memories, and flags feedback and project
 memories that disagree with the project's instruction files, which it never
@@ -288,7 +321,7 @@ edits. Where each agent's sessions are:
 The CLI is for you, your scripts and setup; the MCP server, on the same core,
 is for the agents. `mdmem --help` lists the commands by who runs them:
 setting up and looking after a project (`enable`, `disable`, `status`,
-`doctor`, `consolidate`), working with memories (`add`, `read`, `edit`,
+`store`, `doctor`, `consolidate`), working with memories (`add`, `read`, `edit`,
 `delete`, `list`, `search`, `reindex`, `path`), and run by the agents (`hook`,
 `mcp`).
 `mdmem <command> --help` prints one command's options and refusals. The full

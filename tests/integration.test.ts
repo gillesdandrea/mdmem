@@ -42,6 +42,7 @@ import {
 import { checkSummary, reindex } from "../src/core/check.ts";
 import { HOOK_CONTEXT_MAX_CHARS, HOOK_PARTS } from "../src/core/hook.ts";
 import { claudeProjectDir, importMarker } from "../src/core/import.ts";
+import { projectKey } from "../src/core/key.ts";
 import { parseMemory, serializeMemory } from "../src/core/memory.ts";
 import {
   getConsolidatePrompt,
@@ -62,8 +63,8 @@ async function tempProject(): Promise<{
   store: MemoryStore;
 }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-int-")));
-  const store = new MemoryStore(join(root, ".memory"));
-  // creates .memory + empty index
+  const store = new MemoryStore(join(root, ".mdmem"));
+  // creates .mdmem + empty index: a local store
   await reindex(store);
   const env = { CLAUDE_CONFIG_DIR: join(root, "claude-config") };
   const home = join(root, "home");
@@ -1107,7 +1108,7 @@ async function seedMemories(store: MemoryStore, count: number): Promise<void> {
 const END_TO_END_TIMEOUT_MS = 30_000;
 
 describe("cli", () => {
-  test("the first add in a linked worktree creates the store at the main checkout's root, leaving .gitignore alone", async () => {
+  test("the first add in a linked worktree creates the main checkout's home store with its project file, leaving the repository alone", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
     try {
       const repo = join(tmp, "repo");
@@ -1117,7 +1118,7 @@ describe("cli", () => {
       const worktree = join(tmp, "wt");
       git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
 
-      // the user's global excludes must not decide whether git ignores .memory/
+      const homeStore = join(worktree, "home", ".mdmem", projectKey(repo));
       const add = runCliWith(
         worktree,
         [
@@ -1135,15 +1136,15 @@ describe("cli", () => {
       );
       expect(add.code).toBe(0);
       expect(add.out).toBe(
-        [
-          `Created the memory store at ${join(repo, ".memory")}`,
-          "Note: git does not ignore .memory/; ignoring or committing it is your choice.",
-          "Saved a.md",
-          "",
-        ].join("\n")
+        `Created the home store at ${homeStore}\nSaved a.md\n`
       );
-      expect(existsSync(join(repo, ".memory/MEMORY.md"))).toBe(true);
-      expect(existsSync(join(worktree, ".memory"))).toBe(false);
+      expect(existsSync(join(homeStore, "MEMORY.md"))).toBe(true);
+      expect(existsSync(join(homeStore, "a.md"))).toBe(true);
+      expect(await readFile(join(homeStore, "project"), "utf-8")).toBe(
+        `${repo}\n`
+      );
+      expect(existsSync(join(repo, ".mdmem"))).toBe(false);
+      expect(existsSync(join(worktree, ".mdmem"))).toBe(false);
       expect(await readFile(join(repo, ".gitignore"), "utf-8")).toBe(
         "node_modules/\n"
       );
@@ -1157,13 +1158,15 @@ describe("cli", () => {
     }
   });
 
-  test("without git, the first add stops its walk before $HOME and creates the store in the working directory, saying so", async () => {
+  test("without git, the first add creates the working directory's home store, with no walk-up to a store above, saying so", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
     try {
       const home = join(tmp, "home");
-      await mkdir(join(home, ".memory"), { recursive: true });
-      const start = join(home, "a", "b");
+      // a local store above the working directory belongs to another project
+      await mkdir(join(tmp, "proj", ".mdmem"), { recursive: true });
+      const start = join(tmp, "proj", "a", "b");
       await mkdir(start, { recursive: true });
+      const homeStore = join(home, ".mdmem", projectKey(start));
 
       const add = runCliWith(
         start,
@@ -1183,10 +1186,11 @@ describe("cli", () => {
       expect(add.err).toBe("");
       expect(add.code).toBe(0);
       expect(add.out).toBe(
-        `Created the memory store at ${join(start, ".memory")}\nSaved a.md\n`
+        `Created the home store at ${homeStore}\nSaved a.md\n`
       );
-      expect(existsSync(join(start, ".memory/MEMORY.md"))).toBe(true);
-      expect(existsSync(join(start, ".memory/a.md"))).toBe(true);
+      expect(existsSync(join(homeStore, "MEMORY.md"))).toBe(true);
+      expect(existsSync(join(homeStore, "a.md"))).toBe(true);
+      expect(existsSync(join(start, ".mdmem"))).toBe(false);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -1224,7 +1228,13 @@ describe("cli", () => {
           };
         };
 
-        // outside git, the first add creates the store in the working directory
+        // outside git, the first add creates the working directory's home store
+        const storeDir = join(
+          root,
+          "home",
+          ".mdmem",
+          projectKey(await realpath(root))
+        );
         const add = run(
           "add",
           "--type",
@@ -1237,8 +1247,8 @@ describe("cli", () => {
           "Use bun."
         );
         expect(add.code).toBe(0);
-        expect(existsSync(join(root, ".memory/MEMORY.md"))).toBe(true);
-        expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(true);
+        expect(existsSync(join(storeDir, "MEMORY.md"))).toBe(true);
+        expect(existsSync(join(storeDir, "uses-bun.md"))).toBe(true);
 
         const read = run("read", "uses-bun");
         expect(read.code).toBe(0);
@@ -1250,7 +1260,9 @@ describe("cli", () => {
 
         const status = run("status");
         expect(status.code).toBe(0);
-        expect(status.out).toContain("Memories: 1\nCheck: ✓ no problems\n");
+        expect(status.out).toStartWith(
+          `Store: home, ${storeDir}\nMemories: 1\nCheck: ✓ no problems\n`
+        );
 
         const claude = run("enable", "claude-code", "--project");
         expect(claude.code).toBe(0);
@@ -1302,21 +1314,23 @@ describe("cli", () => {
 
         const doctor = run("doctor");
         expect(doctor.code).toBe(0);
-        expect(doctor.out).toBe("✓ 1 memory, no problems\n");
+        expect(doctor.out).toBe(
+          `Store: home, ${storeDir}\n✓ 1 memory, no problems\n`
+        );
         const check = run("check");
         expect(check.code).toBe(0);
         expect(check.out).toBe(doctor.out);
 
         const storePath = run("path");
         expect(storePath.code).toBe(0);
-        expect(storePath.out.trim()).toMatch(/[/\\]\.memory$/u);
+        expect(storePath.out).toBe(`${storeDir}\n`);
 
         const del = run("delete", "uses-bun");
         expect(del.code).toBe(0);
-        expect(existsSync(join(root, ".memory/uses-bun.md"))).toBe(false);
+        expect(existsSync(join(storeDir, "uses-bun.md"))).toBe(false);
 
         // a search skips a broken memory and warns of it on stderr
-        await writeFile(join(root, ".memory/broken.md"), "no frontmatter\n");
+        await writeFile(join(storeDir, "broken.md"), "no frontmatter\n");
         const search = run("search", "frontmatter");
         expect(search.code).toBe(0);
         expect(search.out).toBe('No memories matching "frontmatter".\n');
@@ -1350,7 +1364,7 @@ describe("cli", () => {
         expect(dropKeep.code).toBe(0);
         expect(dropKeep.out).toBe("Deleted keep.md\n");
         expect(dropKeep.err).toBe(brokenWarning);
-        expect(existsSync(join(root, ".memory/keep.md"))).toBe(false);
+        expect(existsSync(join(storeDir, "keep.md"))).toBe(false);
       } finally {
         await rm(root, { recursive: true, force: true });
       }
@@ -1398,19 +1412,19 @@ describe("cli", () => {
     });
   });
 
-  test("delete refuses a nested file under .memory/, leaving it in place", async () => {
+  test("delete refuses a nested file under .mdmem/, leaving it in place", async () => {
     await withCliProject(async (root) => {
-      await mkdir(join(root, ".memory/notes"));
-      await writeFile(join(root, ".memory/notes/draft.md"), "hi\n");
-      const index = await readFile(join(root, ".memory/MEMORY.md"), "utf-8");
+      await mkdir(join(root, ".mdmem/notes"));
+      await writeFile(join(root, ".mdmem/notes/draft.md"), "hi\n");
+      const index = await readFile(join(root, ".mdmem/MEMORY.md"), "utf-8");
       const del = runCli(root, "delete", "notes/draft");
       expect(del.code).toBe(1);
       expect(del.out).toBe("");
       expect(del.err).toBe(
         'mdmem: Refused "notes/draft.md": memories live at the top of the store, and nested files are never indexed or searched; use a path with no directory\n'
       );
-      expect(existsSync(join(root, ".memory/notes/draft.md"))).toBe(true);
-      expect(await readFile(join(root, ".memory/MEMORY.md"), "utf-8")).toBe(
+      expect(existsSync(join(root, ".mdmem/notes/draft.md"))).toBe(true);
+      expect(await readFile(join(root, ".mdmem/MEMORY.md"), "utf-8")).toBe(
         index
       );
     });
@@ -1536,6 +1550,7 @@ describe("cli", () => {
         "enable",
         "disable",
         "status",
+        "store",
         "doctor",
         "consolidate",
         "add",
@@ -1590,6 +1605,7 @@ describe("cli", () => {
         "enable",
         "disable",
         "status",
+        "store",
         "doctor",
         "check",
         "consolidate",
@@ -1808,7 +1824,7 @@ describe("cli", () => {
     });
   });
 
-  test("disable needs no store: it unwires every agent in a repository whose .memory/ was deleted", async () => {
+  test("disable needs no store: it unwires every agent in a repository that never had one", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
     try {
       await gitRepo(root);
@@ -1820,7 +1836,9 @@ describe("cli", () => {
       expect(
         runCliWith(root, ["enable", ...agents, "--project"], env).code
       ).toBe(0);
-      await rm(join(root, ".memory"), { recursive: true });
+      // enable --project creates no store, in either placement
+      expect(existsSync(join(root, ".mdmem"))).toBe(false);
+      expect(existsSync(join(root, "home", ".mdmem"))).toBe(false);
 
       const disable = runCliWith(
         root,
@@ -1843,7 +1861,7 @@ describe("cli", () => {
     }
   });
 
-  test("disable codex outside any project removes the global wiring only, and --project there changes nothing", async () => {
+  test("disable codex outside git removes the global wiring only, and --project there reads only the working directory's files", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-cli-")));
     try {
       const env = {
@@ -1875,7 +1893,7 @@ describe("cli", () => {
       const hooksPath = join(tmp, "codex-home", "hooks.json");
       expect(existsSync(hooksPath)).toBe(true);
 
-      // no repository and no store: the directory's own .codex/config.toml is left alone
+      // no repository and no store: the global scope leaves the directory's own .codex/config.toml alone
       const outside = join(tmp, "outside");
       await mkdir(join(outside, ".codex"), { recursive: true });
       const toml = '[mcp_servers.mdmem]\ncommand = "mdmem"\nargs = ["mcp"]\n';
@@ -1898,7 +1916,9 @@ describe("cli", () => {
 
       const bob = runCliWith(outside, ["disable", "bob", "--project"], env);
       expect(bob.code).toBe(0);
-      expect(bob.out).toBe(`IBM Bob:\n  ${OUTSIDE_PROJECT_LINE}\n`);
+      expect(bob.out).toBe(
+        "IBM Bob:\n  .bob/settings.json holds none of mdmem's entries\n  .bob/mcp.json holds none of mdmem's entries\n"
+      );
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }
@@ -2126,35 +2146,49 @@ describe("hook", () => {
     await withCliProject((root) => {
       const hook = runHookCli(root, "protocol", startPayload(root));
       expect(hook.code).toBe(0);
-      expect(injected(hook.out)).toBe(getMemoryProtocol());
+      expect(injected(hook.out)).toBe(getMemoryProtocol(join(root, ".mdmem")));
     });
   });
 
   test("the index part names the store's absolute path, then holds the index", async () => {
     await withCliProject(async (root, store) => {
       await seedMemories(store, 2);
-      const storeDir = join(await realpath(root), ".memory");
+      const storeDir = join(await realpath(root), ".mdmem");
       const index = await readFile(join(storeDir, "MEMORY.md"), "utf-8");
 
       const hook = runHookCli(root, "index", startPayload(root));
       expect(hook.code).toBe(0);
       expect(injected(hook.out)).toBe(
-        `Memory store: ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
+        `Store: local, ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
       );
     });
   });
 
-  test("it prints nothing without a store, on resume or fork, or for another event", async () => {
+  test("it speaks outside git without a store, naming the home store, and prints nothing on resume or fork, or for another event", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
-      // a temp home stops the walk for a store, whatever holds a .memory/ above the temp dir
       const bare = join(tmp, "project");
       await mkdir(bare);
-      expect(
-        runHookCli(bare, "index", startPayload(bare), "claude-code", {
-          HOME: tmp,
-        })
-      ).toEqual({ code: 0, out: "", err: "" });
+      const env = { HOME: join(tmp, "home") };
+      const dir = join(tmp, "home", ".mdmem", projectKey(bare));
+      const protocol = runHookCli(
+        bare,
+        "protocol",
+        startPayload(bare),
+        "claude-code",
+        env
+      );
+      expect(injected(protocol.out)).toBe(getMemoryProtocol(dir));
+      const index = runHookCli(
+        bare,
+        "index",
+        startPayload(bare),
+        "claude-code",
+        env
+      );
+      expect(injected(index.out)).toBe(
+        `Store: none yet; the first memory_write creates the home store ${dir}/ with MEMORY.md.`
+      );
       await withCliProject((root) => {
         for (const payload of [
           { ...startPayload(root), source: "resume" },
@@ -2178,15 +2212,15 @@ describe("hook", () => {
   test("a session started by clear or compact gets both parts, as one started by startup does", async () => {
     await withCliProject(async (root, store) => {
       await seedMemories(store, 1);
-      const storeDir = join(root, ".memory");
+      const storeDir = join(root, ".mdmem");
       const index = await readFile(join(storeDir, "MEMORY.md"), "utf-8");
       for (const source of ["clear", "compact"]) {
         const payload = { ...startPayload(root), source };
         expect(injected(runHookCli(root, "protocol", payload).out)).toBe(
-          getMemoryProtocol()
+          getMemoryProtocol(join(root, ".mdmem"))
         );
         expect(injected(runHookCli(root, "index", payload).out)).toBe(
-          `Memory store: ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
+          `Store: local, ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
         );
       }
     });
@@ -2198,17 +2232,19 @@ describe("hook", () => {
       // Codex's hook speaks only where .codex/config.toml registers the server
       await mkdir(join(root, ".codex"));
       await writeFile(join(root, CODEX_CONFIG), CODEX_SECTION, "utf-8");
-      const storeDir = join(root, ".memory");
+      const storeDir = join(root, ".mdmem");
       const index = await readFile(join(storeDir, "MEMORY.md"), "utf-8");
       for (const agent of ["bob", "codex"]) {
         const payload = startPayload(root);
         const protocol = runHookCli(root, "protocol", payload, agent);
         expect(protocol.code).toBe(0);
-        expect(injected(protocol.out)).toBe(getMemoryProtocol());
+        expect(injected(protocol.out)).toBe(
+          getMemoryProtocol(join(root, ".mdmem"))
+        );
         const hook = runHookCli(root, "index", payload, agent);
         expect(hook.code).toBe(0);
         expect(injected(hook.out)).toBe(
-          `Memory store: ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
+          `Store: local, ${storeDir}\n\nMEMORY.md:\n${index.trimEnd()}`
         );
       }
       // the same project wired for Codex: a forked Codex session gets neither part
@@ -2223,15 +2259,18 @@ describe("hook", () => {
     });
   });
 
-  test("a payload that does not parse prints nothing outside a project, and in a project not wired for Codex", async () => {
+  test("a payload that does not parse is reported outside git too, and prints nothing in a project not wired for Codex", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
-      // a temp home stops the walk for a store, whatever holds a .memory/ above the temp dir
       const bare = join(tmp, "project");
       await mkdir(bare);
-      expect(
-        runHookCli(bare, "index", "[]", "claude-code", { HOME: tmp })
-      ).toEqual({ code: 0, out: "", err: "" });
+      const hook = runHookCli(bare, "index", "[]", "claude-code", {
+        HOME: join(tmp, "home"),
+      });
+      expect(hook.code).toBe(0);
+      expect(injected(hook.out)).toBe(
+        "mdmem could not load the memory: the hook payload is not a JSON object"
+      );
       await withCliProject((root) => {
         expect(runHookCli(root, "index", "[]", "codex")).toEqual({
           code: 0,
@@ -2258,7 +2297,7 @@ describe("hook", () => {
       );
       const hook = runHookCli(root, "protocol", startPayload(root), "codex");
       expect(hook.code).toBe(0);
-      expect(injected(hook.out)).toBe(getMemoryProtocol());
+      expect(injected(hook.out)).toBe(getMemoryProtocol(join(root, ".mdmem")));
 
       // a server table the user extended still registers the server
       await writeFile(
@@ -2272,7 +2311,9 @@ describe("hook", () => {
         startPayload(root),
         "codex"
       );
-      expect(injected(extended.out)).toBe(getMemoryProtocol());
+      expect(injected(extended.out)).toBe(
+        getMemoryProtocol(join(root, ".mdmem"))
+      );
 
       // disable keeps a table that is not mdmem's own (another command), so the hook is not called silent
       const env = { HOME: join(root, "home"), CODEX_HOME: join(root, "codex") };
@@ -2295,7 +2336,7 @@ describe("hook", () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
     try {
       const repo = join(tmp, "repo");
-      await mkdir(join(repo, ".memory"), { recursive: true });
+      await mkdir(join(repo, ".mdmem"), { recursive: true });
       await gitRepo(repo);
       const worktree = join(tmp, "wt");
       git(repo, "worktree", "add", "-q", worktree, "-b", "wt");
@@ -2303,7 +2344,7 @@ describe("hook", () => {
       // run from elsewhere: the payload's cwd decides
       const hook = runHookCli(tmp, "index", startPayload(worktree));
       expect(injected(hook.out)).toStartWith(
-        `Memory store: ${join(repo, ".memory")}\n`
+        `Store: local, ${join(repo, ".mdmem")}\n`
       );
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -2379,7 +2420,7 @@ describe("hook", () => {
     const base = await mkdtemp(join(tmpdir(), "mdmem-int-"));
     try {
       const root = join(base, "d".repeat(200), "e".repeat(200));
-      const store = new MemoryStore(join(root, ".memory"));
+      const store = new MemoryStore(join(root, ".mdmem"));
       await reindex(store);
       // 150 lines of 62 characters: 9,449 characters, under the index limit
       const index = Array.from(
@@ -2433,10 +2474,10 @@ async function wiredRepo(): Promise<{
 }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-status-")));
   await gitRepo(root);
-  // the user's global excludes must not decide whether git ignores .memory/
+  // the user's global excludes must not decide whether git ignores .mdmem/
   git(root, "config", "core.excludesFile", "/dev/null");
-  await writeFile(join(root, ".gitignore"), ".memory/\n", "utf-8");
-  const store = new MemoryStore(join(root, ".memory"));
+  await writeFile(join(root, ".gitignore"), ".mdmem/\n", "utf-8");
+  const store = new MemoryStore(join(root, ".mdmem"));
   await reindex(store);
   const bin = join(root, "bin");
   await mkdir(bin);
@@ -2692,7 +2733,7 @@ describe("status and check", () => {
           true,
         ]);
         const hook = runHookCli(sub, "index", startPayload(sub));
-        expect(injected(hook.out)).toStartWith(`Memory store: ${store.root}\n`);
+        expect(injected(hook.out)).toStartWith(`Store: local, ${store.root}\n`);
       } finally {
         await rm(library, { recursive: true, force: true });
       }
@@ -2822,7 +2863,7 @@ describe("status and check", () => {
         CODEX_HOME: ctx.env.CODEX_HOME ?? "",
       });
       expect(doctor.out).toBe(
-        `Found 1 problem(s):\n  - IBM Bob: ${BOB_SETTINGS} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again\n`
+        `Store: local, ${join(root, ".mdmem")}\nFound 1 problem(s):\n  - IBM Bob: ${BOB_SETTINGS} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again\n`
       );
       expect(doctor.code).toBe(1);
     });
@@ -2838,7 +2879,7 @@ describe("status and check", () => {
         CODEX_HOME: ctx.env.CODEX_HOME ?? "",
       });
       expect(doctor.out).toBe(
-        `Found 1 problem(s):\n  - Codex CLI: ${CODEX_CONFIG} is not valid TOML (Error parsing TOML (1, 1): Expected value, reached EOF): fix it, then run the check again\n`
+        `Store: local, ${join(root, ".mdmem")}\nFound 1 problem(s):\n  - Codex CLI: ${CODEX_CONFIG} is not valid TOML (Error parsing TOML (1, 1): Expected value, reached EOF): fix it, then run the check again\n`
       );
       expect(doctor.code).toBe(1);
     });
@@ -2860,6 +2901,7 @@ describe("status and check", () => {
       });
       expect(doctor.out).toBe(
         [
+          `Store: local, ${join(root, ".mdmem")}`,
           "Found 3 problem(s):",
           `  - Claude Code: ${MCP_CONFIG} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`,
           `  - Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (${CLAUDE_SETTINGS}), SessionStart hook "mdmem hook claude-code index" (${CLAUDE_SETTINGS}), so its sessions start without what those hooks inject — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code --project\``,
@@ -2886,7 +2928,7 @@ describe("status and check", () => {
       };
       const doctor = runCliWith(root, ["doctor"], env);
       expect(doctor.out).toBe(
-        "✓ 1 memory, no problems\nnote: uses-bun.md links [[ts7-strict]], not written yet\n"
+        `Store: local, ${store.root}\n✓ 1 memory, no problems\nnote: uses-bun.md links [[ts7-strict]], not written yet\n`
       );
       expect(doctor.code).toBe(0);
       expect(runCliWith(root, ["status"], env).out).toContain(
@@ -2955,7 +2997,7 @@ describe("status and check", () => {
         "3 problem(s), among them 1 unparseable memory, a stale MEMORY.md — `mdmem doctor` lists them"
       );
       expect(await projectProblems(noMdmem)).toEqual(status.check.problems);
-      expect(existsSync(join(root, ".memory/broken.md"))).toBe(true);
+      expect(existsSync(join(root, ".mdmem/broken.md"))).toBe(true);
     });
   });
 });
@@ -3000,23 +3042,23 @@ async function withFreshRepo(
 }
 
 describe("scopes and store creation", () => {
-  test("in a repository with no store, reads refuse, the hooks speak with the index saying none yet, and the first add creates the store, importing Claude Code's memories once", async () => {
+  test("in a repository with no store, reads refuse, the hooks speak with the index naming the home store, and the first add creates it, importing Claude Code's memories once", async () => {
     await withFreshRepo(async ({ root, home, env }) => {
-      const dir = join(root, ".memory");
+      const dir = join(home, ".mdmem", projectKey(root));
       const read = runCliWith(root, ["read", "MEMORY.md"], env);
       expect(read.code).toBe(1);
       expect(read.err).toBe(
-        `mdmem: No .memory/ store for this project yet (looked for ${dir}): the first memory write (memory_write, \`mdmem add\`) creates it\n`
+        `mdmem: No store for this project yet: the first memory write (memory_write, \`mdmem add\`) creates the home store ${dir}\n`
       );
 
       const before = runCliWith(root, ["status"], env);
       expect(before.out).toStartWith(
-        `Store: none yet; the first memory write (memory_write, \`mdmem add\`) creates ${dir}\nCheck: ✓ no problems\n`
+        `Store: none yet; the first save creates the home store ${dir}\nCheck: ✓ no problems\n`
       );
       expect(before.out).toContain("  · Claude Code (global)\n");
       expect(before.out).toContain("  · Claude Code (project)\n");
       expect(runCliWith(root, ["doctor"], env).out).toBe(
-        "✓ no memory store yet, no problems\n"
+        `Store: none yet; the first save creates the home store ${dir}\n✓ no problems\n`
       );
       expect(
         runCliWith(root, ["enable", "claude-code", "bob", "codex"], env).code
@@ -3032,10 +3074,10 @@ describe("scopes and store creation", () => {
           env,
           flags
         );
-        expect(injected(protocol.out)).toBe(getMemoryProtocol());
+        expect(injected(protocol.out)).toBe(getMemoryProtocol(dir));
         const index = runHookCli(root, "index", payload, agent, env, flags);
         expect(injected(index.out)).toBe(
-          `Memory store: none yet; the first memory_write creates ${dir}/ with MEMORY.md.`
+          `Store: none yet; the first memory_write creates the home store ${dir}/ with MEMORY.md.`
         );
       }
       expect(existsSync(dir)).toBe(false);
@@ -3062,12 +3104,11 @@ describe("scopes and store creation", () => {
       expect(first.err).toBe("");
       expect(first.code).toBe(0);
       expect(first.out).toStartWith(
-        `Created the memory store at ${dir}\nCopied into .memory/:\n    b.md (from `
+        `Created the home store at ${dir}\nCopied into the store:\n    b.md (from `
       );
-      expect(first.out).toEndWith(
-        "Note: git does not ignore .memory/; ignoring or committing it is your choice.\nSaved uses-bun.md\n"
-      );
-      const store = new MemoryStore(dir);
+      expect(first.out).toEndWith("\nSaved uses-bun.md\n");
+      expect(first.out).not.toContain("Note: git");
+      const store = new MemoryStore(dir, root);
       expect(store.exists("b.md")).toBe(true);
       expect(await store.view("MEMORY.md")).toContain("(uses-bun.md)");
       expect(existsSync(importMarker(store, claudeEnv))).toBe(true);
@@ -3076,7 +3117,7 @@ describe("scopes and store creation", () => {
       await rm(dir, { recursive: true });
       const again = runCliWith(root, add, env);
       expect(again.out).toBe(
-        `Created the memory store at ${dir}\nNote: git does not ignore .memory/; ignoring or committing it is your choice.\nSaved uses-bun.md\n`
+        `Created the home store at ${dir}\nSaved uses-bun.md\n`
       );
       expect(store.exists("b.md")).toBe(false);
     });
@@ -3116,7 +3157,10 @@ describe("scopes and store creation", () => {
       expect(add.out).toContain(
         'Renamed to match the file name:\n    team-lead.md (was "Team Lead")\n'
       );
-      const store = new MemoryStore(join(root, ".memory"));
+      const store = new MemoryStore(
+        join(home, ".mdmem", projectKey(root)),
+        root
+      );
       const stored = parseMemory(await store.view("team-lead.md"));
       expect(stored.frontmatter.name).toBe("team-lead");
       expect(await store.view("MEMORY.md")).toContain(
@@ -3124,7 +3168,9 @@ describe("scopes and store creation", () => {
       );
       const doctor = runCliWith(root, ["doctor"], env);
       expect(doctor.code).toBe(0);
-      expect(doctor.out).toBe("✓ 2 memories, no problems\n");
+      expect(doctor.out).toBe(
+        `Store: home, ${store.root}\n✓ 2 memories, no problems\n`
+      );
     });
   });
 
@@ -3152,7 +3198,8 @@ describe("scopes and store creation", () => {
         env
       );
       expect(refused.code).toBe(1);
-      expect(existsSync(join(root, ".memory"))).toBe(false);
+      const dir = join(home, ".mdmem", projectKey(root));
+      expect(existsSync(dir)).toBe(false);
 
       const add = runCliWith(
         root,
@@ -3170,11 +3217,12 @@ describe("scopes and store creation", () => {
         env
       );
       expect(add.out).not.toContain("Copied");
-      expect(existsSync(join(root, ".memory/b.md"))).toBe(false);
+      expect(existsSync(join(dir, "MEMORY.md"))).toBe(true);
+      expect(existsSync(join(dir, "b.md"))).toBe(false);
     });
   });
 
-  test("enable --project in a repository with no store creates it, importing Claude Code's memories, then writes the project files", async () => {
+  test("enable --project in a repository with no store writes the project files and creates no store; the first add creates the home store, importing Claude Code's memories", async () => {
     await withFreshRepo(async ({ root, home, env }) => {
       await claudeMemory(
         { env, home } as AdapterContext,
@@ -3190,19 +3238,38 @@ describe("scopes and store creation", () => {
       expect(enable.err).toBe("");
       expect(enable.code).toBe(0);
       expect(enable.out).toStartWith(
-        `Created the memory store at ${join(root, ".memory")}\nCopied into .memory/:\n`
+        "Claude Code:\n  added in .claude/settings.json: "
       );
-      expect(enable.out).toContain(
-        "\nClaude Code:\n  added in .claude/settings.json: "
-      );
-      expect(existsSync(join(root, ".memory/b.md"))).toBe(true);
       expect(existsSync(join(root, MCP_CONFIG))).toBe(true);
-      // the user-wide files are untouched
+      // the user-wide files are untouched, and no store exists yet
       expect(existsSync(join(home, ".claude/settings.json"))).toBe(false);
+      const dir = join(home, ".mdmem", projectKey(root));
+      expect(existsSync(dir)).toBe(false);
+      expect(existsSync(join(root, ".mdmem"))).toBe(false);
+
+      const add = runCliWith(
+        root,
+        [
+          "add",
+          "--type",
+          "user",
+          "--name",
+          "a",
+          "--description",
+          "d",
+          "--body",
+          "b",
+        ],
+        env
+      );
+      expect(add.out).toStartWith(
+        `Created the home store at ${dir}\nCopied into the store:\n`
+      );
+      expect(existsSync(join(dir, "b.md"))).toBe(true);
     });
   });
 
-  test("outside git with no store, status says where the first write creates it, and status and doctor report the global wiring alone", async () => {
+  test("outside git with no store, the working directory is the project: status and doctor name its home store, status shows both scopes, and enable --project creates no store", async () => {
     const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-scope-")));
     try {
       const home = join(tmp, "home");
@@ -3213,38 +3280,36 @@ describe("scopes and store creation", () => {
         CLAUDE_CONFIG_DIR: join(home, ".claude"),
         CODEX_HOME: join(home, ".codex"),
       };
+      const none = `Store: none yet; the first save creates the home store ${join(home, ".mdmem", projectKey(dir))}`;
       expect(runCliWith(dir, ["enable", "bob"], env).code).toBe(0);
       const status = runCliWith(dir, ["status"], env);
       expect(status.code).toBe(0);
-      expect(status.out).toStartWith(
-        `Store: none (no repository, and no .memory/ here or above); the first memory write (memory_write, \`mdmem add\`) creates ${join(dir, ".memory")}\nCheck: `
-      );
+      expect(status.out).toStartWith(`${none}\nCheck: `);
       expect(status.out).toContain(
         `  ✓ IBM Bob (global)\n      ✓ SessionStart hooks "mdmem hook bob protocol --global", "mdmem hook bob index --global" (${join(home, ".bob/settings/settings.json")})\n`
       );
-      expect(status.out).not.toContain("(project)");
+      expect(status.out).toContain("  · IBM Bob (project)\n");
       const doctor = runCliWith(dir, ["doctor"], {
         ...env,
         PATH: join(home, "empty"),
       });
       expect(doctor.out).toBe(
-        "Found 1 problem(s):\n  - mdmem is not on PATH, so the session-start hooks and the MCP server wired for IBM Bob, which run `mdmem`, fail — put it on PATH (`bun link` in mdmem's checkout)\n"
+        `${none}\nFound 1 problem(s):\n  - mdmem is not on PATH, so the session-start hooks and the MCP server wired for IBM Bob, which run \`mdmem\`, fail — put it on PATH (\`bun link\` in mdmem's checkout)\n`
       );
       expect(doctor.code).toBe(1);
       expect(runCliWith(dir, ["disable", "bob"], env).code).toBe(0);
       const clean = runCliWith(dir, ["doctor"], env);
-      expect(clean.out).toBe("✓ no memory store yet, no problems\n");
+      expect(clean.out).toBe(`${none}\n✓ no problems\n`);
       expect(clean.code).toBe(0);
-      // the project scope outside git: the working directory is the project, and enable creates its store
+      // the project scope outside git: the working directory is the project, and enable writes its files only
       const project = runCliWith(dir, ["enable", "bob", "--project"], env);
       expect(project.code).toBe(0);
-      expect(project.out).toContain(
-        `Created the memory store at ${join(dir, ".memory")}`
-      );
-      expect(existsSync(join(dir, ".memory/MEMORY.md"))).toBe(true);
+      expect(project.out).not.toContain("Created");
+      expect(existsSync(join(dir, ".mdmem"))).toBe(false);
+      expect(existsSync(join(home, ".mdmem"))).toBe(false);
       expect(existsSync(join(dir, ".bob/settings.json"))).toBe(true);
       expect(runCliWith(dir, ["status"], env).out).toContain(
-        "IBM Bob (project)"
+        "✓ IBM Bob (project)"
       );
     } finally {
       await rm(tmp, { recursive: true, force: true });
@@ -3252,16 +3317,19 @@ describe("scopes and store creation", () => {
   });
 
   test("a repository wired in both scopes has two status lines per agent and no problem, and injects each part once", async () => {
-    await withFreshRepo(async ({ root, env }) => {
+    await withFreshRepo(async ({ root, home, env }) => {
       const agents = ["claude-code", "bob", "codex"];
       expect(runCliWith(root, ["enable", ...agents], env).code).toBe(0);
       expect(
         runCliWith(root, ["enable", ...agents, "--project"], env).code
       ).toBe(0);
+      const dir = join(home, ".mdmem", projectKey(root));
 
       const status = runCliWith(root, ["status"], env);
       expect(status.err).toBe("");
-      expect(status.out).toContain("Memories: 0\nCheck: ✓ no problems\n");
+      expect(status.out).toStartWith(
+        `Store: none yet; the first save creates the home store ${dir}\nCheck: ✓ no problems\n`
+      );
       for (const title of ["Claude Code", "IBM Bob", "Codex CLI"]) {
         expect(status.out).toContain(`  ✓ ${title} (global)\n`);
         expect(status.out).toContain(`  ✓ ${title} (project)\n`);
@@ -3292,7 +3360,7 @@ describe("scopes and store creation", () => {
           env,
           ["--global"]
         );
-        expect(injected(below.out)).toBe(getMemoryProtocol());
+        expect(injected(below.out)).toBe(getMemoryProtocol(dir));
       }
 
       // a project's server registration alone does not silence the global hook
@@ -3310,7 +3378,7 @@ describe("scopes and store creation", () => {
             "--global",
           ]).out
         )
-      ).toBe(getMemoryProtocol());
+      ).toBe(getMemoryProtocol(dir));
     });
   });
 
@@ -3340,7 +3408,7 @@ describe("scopes and store creation", () => {
       );
       const inRepo = adapterContext(
         root,
-        new MemoryStore(join(root, ".memory")),
+        new MemoryStore(join(root, ".mdmem")),
         env,
         home
       );
@@ -3348,5 +3416,220 @@ describe("scopes and store creation", () => {
         `Claude Code's auto memory is on: ${CLAUDE_SETTINGS} sets autoMemoryEnabled to true, overriding ${userSettings}, ${AUTO_MEMORY_CONSEQUENCE} — remove it from ${CLAUDE_SETTINGS}`,
       ]);
     });
+  });
+});
+
+/** `mdmem add` of a user memory named `name`, as `runCliWith` runs it. */
+function addArgs(name: string): string[] {
+  return [
+    "add",
+    "--type",
+    "user",
+    "--name",
+    name,
+    "--description",
+    `About ${name}`,
+    "--body",
+    "b",
+  ];
+}
+
+describe("placements", () => {
+  test("store local moves the home store into the project, where status, doctor and the hook find it, and store home moves it back", async () => {
+    await withFreshRepo(async ({ root, home, env }) => {
+      const homeStore = join(home, ".mdmem", projectKey(root));
+      const local = join(root, ".mdmem");
+      expect(runCliWith(root, ["store"], env).out).toBe(
+        `Store: none yet; the first save creates the home store ${homeStore}\n`
+      );
+      expect(runCliWith(root, addArgs("a"), env).code).toBe(0);
+      expect(runCliWith(root, ["store"], env).out).toBe(
+        `Store: home, ${homeStore}\n`
+      );
+      // the project file is not a memory: the check counts one memory and finds no problem
+      expect(existsSync(join(homeStore, "project"))).toBe(true);
+      expect(runCliWith(root, ["doctor"], env).out).toBe(
+        `Store: home, ${homeStore}\n✓ 1 memory, no problems\n`
+      );
+
+      const toLocal = runCliWith(root, ["store", "local"], env);
+      expect(toLocal.err).toBe("");
+      expect(toLocal.code).toBe(0);
+      expect(toLocal.out).toBe(
+        [
+          `Moved the store from ${homeStore} to ${local}`,
+          `Store: local, ${local}`,
+          "Note: git does not ignore .mdmem/; ignoring or committing it is your choice.",
+          "To move it to the home store: mdmem store home",
+          "",
+        ].join("\n")
+      );
+      expect(existsSync(homeStore)).toBe(false);
+      expect(existsSync(join(local, "a.md"))).toBe(true);
+      expect(runCliWith(root, ["status"], env).out).toStartWith(
+        `Store: local, ${local}\nMemories: 1\n`
+      );
+      const index = runHookCli(root, "index", startPayload(root), "bob", env);
+      expect(injected(index.out)).toStartWith(`Store: local, ${local}\n`);
+      expect(runCliWith(root, ["store", "local"], env).out).toBe(
+        `Store: local, ${local}\nAlready local. To move it to the home store: mdmem store home\n`
+      );
+
+      const toHome = runCliWith(root, ["store", "home"], env);
+      expect(toHome.code).toBe(0);
+      expect(toHome.out).toBe(
+        [
+          `Moved the store from ${local} to ${homeStore}`,
+          `Store: home, ${homeStore}`,
+          "To move it to the local store: mdmem store local",
+          "",
+        ].join("\n")
+      );
+      expect(existsSync(local)).toBe(false);
+      expect(await readFile(join(homeStore, "project"), "utf-8")).toBe(
+        `${root}\n`
+      );
+      expect(runCliWith(root, ["status"], env).out).toStartWith(
+        `Store: home, ${homeStore}\nMemories: 1\n`
+      );
+    });
+  });
+
+  test("with memories in both placements, the local store wins, status warns naming the home store, and store local and store home each refuse naming the other", async () => {
+    await withFreshRepo(async ({ root, home, env }) => {
+      const homeStore = join(home, ".mdmem", projectKey(root));
+      const local = join(root, ".mdmem");
+      expect(runCliWith(root, addArgs("a"), env).code).toBe(0);
+      expect(runCliWith(root, ["store", "local"], env).code).toBe(0);
+      // a home store made again beside the local one, as a teammate's clone would meet it
+      await mkdir(homeStore, { recursive: true });
+      await writeFile(
+        join(homeStore, "b.md"),
+        memoryText("b", "In the home store."),
+        "utf-8"
+      );
+
+      const status = runCliWith(root, ["status"], env);
+      expect(status.out).toStartWith(`Store: local, ${local}\n`);
+      expect(status.err).toContain(
+        `mdmem: warning: the home store ${homeStore} holds 1 memory too, which no agent reads while the local store ${local} exists: fold them in with \`mdmem consolidate --from ${homeStore}\`\n`
+      );
+      const toLocal = runCliWith(root, ["store", "local"], env);
+      expect(toLocal.code).toBe(1);
+      expect(toLocal.err).toBe(
+        `mdmem: the local store ${local} already holds memories, and so does the home store ${homeStore}: fold the home store into the local one with \`mdmem consolidate --from ${homeStore}\`, then run this again\n`
+      );
+      const toHome = runCliWith(root, ["store", "home"], env);
+      expect(toHome.code).toBe(1);
+      expect(toHome.err).toBe(
+        `mdmem: the home store ${homeStore} already holds memories, and so does the local store ${local}: fold the home store into the local one with \`mdmem consolidate --from ${homeStore}\`, then run this again\n`
+      );
+      expect(existsSync(join(local, "a.md"))).toBe(true);
+      expect(existsSync(join(homeStore, "b.md"))).toBe(true);
+
+      const consolidate = runCliWith(
+        root,
+        ["consolidate", "--from", homeStore],
+        env
+      );
+      expect(consolidate.code).toBe(0);
+      expect(consolidate.out).toBe(
+        getConsolidatePrompt(local, undefined, homeStore)
+      );
+      const missing = runCliWith(
+        root,
+        ["consolidate", "--from", join(root, "nope")],
+        env
+      );
+      expect(missing.code).toBe(1);
+      expect(missing.err).toStartWith(
+        `mdmem: ${join(root, "nope")} is not a directory`
+      );
+    });
+  });
+
+  test("consolidate --from refuses the project's own store reached through a symlink", async () => {
+    await withFreshRepo(async ({ root, env }) => {
+      const local = join(root, ".mdmem");
+      expect(runCliWith(root, addArgs("a"), env).code).toBe(0);
+      expect(runCliWith(root, ["store", "local"], env).code).toBe(0);
+      const link = join(root, "link");
+      await symlink(local, link);
+      const result = runCliWith(root, ["consolidate", "--from", "link"], env);
+      expect(result.code).toBe(1);
+      expect(result.err).toStartWith(`mdmem: ${link} is this project's store`);
+    });
+  });
+
+  test("a move writes the project file of a store that has none, and store list shows a home store without one as such", async () => {
+    await withFreshRepo(async ({ root, home, env }) => {
+      const homeStore = join(home, ".mdmem", projectKey(root));
+      const local = join(root, ".mdmem");
+      // a local store renamed by hand from .memory/, with no project file
+      await mkdir(local);
+      await writeFile(join(local, "a.md"), memoryText("a", "Kept."), "utf-8");
+      expect(runCliWith(root, ["store", "home"], env).code).toBe(0);
+      expect(await readFile(join(homeStore, "project"), "utf-8")).toBe(
+        `${root}\n`
+      );
+      expect(runCliWith(root, ["store", "list"], env).out).toBe(
+        `${projectKey(root)} — ${root} — 1 memory\n`
+      );
+
+      await rm(join(homeStore, "project"));
+      expect(runCliWith(root, ["store", "list"], env).out).toBe(
+        `${projectKey(root)} — no project file — 1 memory\n`
+      );
+    });
+  });
+
+  test("store local with no store creates an empty local store, which the next add uses", async () => {
+    await withFreshRepo(async ({ root, home, env }) => {
+      const local = join(root, ".mdmem");
+      const created = runCliWith(root, ["store", "local"], env);
+      expect(created.code).toBe(0);
+      expect(created.out).toBe(
+        [
+          `Created the local store at ${local}`,
+          "Note: git does not ignore .mdmem/; ignoring or committing it is your choice.",
+          "To move it to the home store: mdmem store home",
+          "",
+        ].join("\n")
+      );
+      expect(await readFile(join(local, "project"), "utf-8")).toBe(`${root}\n`);
+      expect(runCliWith(root, addArgs("a"), env).out).toBe("Saved a.md\n");
+      expect(existsSync(join(local, "a.md"))).toBe(true);
+      expect(existsSync(join(home, ".mdmem"))).toBe(false);
+    });
+  });
+
+  test("store list prints every home store with its project and memory count, naming one whose project was deleted", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-list-")));
+    try {
+      const env = { HOME: join(tmp, "home") };
+      const kept = join(tmp, "kept");
+      const gone = join(tmp, "gone");
+      await mkdir(kept);
+      await mkdir(gone);
+      expect(runCliWith(kept, addArgs("a"), env).code).toBe(0);
+      expect(runCliWith(gone, addArgs("a"), env).code).toBe(0);
+      expect(runCliWith(gone, addArgs("b"), env).code).toBe(0);
+      await rm(gone, { recursive: true });
+
+      const list = runCliWith(kept, ["store", "list"], env);
+      expect(list.code).toBe(0);
+      expect(list.out).toBe(
+        [
+          `${projectKey(gone)} — ${gone} — 2 memories, project missing`,
+          `${projectKey(kept)} — ${kept} — 1 memory`,
+          "",
+        ].join("\n")
+      );
+      expect(runCliWith(tmp, ["store", "nope"], env).err).toBe(
+        'mdmem: unknown store action "nope" — usage: mdmem store [local | home | list]\n'
+      );
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 });

@@ -19,6 +19,7 @@ import { IGNORE_NOTE } from "../src/adapters/report.ts";
 import { reindex } from "../src/core/check.ts";
 import { HOOK_PARTS } from "../src/core/hook.ts";
 import { claudeProjectDir } from "../src/core/import.ts";
+import { projectKey } from "../src/core/key.ts";
 import { serializeMemory } from "../src/core/memory.ts";
 import { STORE_PAGE_SIZE } from "../src/core/operations.ts";
 import { getConsolidatePrompt } from "../src/core/protocol.ts";
@@ -66,7 +67,7 @@ async function withServer(
   } = {}
 ) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), "mdmem-mcp-")));
-  const store = new MemoryStore(join(dir, ".memory"));
+  const store = new MemoryStore(join(dir, ".mdmem"));
   // an empty store for the server to open, unless the test prepares its own project
   await (setup === undefined ? reindex(store) : setup(dir));
   const transport = new StdioClientTransport({
@@ -84,6 +85,11 @@ async function withServer(
     await client.close();
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/** The home store of the project at `dir`, under the temp home `tempHomeEnv` gives the server. */
+function homeStoreOf(dir: string): MemoryStore {
+  return new MemoryStore(join(dir, "home", ".mdmem", projectKey(dir)), dir);
 }
 
 function textOf(result: { content?: unknown }): string {
@@ -257,14 +263,14 @@ describe("mcp server", () => {
   });
 
   test("memory_list with no arguments lists the project's one store", async () => {
-    await withServer(async ({ client, storeId }) => {
+    await withServer(async ({ client, store, storeId }) => {
       const list = await client.callTool({
         name: "memory_list",
         arguments: {},
       });
       expect(list.isError).toBeFalsy();
       expect(textOf(list)).toBe(
-        `${storeId} — Shared memory for ${storeId} — writable — index: MEMORY.md`
+        `${storeId} — Shared memory for ${storeId}, the local store ${store.root} — writable — index: MEMORY.md`
       );
     });
   });
@@ -374,14 +380,14 @@ describe("mcp server", () => {
       const version = await store.version("prefers-bun.md");
       // The structured content carries the whole document: Claude Code shows the agent only it.
       expect(read.structuredContent).toEqual({
-        store: { id: storeId, path: store.root },
+        store: { id: storeId, placement: "local", path: store.root },
         path: "prefers-bun.md",
         content: "Use bun.",
         version,
       });
       // The text carries them too, for agents that ignore structuredContent.
       expect(textOf(read)).toBe(
-        `Store: ${storeId} (${store.root})\nUse bun.\nversion: ${version}`
+        `Store: ${storeId} (local, ${store.root})\nUse bun.\nversion: ${version}`
       );
     });
   });
@@ -750,7 +756,7 @@ describe("mcp server", () => {
         arguments: { store: storeId, query: "bun" },
       });
       expect(textOf(result)).toBe(
-        `Store: ${storeId} (${store.root})\nuses-bun.md — About uses-bun`
+        `Store: ${storeId} (local, ${store.root})\nuses-bun.md — About uses-bun`
       );
     });
   });
@@ -766,13 +772,13 @@ describe("mcp server", () => {
       });
       expect(result.isError).toBeFalsy();
       expect(textOf(result)).toBe(
-        `Store: ${storeId} (${store.root})\nuses-bun.md — About uses-bun\nWarning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by \`---\``
+        `Store: ${storeId} (local, ${store.root})\nuses-bun.md — About uses-bun\nWarning: broken.md: unparseable — Memory file is missing YAML frontmatter delimited by \`---\``
       );
     });
   });
 
   test("memory_check on a clean store reports no problems with the memory count", async () => {
-    await withServer(async ({ client, storeId }) => {
+    await withServer(async ({ client, store, storeId }) => {
       await write(client, "uses-bun.md", memory("uses-bun", "Use bun."), "new");
 
       const result = await client.callTool({
@@ -780,12 +786,14 @@ describe("mcp server", () => {
         arguments: { store: storeId },
       });
       expect(result.isError).toBeFalsy();
-      expect(textOf(result)).toBe("✓ 1 memory, no problems");
+      expect(textOf(result)).toBe(
+        `Store: local, ${store.root}\n✓ 1 memory, no problems`
+      );
     });
   });
 
   test("memory_check reports a problem as a finding, not an error, and a link to a memory not written yet as a note", async () => {
-    await withServer(async ({ client }) => {
+    await withServer(async ({ client, store }) => {
       await write(
         client,
         "uses-bun.md",
@@ -812,7 +820,7 @@ describe("mcp server", () => {
       });
       expect(result.isError).toBeFalsy();
       expect(textOf(result)).toBe(
-        "Found 1 problem(s):\n  - long.md: its pointer is 170 characters, over 150 — shorten its description\nnote: uses-bun.md links [[gone]], not written yet"
+        `Store: local, ${store.root}\nFound 1 problem(s):\n  - long.md: its pointer is 170 characters, over 150 — shorten its description\nnote: uses-bun.md links [[gone]], not written yet`
       );
     });
   });
@@ -860,7 +868,7 @@ describe("mcp server", () => {
       });
       expect(result.isError).toBeFalsy();
       expect(textOf(result)).toBe(
-        "Found 1 problem(s):\n  - Claude Code: .claude/settings.json is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again"
+        `Store: local, ${store.root}\nFound 1 problem(s):\n  - Claude Code: .claude/settings.json is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`
       );
     });
     await withServer(
@@ -901,6 +909,24 @@ describe("mcp server", () => {
       expect(
         message?.content.type === "text" && message.content.text
       ).toContain("if you can search your own past sessions and need specific");
+
+      // from names a second store to fold in, which must be a directory
+      const other = join(dirname(storeDir), "home", ".mdmem", "-other");
+      await mkdir(other, { recursive: true });
+      const folding = await client.getPrompt({
+        name: "consolidate",
+        arguments: { from: other },
+      });
+      expect(folding.messages[0]?.content).toEqual({
+        type: "text",
+        text: getConsolidatePrompt(storeDir, undefined, other),
+      });
+      await expect(
+        client.getPrompt({
+          name: "consolidate",
+          arguments: { from: join(other, "nope") },
+        })
+      ).rejects.toThrow(`${join(other, "nope")} is not a directory`);
     });
   });
 
@@ -928,22 +954,25 @@ describe("mcp server", () => {
     });
   });
 
-  test("in a repository with no store, reads refuse, memory_check checks the wiring alone, and the first memory_write creates the store, importing Claude Code's memories where Claude Code is wired", async () => {
+  test("in a repository with no store, reads refuse, memory_check checks the wiring alone, and the first memory_write creates the home store with its project file, importing Claude Code's memories where Claude Code is wired", async () => {
     await withServer(
-      async ({ client, store }) => {
+      async ({ client, store: local }) => {
+        const store = homeStoreOf(dirname(local.root));
         const read = await client.callTool({
           name: "memory_read",
           arguments: { path: "MEMORY.md" },
         });
         expect(read.isError).toBe(true);
         expect(textOf(read)).toBe(
-          `No .memory/ store for this project yet (looked for ${store.root}): the first memory write (memory_write, \`mdmem add\`) creates it`
+          `No store for this project yet: the first memory write (memory_write, \`mdmem add\`) creates the home store ${store.root}`
         );
         const check = await client.callTool({
           name: "memory_check",
           arguments: {},
         });
-        expect(textOf(check)).toBe("✓ no memory store yet, no problems");
+        expect(textOf(check)).toBe(
+          `Store: none yet; the first save creates the home store ${store.root}\n✓ no problems`
+        );
         // A write that names a version cannot match a document that does not exist, so it creates nothing.
         const stale = await write(
           client,
@@ -965,8 +994,10 @@ describe("mcp server", () => {
         );
         expect(written.isError).toBeUndefined();
         const lines = textOf(written).split("\n");
-        expect(lines[0]).toBe(`Created the memory store at ${store.root}`);
-        expect(lines[1]).toBe("Copied into .memory/:");
+        expect(lines[0]).toBe(`Created the home store at ${store.root}`);
+        expect(lines[1]).toBe("Copied into the store:");
+        // git has nothing to ignore in a home store
+        expect(lines).not.toContain(IGNORE_NOTE);
         expect(lines).toContain("Saved uses-bun.md");
         // The structured content carries the creation lines too, one field each.
         expect(written.structuredContent).toEqual({
@@ -975,13 +1006,15 @@ describe("mcp server", () => {
           index: "pointer added",
           created: {
             store: store.root,
-            imported: lines.slice(1, lines.indexOf(IGNORE_NOTE)),
-            ignored: false,
+            placement: "home",
+            imported: lines.slice(1, lines.indexOf("Saved uses-bun.md")),
           },
           warnings: [],
         });
         expect(store.exists("b.md")).toBe(true);
         expect(store.exists("uses-bun.md")).toBe(true);
+        expect(await store.view("project")).toBe(`${store.project}\n`);
+        expect(existsSync(local.root)).toBe(false);
       },
       {
         setup: unstoredRepo,
@@ -993,9 +1026,10 @@ describe("mcp server", () => {
     );
   });
 
-  test("outside git with no store, the first memory_write creates the store in the working directory", async () => {
+  test("outside git with no store, the first memory_write creates the home store of the working directory", async () => {
     await withServer(
-      async ({ client, store }) => {
+      async ({ client, store: local }) => {
+        const store = homeStoreOf(dirname(local.root));
         const written = await write(
           client,
           "uses-bun.md",
@@ -1004,7 +1038,7 @@ describe("mcp server", () => {
         );
         expect(written.isError).toBeUndefined();
         expect(textOf(written)).toStartWith(
-          `Created the memory store at ${store.root}\nSaved uses-bun.md\n`
+          `Created the home store at ${store.root}\nSaved uses-bun.md\n`
         );
         expect(store.exists("uses-bun.md")).toBe(true);
         expect(store.exists("MEMORY.md")).toBe(true);
@@ -1016,9 +1050,6 @@ describe("mcp server", () => {
       {
         // no repository and no store: the server runs in an empty temp directory outside git
         setup: async () => {},
-        // HOME at the temp directory's parent stops locateStore's walk-up there,
-        // so a .memory/ above the temp directory cannot stand in for the new store
-        env: (dir) => ({ ...tempHomeEnv(dir), HOME: dirname(dir) }),
       }
     );
   });

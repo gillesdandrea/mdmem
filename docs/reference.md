@@ -7,31 +7,59 @@ tells an agent.
 
 ## Where the store is
 
-A project has one store: `.memory/` at the project's root, holding Markdown
-memories and a `MEMORY.md` index.
+A project has one store, holding Markdown memories, a `MEMORY.md` index and a
+`project` file naming the root the store serves (not a memory: the check and
+the listings skip it). The store has one of two placements
+([ADR 0005](adr/0005-home-store-by-default-local-store-on-purpose.md)):
 
-- In git, the root is the main checkout's directory: every linked worktree,
-  subdirectory and submodule uses that one store, and a `.memory/` lower down
-  is ignored. A bare repository's root is the directory holding it as `.git`,
-  or the bare `x.git` itself.
-- Without git, mdmem uses the first `.memory/` walking up from the working
-  directory; under your home directory the walk stops before reaching it (run
-  from the home directory itself, it still looks there).
-- mdmem never edits `.gitignore`: ignoring or committing `.memory/` is your
-  choice, and the command that creates the store says when git does not ignore
-  it. Committing it suits projects without worktrees: each linked worktree
-  would also check out a copy of `.memory/`, which mdmem ignores there. To keep
-  `.memory/` out of every repository at once, add it to your global gitignore
-  (`git config --global core.excludesFile`).
+- the **home store**, the default: `~/.mdmem/<key>/`, where the key is the
+  project's root path with every character that is not an ASCII letter or
+  digit turned into `-` (a key over 200 characters is cut and followed by a
+  hash), as Claude Code names its directories under `~/.claude/projects/`;
+- the **local store**: `.mdmem/` at the project's root, created only on purpose
+  with `mdmem store local`, for a team that commits it.
 
-The store is created on the first save. With no `.memory/` yet, the first
-memory write (`memory_write` from an agent, or `mdmem add`) creates it, with its
-`MEMORY.md`, and says so: in a git repository at its root, outside git in the
-working directory. Until then, reads (`mdmem read`, `memory_read`, …) refuse
-and say what creates it, and `mdmem status` says where it would be. Outside
-git, save where you mean the store to live: a store in a folder such as `~/dev`
-goes unseen by every repository later created under it, which is why the
-session-start hook speaks there only where a store exists (ADR 0004).
+One rule resolves the store in the hooks, the MCP server and the CLI: the local
+store when `<root>/.mdmem/` exists, else the home store. The root is:
+
+- in git, the main checkout's directory, the parent of the git common dir:
+  every linked worktree, subdirectory and submodule uses that one store, and a
+  `.mdmem/` lower down is ignored. A bare repository's root is the directory
+  holding it as `.git`, or the bare `x.git` itself;
+- without git, the working directory itself, with no walk-up: a session in a
+  subdirectory is its own project, with its own home store, as in Claude Code.
+  In your home directory, `~/.mdmem` holds the home stores, so the home
+  directory's project always has a home store.
+
+The store is created on the first save. With no store yet, the first memory
+write (`memory_write` from an agent, or `mdmem add`) creates the home store,
+with its `MEMORY.md` and `project` file, and says so. Until then, reads
+(`mdmem read`, `memory_read`, …) refuse and name the home store the first save
+creates, and so do `mdmem status`, `mdmem store` and the hook.
+
+`mdmem store` prints `Store: home, <path>` or `Store: local, <path>`, or
+`Store: none yet; the first save creates the home store <path>`. `mdmem store
+local` moves the home store to `<root>/.mdmem/`, or creates an empty local
+store when there is none; `mdmem store home` moves a local store back. A move
+prints both paths, the new store line and the command that moves the store
+back; when the store is already there, or `mdmem store local` creates it, they
+print one path and that command. A move writes the store's `project` file,
+naming this project's root. Both refuse
+when the destination already holds memories, naming the other store: fold one
+into the other with `mdmem consolidate --from <dir>` first. A destination that
+holds no memories, only its index, is replaced. `mdmem store list` prints every
+home store, one line each: its key, the project its `project` file names (or
+`no project file`), its memory count, and `project missing` when that directory no longer exists. mdmem
+never deletes a home store on its own.
+
+When both placements hold memories, the local store wins: `mdmem status` warns
+that the home store's memories go unread and names the command that folds them
+in.
+
+mdmem never edits `.gitignore`: ignoring or committing a local store is your
+choice, and `mdmem store local` and `mdmem status` say when git does not ignore
+`.mdmem/`. Committing it suits projects without worktrees: each linked worktree
+would also check out a copy of `.mdmem/`, which mdmem ignores there.
 
 ## How mdmem keeps the index
 
@@ -61,7 +89,7 @@ pointer it has, gets none if it has none, and each one is named in a warning.
 
 ## Memory format
 
-The format is Claude Code's: one fact per file, `.memory/<name>.md`, with
+The format is Claude Code's: one fact per file, `<name>.md` in the store, with
 frontmatter holding `name`, `description` and the type, as in the
 [README](../README.md#memory-format).
 
@@ -82,19 +110,20 @@ command's usage, options, an example and the refusals it can give.
 
 | Command | Purpose |
 |---|---|
-| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory, creating the store first where there is none (at the repository's root, or outside git in the working directory); refuses an existing name unless `--force`, and refuses a `--force` overwrite if the memory changes while it is saved. Body may also be piped via stdin. |
+| `mdmem add --type <t> --name <n> --description <d> [--body <text>] [--force]` | Save a memory, creating the store first where there is none (the home store, unless a local store exists); refuses an existing name unless `--force`, and refuses a `--force` overwrite if the memory changes while it is saved. Body may also be piped via stdin. |
 | `mdmem list` | Print the memory index (`MEMORY.md`) |
 | `mdmem read <name>` | Print one memory by its name (or `<name>.md`), or the index (`MEMORY.md`) |
 | `mdmem edit <name>` | Edit a copy of a memory in `$VISUAL`/`$EDITOR`, then save it back and reindex |
 | `mdmem delete` (alias `rm`) `<name>` | Remove a memory by its name (or `<name>.md`) |
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
-| `mdmem consolidate [--agent <agent>]` | Print the consolidation prompt; `--agent` points it at that agent's past sessions of the project (see [Consolidation](#consolidation)) |
-| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring in both scopes (see [What status and the check report](#what-status-and-the-check-report)); with no store, or outside any project, the wiring alone. Exits 1 on a problem. A `[[link]]` to a memory not written yet is a note, not a problem: doctor lists it (`note: uses-bun.md links [[ts7-strict]], not written yet`) and exits 0 when notes are its only finding |
-| `mdmem enable <agent…> \| --all [--project]` | Wire an agent in its user-wide files (the global scope), or with `--project` in the repository's files, creating the store if it is missing; running it again changes nothing. `--all` wires the agents found on this machine (see below). |
+| `mdmem consolidate [--agent <agent>] [--from <dir>]` | Print the consolidation prompt; `--agent` points it at that agent's past sessions of the project, `--from` at a second store to fold in (see [Consolidation](#consolidation)) |
+| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring in both scopes (see [What status and the check report](#what-status-and-the-check-report)), after a line naming the store and its placement; with no store, the wiring alone. Exits 1 on a problem. A `[[link]]` to a memory not written yet is a note, not a problem: doctor lists it (`note: uses-bun.md links [[ts7-strict]], not written yet`) and exits 0 when notes are its only finding |
+| `mdmem enable <agent…> \| --all [--project]` | Wire an agent in its user-wide files (the global scope), or with `--project` in the repository's files; it creates no store, and running it again changes nothing. `--all` wires the agents found on this machine (see below). |
 | `mdmem disable <agent…> \| --all [--project]` | Remove exactly mdmem's entries from an agent's user-wide files, or with `--project` from the repository's (leaves the store); `--all` takes the agents found on this machine. Needs no store. |
-| `mdmem status` | Show the store (or that there is none yet), the check in one line, and each agent's wiring in each scope, entry by entry (present or missing), with the warnings and notes below; outside any project, the global scope alone |
-| `mdmem path` | Print the store directory |
+| `mdmem status` | Show the store and its placement (or the home store the first save creates), the check in one line, and each agent's wiring in each scope, entry by entry (present or missing), with the warnings and notes below |
+| `mdmem store [local \| home \| list]` | Print the store's placement and path, move it to the other placement, or list every home store (see [Where the store is](#where-the-store-is)) |
+| `mdmem path` | Print the store directory, home or local |
 | `mdmem version` (also `--version`, `-v`, `-V`) | Print `mdmem` and its version, the one the MCP server reports |
 | `mdmem mcp` | Run the MCP server over stdio |
 | `mdmem hook <agent> <part> [--global]` | Run by an agent's session-start hook, not typed by hand (see [mdmem hook](#mdmem-hook)) |
@@ -118,11 +147,9 @@ the command with no file written. The global scope runs anywhere and needs no
 store. `enable --project` runs in a work tree, or outside git in the working
 directory, which is then the project; in a bare repository, or the folder
 holding one as `.git`, it refuses and names the repository's worktrees, since
-agents read their files only from a work tree. Where there is no store it creates one, as the
-first save would. `disable` needs no store, so it works after `.memory/` was
-deleted; `disable --project` outside any project (no repository, no store)
-changes nothing, since the directory may be one whose agent files are
-user-wide, such as your home. mdmem 0.2.0's `init`, `enable --prefer` and
+agents read their files only from a work tree. Neither command creates a
+store, and `disable` needs none, so it works after the store was deleted.
+mdmem 0.2.0's `init`, `enable --prefer` and
 `disable --global` are refused, naming what replaced them.
 
 A repository may be wired in both scopes, by different people: each session
@@ -133,7 +160,8 @@ server.
 
 `mdmem hook` is what the agents' session-start hooks run: `<agent>` is
 `claude-code`, `bob` or `codex`, and `<part>` is `protocol` (the memory
-protocol) or `index` (a line naming the store's absolute path, the check's
+protocol) or `index` (a line naming the store's placement and absolute path,
+`Store: home, <path>` or `Store: local, <path>`, the check's
 warnings for unparseable memories and a stale index, then `MEMORY.md`). It
 reads the hook's JSON payload on stdin, resolves the store from the payload's
 `cwd` (else the working directory), and prints the part as SessionStart
@@ -141,10 +169,10 @@ context, each under 10,000 characters: warnings past that are counted instead
 of listed, and an index over its limit is cut short with a note to
 `memory_read` the rest and run a consolidation.
 
-It speaks in every git repository, store or not: with no store yet, the index
-part is the line
-`Memory store: none yet; the first memory_write creates <repository>/.memory/ with MEMORY.md.`
-Outside git it speaks only where a store exists. `--global` marks the global
+It speaks in every directory, git or not, store or not: with no store yet, the
+index part is the line
+`Store: none yet; the first memory_write creates the home store <path>/ with MEMORY.md.`
+`--global` marks the global
 scope's hook entries: a global entry prints nothing where the project's own
 entry for the same part is present (a project's server registration alone does
 not count), so a repository wired in both scopes gets each part once. Codex's
@@ -153,8 +181,9 @@ project's `.codex/config.toml` registers the mdmem server.
 
 The hook also prints nothing on a resumed or forked session, or for any event
 but SessionStart; empty stdin counts as an empty payload, so run by hand it
-prints nothing. A payload that is not a JSON object is reported only where the
-hook would speak from the working directory; elsewhere it prints nothing. It
+prints nothing. A payload that is not a JSON object is reported where the hook
+would speak from the working directory, which is everywhere but where its
+agent's silences apply. It
 never fails a session: an error becomes a one-line context saying why the
 memory could not be loaded, and it exits 0.
 
@@ -177,8 +206,10 @@ repeating it, naming the memory an answer comes from, and saving through the
 MCP tools (writing files directly only when an agent lacks them). It also says
 to load every mdmem tool in one request where the agent loads tools on demand,
 to keep project knowledge in the store where the agent has a memory of its own,
-and that a changed-on-disk notice for a file under `.memory/` right after a
-`memory_write` is that write.
+and that a changed-on-disk notice for a file in the store right after a
+`memory_write` is that write. It names the store's path for writing memory
+files without the tools, and says that a sandboxed agent may not reach a home
+store without them, in which case it tells the user.
 
 Its text lives in `templates/memory-protocol.md` and is easy to edit; a test
 keeps it at 6,000 characters at most, about three times Claude Code's own
@@ -241,7 +272,11 @@ The rest are `status` lines only, because they are your choice, depend on where
 - `Check:`, the check in one line: no problems, or how many, naming unparseable
   memories, a stale `MEMORY.md` and a `MEMORY.md` over its limit, then how many
   notes (links to memories not written yet).
-- A note when git does not ignore `.memory/`. mdmem never edits `.gitignore`.
+- A note when git does not ignore a local store's `.mdmem/`. mdmem never edits
+  `.gitignore`, and a home store needs no note.
+- A warning when a local store hides a home store that holds memories: no agent
+  reads them while `.mdmem/` exists, and the warning names
+  `mdmem consolidate --from <home store>`.
 - A warning when `status` runs below the checkout's root of a project wired for
   Bob: a Bob launched there reads neither `.bob/settings.json` nor
   `.bob/mcp.json`, so it gets no protocol, no index and no mdmem tools.
@@ -284,7 +319,7 @@ user config, `~/.claude.json` (both in `$CLAUDE_CONFIG_DIR` when it is set);
 `mdmem disable claude-code` (with `--project` for the repository's files)
 removes exactly these entries, along with an object or array they leave empty
 (an empty `"permissions": {}` you had before goes too), and deletes a file that
-held nothing else; the imported memories stay in `.memory/`. `mdmem status`
+held nothing else; the imported memories stay in the store. `mdmem status`
 lists each entry of each scope as present or missing.
 
 A hook stays mdmem's while it runs mdmem's command, and the server while it
@@ -299,9 +334,9 @@ else, such as an `mcpServers.mdmem` running another command (`bun run
 
 ### Importing Claude Code's memories
 
-When a store is created in a repository where Claude Code is enabled in either
-scope, by the first save or `mdmem enable --project`, mdmem imports the
-memories Claude Code kept for the repository (`~/.claude/projects/<key>/memory/`,
+When a store is created in a project where Claude Code is enabled in either
+scope, by the first save or `mdmem store local`, in either placement, mdmem
+imports the memories Claude Code kept for the project (`~/.claude/projects/<key>/memory/`,
 and the directory of each of the repository's worktrees) into it, and the
 creating command lists what it copied. A memory held by one directory is
 copied, identical ones are kept once, and when two directories hold different
@@ -317,7 +352,7 @@ it.
 
 The import runs once per user and repository: mdmem records it in
 `~/.claude/projects/<key>/mdmem-imported`, so a store created again after you
-delete `.memory/` does not bring back memories you had deleted. Delete the
+delete the store does not bring back memories you had deleted. Delete the
 marker to import again the next time a store is created. An existing store gets
 no import.
 
@@ -458,12 +493,12 @@ Code, plus three of its own:
 
 | Tool | Purpose |
 |---|---|
-| `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
-| `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. The result opens with a line naming the store that answered, `Store: <id> (<path>)`, the id `memory_list` gives it and its directory. The structured result carries the same: `store` (`id` and `path`), `path`, `content` and `version`. |
-| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. With no store yet, the first write creates it, at the git repository's root or, outside git, in the working directory, and its result opens with the lines `mdmem add` prints for that. A line says what the write did to the memory's pointer in `MEMORY.md`: `pointer added`, `pointer updated` or `unchanged`. The structured result carries what the text says: `file`, `version`, `index` (what became of that pointer), `created` (the store's path, the import's lines, whether git ignores it) on the write that created the store, and `warnings`. |
+| `memory_list` | With no arguments, list the stores: mdmem serves one, named after the project directory, its description naming its placement and directory, with `MEMORY.md` as its index. With `store`, list its documents by path, with size and last-updated date. `path_prefix` filters by path; `cursor` continues a long listing. |
+| `memory_read` | Read one document by `path` (`uses-bun.md`, or the index `MEMORY.md`), with its version token. The result opens with a line naming the store that answered, `Store: <id> (<placement>, <path>)`, the id `memory_list` gives it, `home` or `local`, and its directory. The structured result carries the same: `store` (`id`, `placement` and `path`), `path`, `content` and `version`. |
+| `memory_write` | Write a whole memory document at `path`. The content must be a valid memory whose name matches its file name, in kebab-case or snake_case. `MEMORY.md`, paths inside a directory, and content that looks like it holds a secret are refused. With no store yet, the first write creates the home store, and its result opens with the lines `mdmem add` prints for that. A line says what the write did to the memory's pointer in `MEMORY.md`: `pointer added`, `pointer updated` or `unchanged`. The structured result carries what the text says: `file`, `version`, `index` (what became of that pointer), `created` (the store's path and placement, the import's lines, and for a local store whether git ignores it) on the write that created the store, and `warnings`. |
 | `memory_delete` | Delete a memory document at `path`. `MEMORY.md` and paths inside a directory are refused. |
-| `memory_search` | List the memories containing a query, by path with their description, after the same `Store: <id> (<path>)` line as `memory_read`. A memory that does not parse is skipped and named in a warning. |
-| `memory_check` | Check the store and the agents' wiring as `mdmem doctor` does, returning the same text: the problems one per line, or the memory count and no problems; with no store yet, the wiring alone. |
+| `memory_search` | List the memories containing a query, by path with their description, after the same `Store: <id> (<placement>, <path>)` line as `memory_read`. A memory that does not parse is skipped and named in a warning. |
+| `memory_check` | Check the store and the agents' wiring as `mdmem doctor` does, returning the same text: a line naming the store and its placement, then the problems one per line, or the memory count and no problems; with no store yet, the wiring alone. |
 
 `store` is optional everywhere: leave it out to use the project's store. An
 unknown store id is an error that names the valid one. Every tool but
@@ -492,7 +527,7 @@ The server also serves one prompt, `consolidate` (see
 `~/.bob/settings/mcp.json`, or with `--project` in `.bob/mcp.json`; Codex's in
 `~/.codex/config.toml`, or with `--project` in `.codex/config.toml`. Each agent
 starts the server in the session's working directory, in either scope, so the
-server finds the store of the repository the session runs in.
+server finds the store of the project the session runs in.
 
 ## Consolidation
 
@@ -513,6 +548,12 @@ project are and how to search them:
   server; `mdmem consolidate` reads `CODEX_HOME` from your shell.
 - `bob`, or no agent: a generic line telling the agent to search its own past
   sessions if it can.
+
+With `--from <dir>` (the prompt's `from` argument over MCP), the prompt names
+a second store, such as a home store a local one hides, and tells the agent to
+merge each of its memories into the project's store, then delete that store's
+directory or ask you to. `--from` must name a directory other than the
+project's store.
 
 An unknown agent is refused, and `mdmem consolidate` refuses while there is no
 store yet.

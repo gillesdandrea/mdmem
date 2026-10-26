@@ -40,7 +40,7 @@ export interface UserContext {
 }
 
 export interface AdapterContext extends UserContext {
-  /** The project holding the working directory; undefined outside any project (no repository, no store), where only the global scope applies. */
+  /** The project holding the working directory, which every directory has since ADR 0005; undefined only for a context built without a store, where only the global scope applies. */
   project?: ProjectContext;
   /** The directory mdmem runs in: an agent launched there reads only the files it finds from there. */
   cwd: string;

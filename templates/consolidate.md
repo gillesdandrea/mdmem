@@ -4,7 +4,7 @@ You are performing a consolidation — a reflective pass over this project's mem
 store, what Claude Code calls a *dream*. Synthesize what you've learned recently into
 durable, well-organized memories so that future sessions can orient quickly.
 
-Memory store: `{{store}}`
+Memory store: `{{store}}`{{second_store}}
 
 The memory protocol injected at the start of your session is the source of truth for
 the memory format, the memory types, and what to save.
@@ -21,8 +21,8 @@ Save through the mdmem MCP tools, always: `memory_list` lists the store,
 `memory_read` returns a memory document with its version, and `memory_write` and
 `memory_delete` take that version as `if_version`. Only when the tools are missing,
 edit the memory files directly, then run `mdmem reindex`; a direct write can fail
-when the store lies outside your workspace, as it does from a linked worktree or a
-sandbox.
+when the store lies outside your workspace, as a home store under `~/.mdmem/` does,
+and a local store from a linked worktree or a sandbox.
 
 ---
 

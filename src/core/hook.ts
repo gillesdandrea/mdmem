@@ -5,8 +5,8 @@ import { workTreeRoot } from "./git.ts";
 import { isObject } from "./object.ts";
 import type { PlainObject } from "./object.ts";
 import { getMemoryProtocol } from "./protocol.ts";
-import { locateStore, MemoryStore } from "./store.ts";
-import type { StoreLocation } from "./store.ts";
+import { locateStore, placementLine, storeAt } from "./store.ts";
+import type { MemoryStore, StoreLocation } from "./store.ts";
 import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
 
 /**
@@ -15,9 +15,9 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
  * the index with the store's path and the Check's warnings. Claude Code caps one
  * entry's context at about 10,000 characters, so each part stays under that.
  *
- * The hook speaks in every git repository, store or not, and outside git only where
- * a store exists (ADR 0004); in a repository with no store yet, the index part says
- * the first memory_write creates it. `--global` marks the entries of the global
+ * The hook speaks in every directory, git or not, store or not (ADR 0005); in a
+ * project with no store yet, the index part names the home store the first
+ * memory_write creates. `--global` marks the entries of the global
  * scope, whose agent decides where they stay silent (where the project's own entries
  * run, say).
  *
@@ -163,12 +163,12 @@ function assemble(head: readonly string[], block: string): string {
 }
 
 /**
- * The index part: a line naming the store's absolute path, the Check's warnings one
+ * The index part: a line naming the store's placement and absolute path, the Check's warnings one
  * line each, then the index, all under HOOK_CONTEXT_MAX_CHARS. The index is cut to
  * its limit; warnings that would push the text over are left out and counted.
  */
 async function indexContext(store: MemoryStore): Promise<string> {
-  const header = `Memory store: ${store.root}`;
+  const header = placementLine(store);
   const { index, warnings } = await sessionIndex(store);
   const lines = warnings.map(warningLine);
   // The text stays strictly under the cap.
@@ -234,10 +234,6 @@ async function sessionStore(
   cwd: string
 ): Promise<StoreLocation | undefined> {
   const location = locateStore(cwd);
-  // Outside git, only an existing store makes a project (ADR 0004).
-  if (!(location.exists || location.inRepository)) {
-    return undefined;
-  }
   const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
   const part = oneOf(request.part, HOOK_PARTS, "part");
   // The work tree as `mdmem enable --project` wires it: the session's own, else the project's directory.
@@ -251,9 +247,9 @@ async function sessionStore(
   return speaks ? location : undefined;
 }
 
-/** The index part in a repository with no store yet. */
-export function noStoreYetContext(dir: string): string {
-  return `Memory store: none yet; the first memory_write creates ${dir}/ with ${INDEX_FILE}.`;
+/** The index part in a project with no store yet. */
+export function noStoreYetContext(location: StoreLocation): string {
+  return `Store: none yet; the first memory_write creates the home store ${location.home}/ with ${INDEX_FILE}.`;
 }
 
 /** The context to inject, or undefined when the hook stays silent. */
@@ -283,11 +279,11 @@ async function hookContext(request: HookRequest): Promise<string | undefined> {
     return undefined;
   }
   if (request.part === "protocol") {
-    return getMemoryProtocol();
+    return getMemoryProtocol(location.dir);
   }
   return location.exists
-    ? await indexContext(new MemoryStore(location.dir))
-    : noStoreYetContext(location.dir);
+    ? await indexContext(storeAt(location))
+    : noStoreYetContext(location);
 }
 
 /**

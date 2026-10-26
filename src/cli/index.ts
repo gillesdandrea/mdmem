@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -21,6 +22,7 @@ import {
 import {
   adapterContext,
   checkProject,
+  createProjectStore,
   creationLines,
   enableContext,
   ensureStore,
@@ -37,20 +39,34 @@ import type { MemoryType } from "../core/memory.ts";
 import {
   assertMemoryPath,
   checkMemoryWrite,
+  listHomeStores,
+  localStoreIgnored,
+  memoryCountAt,
   memoryDocument,
+  moveStoreDir,
   openStore,
   readDocument,
   readIndex,
   removeMemory,
   saveMemory,
   searchMemories,
+  secondStoreDir,
   writeDocument,
+  writeProjectFile,
 } from "../core/operations.ts";
 import type { WriteResult } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
-import type { MemoryStore } from "../core/store.ts";
-import { locateStore, VersionConflictError } from "../core/store.ts";
+import type { Placement } from "../core/store.ts";
+import {
+  homeStoresDir,
+  locateStore,
+  locationLine,
+  MemoryStore,
+  noStoreLine,
+  realDir,
+  VersionConflictError,
+} from "../core/store.ts";
 import { messageOf } from "../core/text.ts";
 import { commandHelp, topLevelHelp, unknownCommandHelp } from "./help.ts";
 
@@ -370,18 +386,13 @@ async function cmdWiring(
     print(notice);
   }
   const cwd = process.cwd();
-  // The project scope of enable needs a work tree, and creates a missing store; nothing else needs a store.
+  // The project scope of enable needs a work tree; neither command needs a store, nor creates one.
   const ctx =
     mode === "enable" ? enableContext(cwd, scope) : locateContext(cwd);
   // Plan every agent before writing any, so a refusal leaves every file as it was.
   const plans = await planWiring(adapters, (adapter) =>
     mode === "enable" ? adapter.enable(ctx, scope) : adapter.disable(ctx, scope)
   );
-  if (mode === "enable" && scope === "project" && adapters.length > 0) {
-    reportCreation(
-      await ensureStore(cwd, { importFor: adapters.map(({ id }) => id) })
-    );
-  }
   for (const plan of plans) {
     // oxlint-disable-next-line no-await-in-loop -- writes stay in argument order
     const result = await plan.write();
@@ -410,18 +421,13 @@ function printAgent(status: AgentStatus): void {
 
 async function cmdStatus(): Promise<void> {
   const status = await projectStatus(locateContext(process.cwd()));
-  if (status.store === undefined) {
-    print(
-      `Store: none (no repository, and no .memory/ here or above); the first memory write (memory_write, \`mdmem add\`) creates ${locateStore(process.cwd()).dir}`
-    );
-  } else if (status.store.exists) {
-    print(`Store: ${status.store.dir}`);
+  const { store } = status;
+  if (store?.exists === true) {
+    print(`Store: ${store.placement}, ${store.dir}`);
     // Counts the memories that parse; the check's line counts the broken ones.
     print(`Memories: ${status.memoryCount}`);
-  } else {
-    print(
-      `Store: none yet; the first memory write (memory_write, \`mdmem add\`) creates ${status.store.dir}`
-    );
+  } else if (store !== undefined) {
+    print(noStoreLine(store.dir));
   }
   print(`Check: ${checkSummary(status.check)}`);
   if (status.ignored === false) {
@@ -453,7 +459,7 @@ async function cmdDoctor(): Promise<void> {
 function cmdConsolidate(args: string[]): void {
   const { values } = parseArgs({
     args,
-    options: { agent: { type: "string" } },
+    options: { agent: { type: "string" }, from: { type: "string" } },
     allowPositionals: false,
   });
   const adapter =
@@ -461,12 +467,133 @@ function cmdConsolidate(args: string[]): void {
       ? undefined
       : (getAdapter(values.agent) ?? die(unknownAgent(values.agent)));
   const store = resolveStore();
+  const from =
+    values.from === undefined
+      ? undefined
+      : secondStoreDir(process.cwd(), values.from, store);
   const { project, env, home } = adapterContext(process.cwd(), store);
   const history =
     project === undefined
       ? undefined
       : adapter?.sessionHistory?.({ projectRoot: project.root, env, home });
-  process.stdout.write(getConsolidatePrompt(store.root, history));
+  process.stdout.write(getConsolidatePrompt(store.root, history, from));
+}
+
+const STORE_USAGE = "usage: mdmem store [local | home | list]";
+
+function otherPlacement(placement: Placement): Placement {
+  return placement === "local" ? "home" : "local";
+}
+
+/** The line after a store's placement changed or was confirmed: the command that moves it to the other placement. */
+function reverseLine(placement: Placement): string {
+  const other = otherPlacement(placement);
+  return `To move it to the ${other} store: mdmem store ${other}`;
+}
+
+/** Print the local store's ignore note when git does not ignore it. */
+function printIgnoreNote(root: string): void {
+  if (localStoreIgnored(root) === false) {
+    print(IGNORE_NOTE);
+  }
+}
+
+/**
+ * Move the project's store to the placement `to` (ADR 0005): a directory move,
+ * refused when the destination already holds memories. With no store at all,
+ * \`store local\` creates an empty local one.
+ */
+async function moveStore(to: Placement): Promise<void> {
+  const cwd = process.cwd();
+  const location = locateStore(cwd);
+  const [from, dest] =
+    to === "local"
+      ? [location.home, location.local]
+      : [location.local, location.home];
+  if (to === "local" && realDir(location.local) === realDir(homeStoresDir())) {
+    die(
+      `${location.local} holds the home stores, so the home directory's project keeps its home store ${location.home}: run \`mdmem store local\` in a project`
+    );
+  }
+  const fromExists = location.exists && location.placement !== to;
+  const sourceExists = to === "local" ? existsSync(from) : fromExists;
+  if (!sourceExists) {
+    if (to === "local" && !location.exists) {
+      reportCreation(
+        await createProjectStore(cwd, new MemoryStore(dest, location.root))
+      );
+      print(reverseLine(to));
+      return;
+    }
+    print(locationLine(location));
+    print(
+      `Already ${location.exists ? location.placement : "home"}. ${reverseLine(to)}`
+    );
+    return;
+  }
+  const [fromCount, destCount] = await Promise.all([
+    memoryCountAt(from),
+    memoryCountAt(dest),
+  ]);
+  if (destCount > 0 && fromCount > 0) {
+    die(
+      `the ${to} store ${dest} already holds memories, and so does the ${otherPlacement(to)} store ${from}: fold the home store into the local one with \`mdmem consolidate --from ${location.home}\`, then run this again`
+    );
+  }
+  if (destCount > 0 && to === "local") {
+    // The local store is used, and the home store holds nothing to move.
+    print(locationLine(location));
+    print(`Already local. ${reverseLine(to)}`);
+    return;
+  }
+  if (destCount > 0) {
+    die(
+      `the home store ${dest} already holds memories, and the local store ${from}, which agents use while it exists, holds none: delete ${from} to use the home store`
+    );
+  }
+  await moveStoreDir(from, dest);
+  // A store renamed by hand, or a local store committed from another clone, names no project or another one.
+  await writeProjectFile(new MemoryStore(dest, location.root));
+  print(`Moved the store from ${from} to ${dest}`);
+  print(`Store: ${to}, ${dest}`);
+  if (to === "local") {
+    printIgnoreNote(location.root);
+  }
+  print(reverseLine(to));
+}
+
+/** Print every home store: its key, the project its project file names, its memory count, and whether that project is gone. */
+async function listStores(): Promise<void> {
+  const stores = await listHomeStores();
+  if (stores.length === 0) {
+    print(`No home stores in ${homeStoresDir()}.`);
+    return;
+  }
+  for (const { key, project, projectMissing, memoryCount } of stores) {
+    const memories = memoryCount === 1 ? "1 memory" : `${memoryCount} memories`;
+    const missing = projectMissing ? ", project missing" : "";
+    print(`${key} — ${project ?? "no project file"} — ${memories}${missing}`);
+  }
+}
+
+async function cmdStore(args: string[]): Promise<void> {
+  const [action, ...extra] = args;
+  if (extra.length > 0) {
+    die(STORE_USAGE);
+  }
+  if (action === undefined) {
+    print(locationLine(locateStore(process.cwd())));
+    return;
+  }
+  if (action === "local" || action === "home") {
+    await moveStore(action);
+    return;
+  }
+  if (action === "list") {
+    await listStores();
+    return;
+  }
+  die(`unknown store action "${action}" — ${STORE_USAGE}`);
 }
 
 /** Run by an agent's session-start hook, never by hand; it always exits 0. */
@@ -530,6 +657,7 @@ const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
   enable: (args) => cmdWiring(args, "enable"),
   disable: (args) => cmdWiring(args, "disable"),
   status: () => cmdStatus(),
+  store: (args) => cmdStore(args),
   path: () => cmdPath(),
   version: () => cmdVersion(),
   "--version": () => cmdVersion(),

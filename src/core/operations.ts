@@ -1,5 +1,14 @@
-import { mkdir } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import {
+  cp,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import { INDEX_FILE, loadMemories, refreshIndex, reindex } from "./check.ts";
 import type { IndexChange } from "./check.ts";
@@ -17,9 +26,14 @@ import { RefusalError } from "./refusal.ts";
 import { assertNoSecrets } from "./secrets.ts";
 import {
   locateStore,
-  MemoryStore,
   NEW_FILE_VERSION,
+  placementOf,
+  PROJECT_FILE,
   STORE_DIR,
+  homeStoresDir,
+  MemoryStore,
+  realDir,
+  storeAt,
   versionOf,
 } from "./store.ts";
 import type { DocumentInfo, StoreLocation } from "./store.ts";
@@ -36,12 +50,12 @@ import { messageOf } from "./text.ts";
  */
 
 /**
- * Why a project has no store to read, and what creates one: the first memory write,
- * at the repository's root, or outside git in the working directory (ADR 0004).
+ * Why a project has no store to read, and what creates one: the first memory write
+ * creates the home store (ADR 0005).
  */
 export function noStoreRefusal(location: StoreLocation): RefusalError {
   return new RefusalError(
-    `No ${STORE_DIR}/ store for this project yet (looked for ${location.dir}): the first memory write (memory_write, \`mdmem add\`) creates it`
+    `No store for this project yet: the first memory write (memory_write, \`mdmem add\`) creates the home store ${location.home}`
   );
 }
 
@@ -51,25 +65,144 @@ export function openStore(startDir: string): MemoryStore {
   if (!location.exists) {
     throw noStoreRefusal(location);
   }
-  return new MemoryStore(location.dir);
+  return storeAt(location);
+}
+
+/** Write the store's project file, naming the project root it serves. */
+export async function writeProjectFile(store: MemoryStore): Promise<void> {
+  await writeFile(
+    join(store.root, PROJECT_FILE),
+    `${store.project}\n`,
+    "utf-8"
+  );
 }
 
 /**
- * Create the store at `location`, with an empty index. It never edits
- * `.gitignore`: whether to ignore or commit the store is the user's choice.
+ * Create `store`, with an empty index and its project file. It never edits
+ * `.gitignore`: whether to ignore or commit a local store is the user's choice.
  */
-export async function createStore(
-  location: StoreLocation
-): Promise<MemoryStore> {
-  await mkdir(location.dir, { recursive: true });
-  const store = new MemoryStore(location.dir);
+export async function createStore(store: MemoryStore): Promise<MemoryStore> {
+  await mkdir(store.root, { recursive: true });
+  await writeProjectFile(store);
   await reindex(store);
   return store;
 }
 
-/** Whether git ignores the store at `location`; undefined outside a git work tree. */
-export function storeIgnored(location: StoreLocation): boolean | undefined {
-  return isIgnoredByGit(location.root, STORE_DIR);
+/**
+ * Whether `path` names the index. The match ignores case: on a case-insensitive
+ * filesystem (macOS, Windows) `memory.md` opens `MEMORY.md`, so a write or delete
+ * there would reach the index.
+ */
+function isIndexPath(path: string): boolean {
+  return path.toLowerCase() === INDEX_FILE.toLowerCase();
+}
+
+/** How many memories the store at `dir` holds: its `*.md` files but the index; 0 when it does not exist. */
+export async function memoryCountAt(dir: string): Promise<number> {
+  const files = await new MemoryStore(dir).listFiles();
+  return files.filter((file) => !isIndexPath(file)).length;
+}
+
+/** Move the store directory `from` to `to`, replacing `to` when it exists; across filesystems, copied then removed. */
+export async function moveStoreDir(from: string, to: string): Promise<void> {
+  await rm(to, { recursive: true, force: true });
+  await mkdir(dirname(to), { recursive: true });
+  try {
+    await rename(from, to);
+  } catch (error) {
+    // A home store and a project on different volumes cannot be renamed into one another.
+    if (
+      !(error instanceof Error && "code" in error && error.code === "EXDEV")
+    ) {
+      throw error;
+    }
+    await cp(from, to, { recursive: true });
+    await rm(from, { recursive: true, force: true });
+  }
+}
+
+/** A home store as `mdmem store list` shows it. */
+export interface HomeStoreInfo {
+  key: string;
+  dir: string;
+  /** The project root its project file names; undefined without one. */
+  project?: string;
+  /** Whether its project file names a directory that no longer exists; false without a project file. */
+  projectMissing: boolean;
+  memoryCount: number;
+}
+
+async function readProjectFile(dir: string): Promise<string | undefined> {
+  try {
+    const text = await readFile(join(dir, PROJECT_FILE), "utf-8");
+    return text.trim() === "" ? undefined : text.trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/** Every home store under `~/.mdmem`, by key; none when that directory does not exist. */
+export async function listHomeStores(home?: string): Promise<HomeStoreInfo[]> {
+  const stores = homeStoresDir(home);
+  if (!existsSync(stores)) {
+    return [];
+  }
+  const entries = await readdir(stores, { withFileTypes: true });
+  const keys = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .toSorted();
+  return await Promise.all(
+    keys.map(async (key) => {
+      const dir = join(stores, key);
+      const [project, memoryCount] = await Promise.all([
+        readProjectFile(dir),
+        memoryCountAt(dir),
+      ]);
+      return {
+        key,
+        dir,
+        ...(project === undefined ? {} : { project }),
+        projectMissing: project !== undefined && !existsSync(project),
+        memoryCount,
+      };
+    })
+  );
+}
+
+/**
+ * The directory of a second store a consolidation folds into `store`, resolved from
+ * `cwd`; refused when it is not a directory, or is `store` itself.
+ */
+export function secondStoreDir(
+  cwd: string,
+  from: string,
+  store: MemoryStore
+): string {
+  const dir = resolve(cwd, from);
+  let isDir = false;
+  try {
+    isDir = statSync(dir).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) {
+    throw new RefusalError(
+      `${dir} is not a directory: --from names the directory of a store to fold in, as \`mdmem status\` names a home store a local one hides`
+    );
+  }
+  // Through a symlink, too: folding the store into itself would delete it.
+  if (realDir(dir) === realDir(store.root)) {
+    throw new RefusalError(
+      `${dir} is this project's store: --from names another store to fold into it`
+    );
+  }
+  return dir;
+}
+
+/** Whether git ignores the local store of the project at `root`; undefined outside a git work tree. */
+export function localStoreIgnored(root: string): boolean | undefined {
+  return isIgnoredByGit(root, STORE_DIR);
 }
 
 /**
@@ -95,12 +228,12 @@ export interface StoreInfo {
   index: string;
 }
 
-/** mdmem serves one store per project, named after the project directory that holds `.memory/`. */
+/** mdmem serves one store per project, named after the project's root directory; its description names the placement (ADR 0005). */
 export function describeStore(store: MemoryStore): StoreInfo {
-  const id = basename(dirname(store.root));
+  const id = basename(store.project);
   return {
     id,
-    description: `Shared memory for ${id}`,
+    description: `Shared memory for ${id}, the ${placementOf(store)} store ${store.root}`,
     writable: true,
     index: INDEX_FILE,
   };
@@ -191,15 +324,6 @@ export async function readIndex(store: MemoryStore): Promise<string> {
     await reindex(store);
   }
   return store.view(INDEX_FILE);
-}
-
-/**
- * Whether `path` names the index. The match ignores case: on a case-insensitive
- * filesystem (macOS, Windows) `memory.md` opens `MEMORY.md`, so a write or delete
- * there would reach the index.
- */
-function isIndexPath(path: string): boolean {
-  return path.toLowerCase() === INDEX_FILE.toLowerCase();
 }
 
 /** A memory document's content and the version token naming it. */

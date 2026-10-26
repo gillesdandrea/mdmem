@@ -20,10 +20,18 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   is created, which holds nothing they could conflict with, instead of by
   `enable claude-code`. A store that already exists gets no import.
 - `mdmem init` is gone: the first memory write (`memory_write`, `mdmem add`)
-  creates the store everywhere, at a repository's root or, outside git, in the
-  working directory, and `mdmem enable --project` creates it too, in a
-  repository or, outside git, in the working directory. `mdmem init` is refused with one line saying so, and
-  `mdmem status` says where the store would be.
+  creates the store, in any directory. `mdmem init` is refused with one line
+  saying so, and `mdmem status` says where the store would be.
+- The store is the home store by default, `~/.mdmem/<key>/`, keyed by the
+  project's root path as Claude Code keys its project directories, and `.mdmem/`
+  at the root only on purpose, created with `mdmem store local` (ADR 0005).
+  `.mdmem/` replaces `.memory/`, which mdmem no longer reads anywhere: rename
+  a 0.2.0 store by hand (`mv .memory .mdmem`) to keep it as a local store,
+  then run `mdmem store home` for a home store.
+- Outside git the working directory is the project, with no walk-up to a store
+  above it, and the session-start hook speaks there as in a repository.
+- `mdmem enable --project` writes the wiring files only: it no longer creates
+  the store, which the first save creates.
 
 ### Added
 
@@ -36,16 +44,32 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   own entry for that part is present, so a repository wired in both scopes
   gets the protocol and the index once. Codex keeps one hook for both scopes,
   speaking where either config registers the server.
-- The store is created on the first save: in a git repository with no
-  `.memory/`, the first `memory_write` or `mdmem add` creates it with its
-  `MEMORY.md`, reporting its path, what the import copied, and whether git
-  ignores it. Until then the session-start hook speaks anyway, its index part
-  saying the store does not exist yet, and reads refuse, saying what creates
-  it. Outside git the first write creates the store in the working directory,
-  and the hook speaks only where one exists.
-- `mdmem status`, `mdmem doctor` and `memory_check` work without a store and
-  outside any repository, where they report the wiring alone, and list each
-  agent's wiring per scope.
+- The store is created on the first save: with no store yet, the first
+  `memory_write` or `mdmem add` creates the home store with its `MEMORY.md`
+  and a `project` file naming the root it serves, reporting its placement and
+  path and what the import copied. Until then the session-start hook speaks
+  anyway, in every directory, its index part naming the home store the first
+  save creates, and reads refuse, saying the same.
+- `mdmem store` prints the store's placement and path, `Store: home, <path>` or
+  `Store: local, <path>`; `mdmem store local` moves the home store to `.mdmem/`
+  at the project's root (or creates an empty local store), and
+  `mdmem store home` moves it back, each refusing when the destination already
+  holds memories and naming the other store; `mdmem store list` prints every
+  home store with its key, project path, memory count, and `project missing`
+  when the project's directory is gone.
+- `mdmem consolidate --from <dir>`, and the MCP prompt's `from` argument, name a
+  second store for the consolidation to fold into the project's, then delete.
+- Every line that names the store names its placement: `mdmem status`,
+  `mdmem doctor` and `memory_check` open with it, and the hook's index part with
+  `Store: home, <path>` or `Store: local, <path>`. The note that git does not
+  ignore the store appears for a local store only. `mdmem status` warns when a
+  local store hides a home store that holds memories, naming
+  `mdmem consolidate --from` to fold them in.
+- The memory protocol names the store's path for writing memory files without
+  the tools, and says that a sandboxed agent may not reach a home store without
+  them, so it tells the user.
+- `mdmem status`, `mdmem doctor` and `memory_check` work without a store, where
+  they report the wiring alone, and list each agent's wiring per scope.
 - `mdmem version`, `mdmem --version`, `-v` and `-V` print `mdmem <version>`,
   read from `package.json` as the MCP server reads it, so the two report the
   same version.
@@ -56,15 +80,15 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   `unchanged`, which is also what a write reports when the index could not be
   updated, beside the warning that it is stale.
 - `memory_search` and `memory_read` results open with a line naming the store
-  that answered, `Store: <id> (<path>)`: the id `memory_list` gives it and its
-  directory. `memory_read`'s structured result carries it as `store`, with `id`
-  and `path`.
+  that answered, `Store: <id> (<placement>, <path>)`: the id `memory_list` gives
+  it, `home` or `local`, and its directory. `memory_read`'s structured result
+  carries it as `store`, with `id`, `placement` and `path`.
 - The memory protocol says to check a claim a memory makes about an external
   tool, library or service before acting on it or repeating it, since a memory
   records what was believed when it was written; to name the path of the memory
   an answer comes from; to load every mdmem tool in one request where the agent
   loads tools on demand; to keep project knowledge in the store where the
-  agent keeps a memory of its own; and that a file under `.memory/` reported
+  agent keeps a memory of its own; and that a file in the store reported
   changed on disk right after the agent's own `memory_write` is that write.
 - README's "Codex's own memory" section says Codex's own memory stays on
   beside mdmem, and why Claude Code's auto memory is turned off instead.
@@ -73,7 +97,8 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 
 - README is a user document: why mdmem exists, install (bun required until
   mdmem is on npm), the quickstart, what happens in each agent and the
-  approvals it needs, a team workflow (committing or ignoring `.memory/`,
+  approvals it needs, where the store lives (home or local), a team workflow
+  (sharing the store through git with `mdmem store local`,
   several people writing one store, `MEMORY.md` in pull requests, the version
   check) and troubleshooting, starting with "the agent has no memory". The
   reference detail it held (store resolution, the index rules, the commands
@@ -113,8 +138,9 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   that read the structured result, as Claude Code does when a tool declares an
   output schema: the structured result held only the version, so the agent saw
   no content. `memory_read`'s now carries `path`, `content` and `version`;
-  `memory_write`'s carries `file`, `version`, `created` (the store's path, the
-  import's lines, whether git ignores it) on the write that created the store,
+  `memory_write`'s carries `file`, `version`, `created` (the store's path and
+  placement, the import's lines, and for a local store whether git ignores it)
+  on the write that created the store,
   and `warnings`; a version conflict's carries its message, `path`, the current
   `content` and `version`. The text is unchanged, for clients that read it.
 - Claude Code shows each mdmem tool's title: every tool now carries it in

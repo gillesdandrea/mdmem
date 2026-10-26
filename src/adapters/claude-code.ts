@@ -295,7 +295,7 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
     const after =
       scope === "project"
         ? commitLine([SETTINGS, MCP_CONFIG], `they wire ${TITLE}`)
-        : `${TITLE}'s auto memory is now off in every project, and the first memory saved in a repository creates its store, importing the memories ${TITLE} kept for it.`;
+        : `${TITLE}'s auto memory is now off in every project, and the first memory saved in a project creates its store, importing the memories ${TITLE} kept for it.`;
     return {
       write: async () => {
         await writeConfigs(plan);

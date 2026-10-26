@@ -14,16 +14,18 @@ import { stringify as stringifyYaml } from "yaml";
 
 import { INDEX_FILE, pointerTarget, reindex } from "./check.ts";
 import { worktreePaths } from "./git.ts";
+import { projectKey } from "./key.ts";
 import { memoryFileName, parseMemory } from "./memory.ts";
 import { describeSecrets, findSecrets } from "./secrets.ts";
 import type { MemoryStore } from "./store.ts";
-import { realDir, STORE_DIR } from "./store.ts";
+import { realDir } from "./store.ts";
 import { LINE_BREAK_RE, lineEndingOf } from "./text.ts";
 
 /**
  * The one-time import of Claude Code's auto memory into a project's store (ADR 0003,
  * ADR 0004): once Claude Code is wired, its own memory is off, so the memories it
- * already holds for the repository move into `.memory/` when that store is created.
+ * already holds for the project move into its store when that store is created, in
+ * either placement (ADR 0005).
  * The merge is mechanical: it compares files, not meaning, never refuses, and backs
  * an existing store up before it writes. A copied memory whose name differs from its
  * file name gets the file name as its name; only its `name:` line changes. Claude's
@@ -78,58 +80,6 @@ export interface ImportResult {
   warnings: string[];
 }
 
-/** Claude Code cuts a project key longer than this and appends a hash of the path. */
-const KEY_MAX_LENGTH = 200;
-const HASH_RADIX = 36;
-const HASH_MULTIPLIER = 31;
-const CHAR_0 = 48;
-const CHAR_9 = 57;
-const CHAR_UPPER_A = 65;
-const CHAR_UPPER_Z = 90;
-const CHAR_LOWER_A = 97;
-const CHAR_LOWER_Z = 122;
-
-function isAsciiAlphanumeric(code: number): boolean {
-  return (
-    (code >= CHAR_0 && code <= CHAR_9) ||
-    (code >= CHAR_UPPER_A && code <= CHAR_UPPER_Z) ||
-    (code >= CHAR_LOWER_A && code <= CHAR_LOWER_Z)
-  );
-}
-
-/** Java's `String.hashCode` over UTF-16 code units, as a signed 32-bit integer. */
-function stringHash(text: string): number {
-  let hash = 0;
-  // Indexed, not for...of: the hash runs over UTF-16 code units, and for...of yields code points.
-  for (let i = 0; i < text.length; i += 1) {
-    // oxlint-disable-next-line no-bitwise, unicorn/prefer-math-trunc, unicorn/prefer-code-point -- Java's hash wraps to 32 bits over UTF-16 code units, as Claude Code's does
-    hash = (Math.imul(HASH_MULTIPLIER, hash) + text.charCodeAt(i)) | 0;
-  }
-  return hash;
-}
-
-/**
- * The name of Claude Code's project directory for `path`. This mirrors Claude Code's
- * own encoding, which is undocumented; verified against Claude Code 2.1.302 with
- * `claude -p`: every UTF-16 code unit that is not an ASCII letter or digit becomes
- * `-` (so `/`, `.`, `_`, spaces and `é` each give one, an emoji two), and a key
- * longer than 200 characters is cut at 200 and followed by `-` and the base-36
- * absolute value of the path's Java-style string hash.
- */
-export function claudeProjectKey(path: string): string {
-  let key = "";
-  // Indexed, not for...of: Claude Code maps UTF-16 code units, and for...of yields code points.
-  for (let i = 0; i < path.length; i += 1) {
-    // oxlint-disable-next-line unicorn/prefer-code-point -- Claude Code replaces each UTF-16 code unit, so an emoji gives two dashes
-    key += isAsciiAlphanumeric(path.charCodeAt(i)) ? path[i] : "-";
-  }
-  if (key.length <= KEY_MAX_LENGTH) {
-    return key;
-  }
-  const hash = Math.abs(stringHash(path)).toString(HASH_RADIX);
-  return `${key.slice(0, KEY_MAX_LENGTH)}-${hash}`;
-}
-
 /** Claude Code's config directory: `CLAUDE_CONFIG_DIR` when set, else `~/.claude`. */
 export function claudeConfigDir({
   env = process.env,
@@ -152,7 +102,7 @@ export function claudeProjectDir(
   environment: ClaudeEnvironment = {}
 ): string {
   const env = environment.env ?? process.env;
-  const key = env.CLAUDE_CODE_PROJECT_DIR_NAME || claudeProjectKey(projectRoot);
+  const key = env.CLAUDE_CODE_PROJECT_DIR_NAME || projectKey(projectRoot);
   return join(claudeProjectsDir(environment), key);
 }
 
@@ -180,7 +130,7 @@ async function claudeSources(
   const candidates = [
     join(claudeProjectDir(projectRoot, environment), CLAUDE_MEMORY_DIR),
     ...worktreePaths(projectRoot).map((path) =>
-      join(projects, claudeProjectKey(path), CLAUDE_MEMORY_DIR)
+      join(projects, projectKey(path), CLAUDE_MEMORY_DIR)
     ),
   ];
   const unique = [...new Set(candidates)];
@@ -519,7 +469,7 @@ function secretWarnings(writes: readonly Write[]): string[] {
     return secrets.length === 0
       ? []
       : [
-          `${file}: imported unredacted, and it looks like it holds a secret at ${describeSecrets(secrets)}; remove it before committing ${STORE_DIR}/`,
+          `${file}: imported unredacted, and it looks like it holds a secret at ${describeSecrets(secrets)}; remove it from the store, which every agent on the project reads`,
         ];
   });
 }
@@ -536,7 +486,7 @@ export function importMarker(
   environment: ClaudeEnvironment = {}
 ): string {
   // Claude Code keys the physical path, symlinks resolved.
-  const projectRoot = realDir(dirname(store.root));
+  const projectRoot = realDir(store.project);
   return join(claudeProjectDir(projectRoot, environment), IMPORT_MARKER);
 }
 
@@ -573,7 +523,7 @@ export async function planClaudeImport(
   store: MemoryStore,
   options: ImportOptions = {}
 ): Promise<PlannedImport> {
-  const projectRoot = realDir(dirname(store.root));
+  const projectRoot = realDir(store.project);
   const sources = await claudeSources(projectRoot, options);
   const { copiesByKey, skipped } = await readClaudeDirectories(sources);
   const stored = await storedMemories(store);
@@ -668,14 +618,14 @@ export function formatImport(result: ImportResult): string[] {
   } else if (!wrote) {
     lines.push(
       result.leftBehind.length > 0
-        ? `Nothing to import: ${STORE_DIR}/ keeps its own version of every file that differs.`
-        : `Claude Code's memories are already in ${STORE_DIR}/: nothing to import.`
+        ? `Nothing to import: the store keeps its own version of every file that differs.`
+        : `Claude Code's memories are already in the store: nothing to import.`
     );
   } else if (result.backup !== undefined) {
-    lines.push(`Backed up ${STORE_DIR}/ to ${result.backup}`);
+    lines.push(`Backed up the store to ${result.backup}`);
   }
   if (result.copied.length > 0) {
-    lines.push(`Copied into ${STORE_DIR}/:`, ...fileList(result.copied));
+    lines.push("Copied into the store:", ...fileList(result.copied));
   }
   if (result.renamed.length > 0) {
     lines.push(

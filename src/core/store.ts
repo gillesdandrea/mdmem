@@ -13,10 +13,12 @@ import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 
 import { repositoryRoot } from "./git.ts";
+import { projectKey } from "./key.ts";
 import { RefusalError } from "./refusal.ts";
 
 /**
- * MemoryStore is the filesystem behind a `.memory/` directory. It exposes read
+ * MemoryStore is the filesystem behind a store's directory, a home store under
+ * `~/.mdmem/` or a local store at `.mdmem/` (ADR 0005). It exposes read
  * (`view`), write (`create`), delete (`remove`) and list, each write and delete
  * under an optional version guard that lets a writer detect a lost update on a
  * read-modify-write, or insist on creating a new file (the document operations
@@ -29,7 +31,11 @@ import { RefusalError } from "./refusal.ts";
  * how it is kept up to date from the memories, is the business of ./check.ts.
  */
 
-export const STORE_DIR = ".memory";
+/** The local store's directory at a project's root, and the home stores' directory under the home directory. */
+export const STORE_DIR = ".mdmem";
+
+/** The file in a store naming the project root it serves; not a memory, since it is not `*.md`. */
+export const PROJECT_FILE = "project";
 
 /** The version a writer passes for a file that must not exist yet. */
 export const NEW_FILE_VERSION = "new";
@@ -61,10 +67,15 @@ export interface DocumentInfo {
 }
 
 export class MemoryStore {
+  /** The store's directory. */
   readonly root: string;
+  /** The project root the store serves; by default the directory holding it, as a local store's. */
+  readonly project: string;
 
-  constructor(root: string) {
+  constructor(root: string, project?: string) {
     this.root = resolve(root);
+    this.project =
+      project === undefined ? dirname(this.root) : resolve(project);
   }
 
   private full(path: string): string {
@@ -160,17 +171,22 @@ export class MemoryStore {
   }
 }
 
+/** Where a project's store lives (GLOSSARY.md): in the home directory, or at the project's root. */
+export const PLACEMENTS = ["home", "local"] as const;
+export type Placement = (typeof PLACEMENTS)[number];
+
 /**
- * Where a project's store is: `root` is the project directory, `dir` its `.memory/`,
- * `exists` whether that directory is there yet, and `inRepository` whether the
- * project is a git repository, the only place a memory write creates a store
- * (ADR 0004).
+ * Where a project's store is (ADR 0005): `root` is the project, `dir` the store the
+ * rule names, `placement` which of the two that is, and `exists` whether `dir` is
+ * there yet. `local` and `home` are both placements' directories, whichever is used.
  */
 export interface StoreLocation {
   root: string;
   dir: string;
+  placement: Placement;
   exists: boolean;
-  inRepository: boolean;
+  local: string;
+  home: string;
 }
 
 function isDirectory(path: string): boolean {
@@ -179,11 +195,6 @@ function isDirectory(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-function storeAt(root: string, inRepository: boolean): StoreLocation {
-  const dir = join(root, STORE_DIR);
-  return { root, dir, exists: isDirectory(dir), inRepository };
 }
 
 /** The real path of `path`, symlinks resolved; `path` resolved, when it cannot be (it does not exist, say). */
@@ -195,38 +206,68 @@ export function realDir(path: string): string {
   }
 }
 
+/** The directory holding every home store: `~/.mdmem`. */
+export function homeStoresDir(home: string = homedir()): string {
+  return join(home, STORE_DIR);
+}
+
+/** The home store of the project at `root`: `~/.mdmem/<key>`. */
+export function homeStoreOf(root: string, home: string = homedir()): string {
+  return join(homeStoresDir(home), projectKey(root));
+}
+
 /**
- * The store of the project holding `startDir`. In git, the project is the repository
- * (./git.ts says which directory keys it), so every worktree, subdirectory and submodule
- * shares one store and a `.memory/` lower down is ignored. Without git, it is the first
- * directory holding a `.memory/`, walking up from `startDir` and stopping before the home
- * directory (unless `startDir` is the home directory), else `startDir` itself, where
- * the first memory write creates one.
+ * The store of the project holding `startDir` (ADR 0005). The project's root is the
+ * repository (./git.ts says which directory keys it), so every worktree, subdirectory
+ * and submodule shares one store; outside git it is `startDir` itself, with no
+ * walk-up. The store is the local one, `<root>/.mdmem/`, when that directory exists,
+ * else the home one, `~/.mdmem/<key>/`, keyed by ./key.ts. In the home directory
+ * itself, `~/.mdmem` holds the home stores, so it is never a local store.
  */
 export function locateStore(
   startDir: string,
   home: string = homedir()
 ): StoreLocation {
   const start = realDir(startDir);
-  const repository = repositoryRoot(start);
-  if (repository !== null) {
-    return storeAt(repository, true);
-  }
-  const stop = realDir(home);
-  let dir = start;
-  for (;;) {
-    if (dir === stop && dir !== start) {
-      break;
-    }
-    const location = storeAt(dir, false);
-    if (location.exists) {
-      return location;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) {
-      break;
-    }
-    dir = parent;
-  }
-  return storeAt(start, false);
+  const root = repositoryRoot(start) ?? start;
+  const local = join(root, STORE_DIR);
+  const stores = homeStoresDir(home);
+  const homeDir = homeStoreOf(root, home);
+  const isLocal = isDirectory(local) && realDir(local) !== realDir(stores);
+  const dir = isLocal ? local : homeDir;
+  return {
+    root,
+    dir,
+    placement: isLocal ? "local" : "home",
+    exists: isLocal || isDirectory(homeDir),
+    local,
+    home: homeDir,
+  };
+}
+
+/** The store at `location`, serving its project. */
+export function storeAt(location: StoreLocation): MemoryStore {
+  return new MemoryStore(location.dir, location.root);
+}
+
+/** A store's placement: local when it is `.mdmem/` at its project's root, else home. */
+export function placementOf(store: MemoryStore): Placement {
+  return store.root === join(store.project, STORE_DIR) ? "local" : "home";
+}
+
+/** A store's line, as every surface prints it: `Store: home, <dir>` or `Store: local, <dir>`. */
+export function placementLine(store: MemoryStore): string {
+  return `Store: ${placementOf(store)}, ${store.root}`;
+}
+
+/** The line for a project with no store yet, naming the home store `home` the first save creates. */
+export function noStoreLine(home: string): string {
+  return `Store: none yet; the first save creates the home store ${home}`;
+}
+
+/** The project's store line: its placement and path, or the home store the first save creates. */
+export function locationLine(location: StoreLocation): string {
+  return location.exists
+    ? `Store: ${location.placement}, ${location.dir}`
+    : noStoreLine(location.home);
 }

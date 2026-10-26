@@ -7,7 +7,7 @@ import { INDEX_MAX_CHARS, POINTER_MAX_CHARS } from "./check.ts";
  * can be tuned without touching code:
  *
  * - `memory-protocol.md`, the memory protocol: `mdmem hook <agent> protocol` injects
- *   it at session start.
+ *   it at session start, naming the project's store.
  * - `consolidate.md`, the consolidation prompt served by `mdmem consolidate` and the
  *   MCP prompt `consolidate`.
  *
@@ -64,8 +64,12 @@ function indexLimits(): Record<string, string> {
   };
 }
 
-export function getMemoryProtocol(): string {
-  return renderTemplate("memory-protocol", indexLimits());
+/** The memory protocol for the project whose store is (or will be) at `storeDir`. */
+export function getMemoryProtocol(storeDir: string): string {
+  return renderTemplate("memory-protocol", {
+    store: storeDir,
+    ...indexLimits(),
+  });
 }
 
 /** Where an agent keeps its past sessions of a project, as its adapter reports it to the consolidation prompt. */
@@ -86,16 +90,26 @@ function pastSessions(history: SessionHistory | undefined): string {
     : `your past sessions are in \`${history.dir}/\`: ${history.search}; when you`;
 }
 
+/** The paragraph naming a second store to fold in, after the store's line; empty without one. */
+function secondStore(fromDir: string | undefined): string {
+  return fromDir === undefined
+    ? ""
+    : `\n\nA second store to fold in: \`${fromDir}\`. Read each of its memories and merge it into the memory store above, as Phase 3 merges new signal; once every one is merged, delete that store's directory, or ask the user to.`;
+}
+
 /**
  * The consolidation prompt for the memory store at `storeDir`, pointing at the
- * agent's session `history` when it is known.
+ * agent's session `history` when it is known, and at a second store `fromDir` to
+ * fold in when one is given.
  */
 export function getConsolidatePrompt(
   storeDir: string,
-  history?: SessionHistory
+  history?: SessionHistory,
+  fromDir?: string
 ): string {
   return renderTemplate("consolidate", {
     store: storeDir,
+    second_store: secondStore(fromDir),
     past_sessions: pastSessions(history),
     ...indexLimits(),
   });

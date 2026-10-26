@@ -89,7 +89,7 @@ const PAGES: Record<string, CommandPage> = {
   enable: {
     usage: "mdmem enable <agent…> | --all [--project]",
     about:
-      "Wire agents to mdmem in one scope: their session-start hooks and the mdmem MCP server, and for Claude Code its auto memory turned off and the mdmem tools' permission. The global scope needs no store; the project scope creates the store if it is missing. Every agent is planned before any file is written, so a refusal leaves every file as it was, and running it again changes nothing.",
+      "Wire agents to mdmem in one scope: their session-start hooks and the mdmem MCP server, and for Claude Code its auto memory turned off and the mdmem tools' permission. Neither scope needs a store or creates one: the first memory saved creates it. Every agent is planned before any file is written, so a refusal leaves every file as it was, and running it again changes nothing.",
     sections: [
       {
         heading: "Options:",
@@ -115,7 +115,7 @@ const PAGES: Record<string, CommandPage> = {
   disable: {
     usage: "mdmem disable <agent…> | --all [--project]",
     about:
-      "Remove exactly mdmem's wiring from agents in one scope, leaving everything else in their files as it was. It needs no store and leaves the store as it is, so it works after .memory/ was deleted. Codex's hook serves both scopes, so the global scope removes it and --project keeps it.",
+      "Remove exactly mdmem's wiring from agents in one scope, leaving everything else in their files as it was. It needs no store and leaves the store as it is, so it works after the store was deleted. Codex's hook serves both scopes, so the global scope removes it and --project keeps it.",
     sections: [
       {
         heading: "Options:",
@@ -134,23 +134,23 @@ const PAGES: Record<string, CommandPage> = {
   status: {
     usage: "mdmem status",
     about:
-      "Show the store, or where the first memory write creates it, the check in one line, whether git ignores the store, and each agent's wiring in each scope, entry by entry. Warnings follow for what mdmem cannot check and for wiring an agent started here would not get. Outside any project it shows the global scope alone.",
+      "Show the store and its placement, or the home store the first memory write creates, the check in one line, whether git ignores a local store, and each agent's wiring in each scope, entry by entry. Warnings follow for memories in a home store a local store hides, for what mdmem cannot check, and for wiring an agent started here would not get.",
     example: "mdmem status",
     refuses: ["never: it shows what it finds and exits 0"],
   },
   doctor: {
     usage: "mdmem doctor",
     about:
-      "Run a check, also as mdmem check: report every problem with the store's memories and index, and with the agents' wiring in both scopes. With no store, or outside any project, it checks the wiring alone. A link to a memory not written yet is a note, not a problem.",
+      "Run a check, also as mdmem check: name the store and its placement, then report every problem with the store's memories and index, and with the agents' wiring in both scopes. With no store, it checks the wiring alone. A link to a memory not written yet is a note, not a problem.",
     example: "mdmem doctor",
     refuses: [
       "never: it exits 1 when the check finds a problem, and 0 when notes are its only findings",
     ],
   },
   consolidate: {
-    usage: "mdmem consolidate [--agent <agent>]",
+    usage: "mdmem consolidate [--agent <agent>] [--from <dir>]",
     about:
-      "Print a prompt that has an agent consolidate the store: merge, correct and prune its memories. Pass it to an agent session, as in the example.",
+      "Print a prompt that has an agent consolidate the store: merge, correct and prune its memories. Pass it to an agent session, as in the example. With --from, the prompt also has the agent fold a second store into this one, then delete it.",
     sections: [
       {
         heading: "Options:",
@@ -158,6 +158,10 @@ const PAGES: Record<string, CommandPage> = {
           [
             "--agent <agent>",
             "Point the prompt at that agent's past sessions of the project",
+          ],
+          [
+            "--from <dir>",
+            "Fold the store at <dir> into this one, such as the home store a local store hides",
           ],
         ],
       },
@@ -177,13 +181,17 @@ const PAGES: Record<string, CommandPage> = {
       },
     ],
     example: 'codex "$(mdmem consolidate --agent codex)"',
-    refuses: [NO_STORE, "--agent names an unknown agent"],
+    refuses: [
+      NO_STORE,
+      "--agent names an unknown agent",
+      "--from names no directory, or this store's",
+    ],
   },
   add: {
     usage:
       "mdmem add --type <type> --name <name> --description <text> [--body <text>] [--force]",
     about:
-      "Save a memory and add its pointer to the index. The body comes from --body, or from stdin when it is piped. With no store yet, the first save creates it: at the repository's root, or outside git in the working directory.",
+      "Save a memory and add its pointer to the index. The body comes from --body, or from stdin when it is piped. With no store yet, the first save creates the home store, ~/.mdmem/<key>, and says so; mdmem store local moves it into the project.",
     sections: [
       {
         heading: "Options:",
@@ -279,14 +287,14 @@ const PAGES: Record<string, CommandPage> = {
   path: {
     usage: "mdmem path",
     about:
-      "Print the absolute path of the project's store. It finds the store from any folder of the project, as the other commands do.",
+      "Print the absolute path of the project's store, home or local. It finds the store from any folder of the project, as the other commands do; mdmem store also names the placement.",
     example: 'cd "$(mdmem path)"',
     refuses: [NO_STORE],
   },
   hook: {
     usage: "mdmem hook <agent> <part> [--global]",
     about:
-      "Run by an agent's session-start hook, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index as context for the session. It speaks in every git repository, where the index part says when no store exists yet, and outside git only where a store exists. Codex's hook stays silent where neither ~/.codex/config.toml nor .codex/config.toml registers the server.",
+      "Run by an agent's session-start hook, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index as context for the session. It speaks in every directory, git or not; with no store yet, the index part names the home store the first save creates. Codex's hook stays silent where neither ~/.codex/config.toml nor .codex/config.toml registers the server.",
     sections: [
       {
         heading: "Arguments:",
@@ -308,6 +316,33 @@ const PAGES: Record<string, CommandPage> = {
     example: `echo '{"hook_event_name":"SessionStart"}' | mdmem hook claude-code index`,
     refuses: [
       "never: it exits 0, and an error becomes a one-line context saying why the memory could not be loaded",
+    ],
+  },
+  store: {
+    usage: "mdmem store [local | home | list]",
+    about:
+      "Show or change where the project's store lives. With no argument, print its placement and path, or the home store the first save creates. The home store, ~/.mdmem/<key>, is the default; the local store, .mdmem/ at the project's root, is for a team that commits it. Agents use the local store whenever it exists.",
+    sections: [
+      {
+        heading: "Arguments:",
+        rows: [
+          [
+            "local",
+            "Move the home store to .mdmem/ at the project's root, or create an empty local store when there is none",
+          ],
+          ["home", "Move the local store back to ~/.mdmem/<key>"],
+          [
+            "list",
+            "Print every home store: its key, project, memory count, and whether the project is missing",
+          ],
+        ],
+      },
+    ],
+    example: "mdmem store local",
+    refuses: [
+      "the argument is not local, home or list",
+      "the destination already holds memories: the refusal names the other store and how to fold it in",
+      "store local in the home directory, where ~/.mdmem holds the home stores",
     ],
   },
   mcp: {
@@ -351,9 +386,13 @@ const GROUPS: readonly { heading: string; rows: readonly Row[] }[] = [
         "Remove mdmem's wiring from agents in one scope",
       ],
       ["status", "Show the store, the check and each agent's wiring"],
+      [
+        "store [local | home | list]",
+        "Show the store's placement, move it, or list the home stores",
+      ],
       ["doctor | check", "Check the store and the agents' wiring"],
       [
-        "consolidate [--agent <agent>]",
+        "consolidate [--agent <agent>] [--from <dir>]",
         "Print a prompt that has an agent consolidate the store",
       ],
     ],

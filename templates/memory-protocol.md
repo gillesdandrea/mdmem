@@ -1,7 +1,7 @@
 # Memory protocol
 
-This project has a memory store: `.memory/`, a directory of Markdown memories shared
-by every agent that works here. Build it up over time, so that future sessions, yours
+This project has a memory store: `{{store}}`, a directory of Markdown memories
+shared by every agent that works here. Build it up over time, so that future sessions, yours
 or another agent's, start knowing who the user is, how they want to work with you,
 and the context behind the work.
 
@@ -46,8 +46,8 @@ cut off at session start.
 
 ## Recall
 
-At session start, a block opening with `Memory store: <absolute path>` holds the
-index; if it did not arrive, `memory_read` `MEMORY.md`, or without the mdmem tools
+At session start, a block opening with `Store: <placement>, <absolute path>` holds
+the index; if it did not arrive, `memory_read` `MEMORY.md`, or without the mdmem tools
 read the store's files directly. Open a memory whose pointer bears on the task with
 `memory_read`, find one by its content with `memory_search`, list the store with
 `memory_list`; `memory_check` reports the store's problems. If your harness loads
@@ -90,12 +90,14 @@ Save through the mdmem MCP tools, which guard each write against another agent's
   refused and returns the current content and version: merge your change into it and
   retry with the new version.
 
-After your own `memory_write`, your harness may report that a file under `.memory/`
+After your own `memory_write`, your harness may report that a file in the store
 changed on disk: that is the write you just made, not another edit, and needs no
 re-read.
 
-Without the mdmem tools, write `<name>.md` in the store directly, then run
-`mdmem reindex`; delete with `mdmem delete <name>`.
+Without the mdmem tools, write `<name>.md` in `{{store}}` directly, then run
+`mdmem reindex`; delete with `mdmem delete <name>`. A home store, under `~/.mdmem/`,
+lies outside the project: a sandboxed agent may not reach it without the tools, so
+tell the user when you cannot save there.
 
 ## Consolidation
 
