@@ -52,7 +52,13 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   own entry for that part is present, so a repository wired in both scopes
   gets the protocol and the index once. Codex's global entries also stay
   silent below the root and in a linked worktree, where Codex reads the
-  project's `.codex/hooks.json` too (Codex 0.164.0).
+  project's `.codex/hooks.json` too (Codex 0.164.0). Claude Code's global
+  entries stay silent only in a folder its `~/.claude.json` records as
+  trusted, since it runs the project's hooks nowhere else: in an untrusted
+  folder they speak and say why on stderr. A `claude -p` session in an
+  untrusted folder gets each part twice.
+- `mdmem status` and the check note each agent wired in both scopes; the note
+  is not a problem.
 - The store is created on the first save: with no store yet, the first
   `memory_write` or `mdmem add` creates the home store with its `MEMORY.md`
   and a `project` file naming the root it serves, reporting its placement and

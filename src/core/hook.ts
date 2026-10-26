@@ -23,7 +23,8 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
  *
  * A hook never fails a session (ADR 0002): where it does not speak (no payload, a
  * resumed or forked session, another event, or a silence its agent decides) it prints
- * nothing and says why on stderr, which never reaches the agent's context; any error
+ * nothing and says why on stderr, which never reaches the agent's context; where its
+ * agent has a note on why it speaks, that goes to stderr too; any error
  * becomes a one-line context saying why the memory could not be loaded. A payload
  * that does not parse is reported only where the hook would speak from the process's
  * working directory; elsewhere the hook prints nothing.
@@ -226,6 +227,14 @@ export interface HookSite {
   global: boolean;
 }
 
+/**
+ * Whether the agent's hook speaks at a HookSite, as its adapter decides: silent, with
+ * one line saying why and naming the file that decides it; speaking with a note for
+ * stderr, one line saying why it speaks where it might have been silent; or speaking
+ * with nothing to say (undefined).
+ */
+export type HookVerdict = { silence: string } | { note: string } | undefined;
+
 /** What `mdmem hook` is asked to do, and where. */
 export interface HookRequest {
   /** The agent whose hook runs; one of HOOK_AGENTS. */
@@ -238,24 +247,24 @@ export interface HookRequest {
   readPayload: () => Promise<string>;
   /** Where to resolve the store when the payload names no cwd or does not parse. */
   cwd: string;
-  /**
-   * Why the agent's hook stays silent at `site`, one line naming the file that
-   * decides it, or undefined where it speaks: a global entry stays silent where the
-   * project's own entries run.
-   */
-  silence: (agent: HookAgent, site: HookSite) => Promise<string | undefined>;
+  /** Whether the agent's hook speaks at `site`: a global entry stays silent where the project's own entries run. */
+  verdict: (agent: HookAgent, site: HookSite) => Promise<HookVerdict>;
 }
 
-/** What `mdmem hook` prints: the output for stdout, and why it stayed silent, for stderr. */
+/** What `mdmem hook` prints: the output for stdout, and why it stayed silent or its agent's note, for stderr. */
 export interface HookResult {
   /** The SessionStart output, or an empty string when the hook stays silent. */
   stdout: string;
   /** Why the hook printed nothing, one line; undefined when it spoke. */
   silence?: string;
+  /** Why the hook spoke where it might have stayed silent, one line, as its agent says it. */
+  note?: string;
 }
 
-/** The session's store, or why the hook stays silent there. */
-type SessionStore = { location: StoreLocation } | { silence: string };
+/** The session's store and the agent's note, or why the hook stays silent there. */
+type SessionStore =
+  | { location: StoreLocation; note?: string }
+  | { silence: string };
 
 /** Where the store of a session in `cwd` is, or why the hook stays silent there. */
 async function sessionStore(
@@ -267,13 +276,16 @@ async function sessionStore(
   const part = oneOf(request.part, HOOK_PARTS, "part");
   // The work tree as `mdmem enable --project` wires it: the session's own, else the project's directory.
   const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
-  const silence = await request.silence(agent, {
+  const verdict = await request.verdict(agent, {
     cwd,
     projectRoot,
     part,
     global: request.global,
   });
-  return silence === undefined ? { location } : { silence };
+  if (verdict === undefined) {
+    return { location };
+  }
+  return "silence" in verdict ? verdict : { location, note: verdict.note };
 }
 
 /** The index part in a project with no store yet. */
@@ -327,7 +339,7 @@ function eventSilence(payload: HookPayload): string | undefined {
 /** The context to inject, or why the hook stays silent. */
 async function hookContext(
   request: HookRequest
-): Promise<{ context: string } | { silence: string }> {
+): Promise<{ context: string; note?: string } | { silence: string }> {
   const text = await request.readPayload();
   if (text.trim() === "") {
     return { silence: noPayloadSilence(request) };
@@ -355,13 +367,15 @@ async function hookContext(
     return site;
   }
   const { location } = site;
+  const note = site.note === undefined ? {} : { note: site.note };
   if (request.part === "protocol") {
-    return { context: getMemoryProtocol(location.dir) };
+    return { context: getMemoryProtocol(location.dir), ...note };
   }
   return {
     context: location.exists
       ? await indexContext(storeAt(location))
       : noStoreYetContext(location),
+    ...note,
   };
 }
 
@@ -374,9 +388,13 @@ async function hookContext(
 export async function runHook(request: HookRequest): Promise<HookResult> {
   try {
     const result = await hookContext(request);
-    return "silence" in result
-      ? { stdout: "", silence: result.silence }
-      : { stdout: sessionStartOutput(result.context) };
+    if ("silence" in result) {
+      return { stdout: "", silence: result.silence };
+    }
+    const stdout = sessionStartOutput(result.context);
+    return result.note === undefined
+      ? { stdout }
+      : { stdout, note: result.note };
   } catch (error) {
     return {
       stdout: sessionStartOutput(

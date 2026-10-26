@@ -599,7 +599,7 @@ async function cmdStore(args: string[]): Promise<void> {
 /** Run by an agent's session-start hook, never by hand; it always exits 0. */
 async function cmdHook(args: string[]): Promise<void> {
   const [agent = "", part = "", ...flags] = args;
-  const { stdout, silence } = await runHook({
+  const { stdout, silence, note } = await runHook({
     agent,
     part,
     global: flags.includes(GLOBAL_HOOK_FLAG),
@@ -607,19 +607,22 @@ async function cmdHook(args: string[]): Promise<void> {
       stdinPayload(process.stdin.isTTY, () => Bun.stdin.text()),
     cwd: process.cwd(),
     // The agent decides where its global entry stays silent: beside the project's own.
-    silence: async (hookAgent, site) => {
-      const hookSilence = getAdapter(hookAgent)?.hookSilence;
-      return hookSilence === undefined
+    verdict: async (hookAgent, site) => {
+      const hookVerdict = getAdapter(hookAgent)?.hookVerdict;
+      return hookVerdict === undefined
         ? undefined
-        : await hookSilence({ env: process.env, home: homedir() }, site);
+        : await hookVerdict({ env: process.env, home: homedir() }, site);
     },
   });
   if (stdout !== "") {
     print(stdout);
   }
-  // stderr never reaches the agent's context: it tells whoever runs the hook by hand why it printed nothing.
+  // stderr never reaches the agent's context: it tells whoever runs the hook by hand why it printed nothing, or why it spoke beside the project's own hook.
   if (silence !== undefined) {
     process.stderr.write(`mdmem hook printed nothing: ${silence}\n`);
+  }
+  if (note !== undefined) {
+    process.stderr.write(`mdmem hook: ${note}\n`);
   }
 }
 

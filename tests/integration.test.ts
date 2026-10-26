@@ -2130,6 +2130,23 @@ function deferred(file: string) {
   };
 }
 
+/** Record in the Claude Code user config in `configDir` whether the trust dialog of `folder` was accepted, as Claude Code does. */
+async function recordTrust(
+  configDir: string,
+  folder: string,
+  accepted = true
+): Promise<void> {
+  const file = join(configDir, ".claude.json");
+  const config = (
+    existsSync(file) ? JSON.parse(await readFile(file, "utf-8")) : {}
+  ) as { projects?: Record<string, unknown> };
+  config.projects = {
+    ...config.projects,
+    [folder]: { hasTrustDialogAccepted: accepted },
+  };
+  await writeFile(file, JSON.stringify(config), "utf-8");
+}
+
 /** The header mdmem writes at the top of MEMORY.md when it creates the store of the project at `root`. */
 function storeHeader(root: string): string {
   return [
@@ -2730,6 +2747,8 @@ describe("status and check", () => {
         ]
       );
       expect(bob?.warnings).toEqual([]);
+      const bothScopes = "IBM Bob is wired in both scopes";
+      expect(bob?.notes).toContainEqual(expect.stringContaining(bothScopes));
       // a global scope without the server gives a Bob launched there no mdmem tools
       await rm(join(ctx.home, ".bob", "settings", "mcp.json"));
       const partly = await bobBelow();
@@ -2759,6 +2778,10 @@ describe("status and check", () => {
       ]);
       expect(noHooks?.problems).toEqual([expect.stringContaining("hook")]);
       expect(noHooks?.warnings).toEqual(partly?.warnings);
+      // enabled in both scopes but wired in one: no note claims both
+      expect(noHooks?.notes).not.toContainEqual(
+        expect.stringContaining(bothScopes)
+      );
     });
   });
 
@@ -3481,14 +3504,26 @@ describe("scopes and store creation", () => {
       const status = runCliWith(root, ["status"], env);
       expect(status.err).toBe("");
       expect(status.out).toStartWith(
-        `Store: none yet; the first save creates the home store ${dir}\nCheck: ✓ no problems\n`
+        `Store: none yet; the first save creates the home store ${dir}\nCheck: ✓ no problems, 3 notes — \`mdmem doctor\` lists them\n`
       );
-      for (const title of ["Claude Code", "IBM Bob", "Codex CLI"]) {
+      const titles = ["Claude Code", "IBM Bob", "Codex CLI"];
+      const notes = titles.map(
+        (title) =>
+          `${title} is wired in both scopes: where its project hooks run, its global ones stay silent, so a session gets the protocol and the index once.`
+      );
+      for (const [i, title] of titles.entries()) {
         expect(status.out).toContain(`  ✓ ${title} (global)\n`);
         expect(status.out).toContain(`  ✓ ${title} (project)\n`);
+        expect(status.out).toContain(`      ${notes[i]}\n`);
       }
+      // the check lists the same notes, which are not problems
+      expect(runCliWith(root, ["doctor"], env)).toMatchObject({
+        code: 0,
+        out: `Store: none yet; the first save creates the home store ${dir}\n✓ no problems\n${notes.map((note) => `note: ${note}\n`).join("")}`,
+      });
 
-      // the global entries stay silent beside the project's own, naming its file
+      // the global entries stay silent beside the project's own, naming its file; Claude Code's only in a folder it records as trusted
+      await recordTrust(join(home, ".claude"), root);
       const payload = startPayload(root);
       for (const [agent, settings] of [
         ["claude-code", ".claude/settings.json"],
@@ -3550,6 +3585,67 @@ describe("scopes and store creation", () => {
           ]).out
         )
       ).toBe(getMemoryProtocol(dir));
+    });
+  });
+
+  test("Claude Code's global hook beside the project's own speaks, saying why on stderr, until its user config records the folder as trusted", async () => {
+    await withFreshRepo(async ({ root, home, env }) => {
+      expect(runCliWith(root, ["enable", "claude-code"], env).code).toBe(0);
+      expect(
+        runCliWith(root, ["enable", "claude-code", "--project"], env).code
+      ).toBe(0);
+      const dir = join(home, ".mdmem", projectKey(root));
+      const configDir = join(home, ".claude");
+      const hook = (cwd: string) =>
+        runHookCli(cwd, "protocol", startPayload(cwd), "claude-code", env, [
+          "--global",
+        ]);
+      const speaks = (cwd: string) => {
+        const run = hook(cwd);
+        expect(injected(run.out)).toBe(getMemoryProtocol(dir));
+        expect(run.err).toBe(
+          `mdmem hook: this --global entry injects the protocol part although ${join(cwd, ".claude/settings.json")} holds the project's own mdmem hook for it, because ${join(configDir, ".claude.json")} does not record ${cwd} as trusted and Claude Code runs the project's hooks only in a trusted folder. Once you accept the folder's trust dialog, the project's hook injects it and this entry stays silent.\n`
+        );
+      };
+
+      // no trust recorded, or the dialog not accepted: the project's hooks do not run, so the global one speaks
+      speaks(root);
+      await recordTrust(configDir, root, false);
+      speaks(root);
+
+      // trusted: the project's hook runs, so the global one stays silent
+      await recordTrust(configDir, root);
+      expect(hook(root)).toEqual(deferred(join(root, ".claude/settings.json")));
+
+      // the trust record is keyed by the resolved path
+      const link = join(root, "home", "link");
+      await symlink(root, link);
+      expect(hook(link)).toEqual(deferred(join(link, ".claude/settings.json")));
+
+      // a subdirectory holding the project's settings is covered by its work tree root's trust
+      const sub = join(root, "src");
+      await mkdir(join(sub, ".claude"), { recursive: true });
+      await writeFile(
+        join(sub, ".claude/settings.json"),
+        await readFile(join(root, ".claude/settings.json"), "utf-8"),
+        "utf-8"
+      );
+      expect(hook(sub)).toEqual(deferred(join(sub, ".claude/settings.json")));
+
+      // a linked worktree's trust is recorded under the main checkout's root
+      git(root, "add", ".claude/settings.json", ".mcp.json");
+      git(root, "commit", "-q", "-m", "wire claude code");
+      const worktree = join(root, "home", "wt");
+      git(root, "worktree", "add", "-q", worktree);
+      expect(hook(worktree)).toEqual(
+        deferred(join(worktree, ".claude/settings.json"))
+      );
+      await recordTrust(configDir, root, false);
+      speaks(worktree);
+
+      // the walk stops at the work tree's root: a trusted folder above the repository does not count
+      await recordTrust(configDir, dirname(root));
+      speaks(root);
     });
   });
 

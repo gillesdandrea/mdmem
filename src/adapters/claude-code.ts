@@ -1,7 +1,8 @@
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
+import { mainCheckoutRoot, workTreeRoot } from "../core/git.ts";
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookPart, HookSite } from "../core/hook.ts";
+import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
 import {
   claudeConfigDir,
   claudeProjectDir,
@@ -11,6 +12,8 @@ import {
   readImportMarker,
   writeImportMarker,
 } from "../core/import.ts";
+import { isObject } from "../core/object.ts";
+import { realDir } from "../core/store.ts";
 import {
   agentStatus,
   commitLine,
@@ -271,6 +274,50 @@ function belowRootWarning(
       ];
 }
 
+/**
+ * The folders whose trust record covers `cwd`, as Claude Code 2.1.310 reads them,
+ * nearest first: each folder from `cwd` up to its work tree's root (up to the
+ * filesystem's root outside git), and the main checkout's root in a linked worktree,
+ * which is the key Claude Code records a worktree's trust under. Paths are resolved,
+ * as Claude Code keys them. It asks git only past `cwd` itself, the common case.
+ *
+ * @yields {string} Each folder's resolved path, nearest first.
+ */
+function* trustKeys(cwd: string): Generator<string> {
+  let dir = realDir(cwd);
+  yield dir;
+  const top = workTreeRoot(cwd);
+  const root = top === null ? undefined : realDir(top);
+  while (dir !== root && dirname(dir) !== dir) {
+    dir = dirname(dir);
+    yield dir;
+  }
+  const main = mainCheckoutRoot(cwd);
+  if (main !== null) {
+    yield main;
+  }
+}
+
+/**
+ * Whether Claude Code trusts the folder `cwd`: its user config records
+ * `hasTrustDialogAccepted: true` under one of the trustKeys. A user config that is
+ * missing or cannot be read records no trust.
+ */
+async function trusted(ctx: UserContext, cwd: string): Promise<boolean> {
+  const read = await configDocument(cwd, userConfig(ctx));
+  const projects = "doc" in read ? read.doc.projects : undefined;
+  if (!isObject(projects)) {
+    return false;
+  }
+  for (const key of trustKeys(cwd)) {
+    const project = projects[key];
+    if (isObject(project) && project.hasTrustDialogAccepted === true) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** A scope is enabled by any of mdmem's entries but autoMemoryEnabled: false, which alone may be the user's own choice. */
 function enabledBy(entries: readonly WiringEntry[]): boolean {
   return entries.some(
@@ -400,18 +447,22 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
     );
   },
 
-  // A global entry stays silent where the project's own entry for its part runs (ADR 0004): Claude Code reads the project's settings only from the folder it was started in.
-  async hookSilence(
-    _ctx: UserContext,
-    site: HookSite
-  ): Promise<string | undefined> {
+  // A global entry stays silent where the project's own entry for its part runs (ADR 0004): Claude Code reads the project's settings only from the folder it was started in, and runs their hooks only once that folder is trusted.
+  async hookVerdict(ctx: UserContext, site: HookSite): Promise<HookVerdict> {
     if (!site.global) {
       return undefined;
     }
+    const settings = join(site.cwd, SETTINGS);
     const read = await configDocument(site.cwd, SETTINGS);
-    return "doc" in read && hookEntry(site.part, false).has(read.doc)
-      ? globalSilence(join(site.cwd, SETTINGS), site.part)
-      : undefined;
+    if (!("doc" in read && hookEntry(site.part, false).has(read.doc))) {
+      return undefined;
+    }
+    if (await trusted(ctx, site.cwd)) {
+      return { silence: globalSilence(settings, site.part) };
+    }
+    return {
+      note: `this --global entry injects the ${site.part} part although ${settings} holds the project's own mdmem hook for it, because ${userConfig(ctx)} does not record ${realDir(site.cwd)} as trusted and Claude Code runs the project's hooks only in a trusted folder. Once you accept the folder's trust dialog, the project's hook injects it and this entry stays silent.`,
+    };
   },
 
   // Once per user and repository: the marker keeps a store created again from bringing back memories deleted since.

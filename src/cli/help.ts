@@ -141,7 +141,7 @@ const PAGES: Record<string, CommandPage> = {
   doctor: {
     usage: "mdmem doctor",
     about:
-      "Run a check, also as mdmem check: name the store and its placement, then report every problem with the store's memories and index, and with the agents' wiring in both scopes. With no store, it checks the wiring alone. A link to a memory not written yet is a note, not a problem.",
+      "Run a check, also as mdmem check: name the store and its placement, then report every problem with the store's memories and index, and with the agents' wiring in both scopes. With no store, it checks the wiring alone. A link to a memory not written yet is a note, not a problem, as is an agent wired in both scopes.",
     example: "mdmem doctor",
     refuses: [
       "never: it exits 1 when the check finds a problem, and 0 when notes are its only findings",

@@ -123,7 +123,7 @@ command's usage, options, an example and the refusals it can give.
 | `mdmem search <query>` | Find memories containing text |
 | `mdmem reindex` | Bring `MEMORY.md` up to date with the memories, keeping its other lines |
 | `mdmem consolidate [--agent <agent>] [--from <dir>]` | Print the consolidation prompt; `--agent` points it at that agent's past sessions of the project, `--from` at a second store to fold in (see [Consolidation](#consolidation)) |
-| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring in both scopes (see [What status and the check report](#what-status-and-the-check-report)), after a line naming the store and its placement; with no store, the wiring alone. Exits 1 on a problem. A `[[link]]` to a memory not written yet is a note, not a problem: doctor lists it (`note: uses-bun.md links [[ts7-strict]], not written yet`) and exits 0 when notes are its only finding |
+| `mdmem doctor` (alias `check`) | Check the store: parse errors, name≠filename, conflicting types, secrets, pointers over 150 characters, stale index (a memory without a pointer, a pointer to a missing file, a duplicate pointer, a pointer in mdmem's form, titled with its memory's name then ` — `, whose description differs from the memory's), index over 9,500 characters, the size a session-start hook can inject; and the agents' wiring in both scopes (see [What status and the check report](#what-status-and-the-check-report)), after a line naming the store and its placement; with no store, the wiring alone. Exits 1 on a problem. A `[[link]]` to a memory not written yet is a note, not a problem, as is an agent wired in both scopes: doctor lists each (`note: uses-bun.md links [[ts7-strict]], not written yet`) and exits 0 when notes are its only finding |
 | `mdmem enable <agent…> \| --all [--project]` | Wire an agent in its user-wide files (the global scope), or with `--project` in the repository's files; it creates no store, and running it again changes nothing. `--all` wires the agents found on this machine (see below). |
 | `mdmem disable <agent…> \| --all [--project]` | Remove exactly mdmem's entries from an agent's user-wide files, or with `--project` from the repository's (leaves the store); `--all` takes the agents found on this machine. Needs no store. |
 | `mdmem status` | Show the store and its placement (or the home store the first save creates), the check in one line, and each agent's wiring in each scope, entry by entry (present or missing), with the warnings and notes below |
@@ -180,7 +180,11 @@ index part is the line
 `--global` marks the global
 scope's hook entries: a global entry prints nothing where the project's own
 entry for the same part is present (a project's server registration alone does
-not count), so a repository wired in both scopes gets each part once.
+not count), so a repository wired in both scopes gets each part once. Claude
+Code's global entry prints nothing there only in a folder Claude Code trusts
+(see [Trust, subdirectories and server approval](#trust-subdirectories-and-server-approval)):
+elsewhere it speaks, since the project's hooks do not run, and says why on
+stderr.
 
 The hook also prints nothing on a resumed or forked session, for any event but
 SessionStart, and with no payload on stdin, as when it is run by hand.
@@ -188,7 +192,10 @@ Wherever it prints nothing, it writes one line on stderr saying why, which never
 reaches the agent's context: no payload (with the `echo '<payload>' | mdmem hook
 <agent> <part>` command that shows what it would inject in the working
 directory), the event, a resumed or forked session, or a global entry beside the
-project's own (naming the project's settings or hooks file). A payload that is not a
+project's own (naming the project's settings or hooks file). Where Claude Code's
+global entry speaks beside the project's own in a folder it does not trust, it
+writes one line on stderr too, naming the user config that records no trust for
+the folder. A payload that is not a
 JSON object is reported where the hook would speak from the working directory,
 which is everywhere but where its agent's silences apply. It never fails a
 session: an error becomes a one-line context saying why the memory could not be
@@ -236,7 +243,10 @@ mdmem has no fallback, so `mdmem status` and the check (`mdmem doctor`,
 agent's wiring in both scopes, and work without a store and outside any
 project, where they report the wiring alone. An agent counts as enabled in a
 scope when some of mdmem's entries there are present, and as wired when every entry of at least one scope is present;
-a repository wired in both scopes is two `status` lines, not a problem. A state
+an agent wired in both scopes is a note, not a problem, under the agent in
+`status` and among the check's notes: where its project hooks run, its global
+ones stay silent, so a session gets the protocol and the index once, and
+`doctor` lists it and exits 0. A state
 that breaks saving or injection and that you can fix is a check problem:
 `doctor` lists it and exits 1, and `status` prints it as a warning.
 
@@ -282,7 +292,7 @@ The rest are `status` lines only, because they are your choice, depend on where
 
 - `Check:`, the check in one line: no problems, or how many, naming unparseable
   memories, a stale `MEMORY.md` and a `MEMORY.md` over its limit, then how many
-  notes (links to memories not written yet).
+  notes (links to memories not written yet, and agents wired in both scopes).
 - A note when git does not ignore a local store's `.mdmem/`. mdmem never edits
   `.gitignore`, and a home store needs no note.
 - A warning when a local store hides a home store that holds memories: no agent
@@ -372,8 +382,17 @@ no import.
 
 Claude Code ignores the `permissions.allow` entry in `.claude/settings.json`,
 and runs the project's hooks, only once you accept the folder's trust dialog.
-The global hooks stay silent where the project's own entries are present, so
-in an untrusted folder wired in both scopes neither speaks until you trust it.
+It records that trust in your user config, `~/.claude.json` (in
+`$CLAUDE_CONFIG_DIR` when it is set), as `hasTrustDialogAccepted: true` under
+`projects` and the folder's resolved path. The global hooks stay silent where
+the project's own entries are present and the folder is trusted: under its own
+path, any folder above it up to its work tree's root (up to `/` outside git),
+or, in a linked worktree, the main checkout's root, where Claude Code 2.1.310
+records a worktree's trust. In an untrusted folder wired in both scopes the
+global hooks speak instead, saying on stderr that the project's hooks wait for
+trust; once you accept the dialog, the project's hooks speak and the global
+ones stay silent. A `claude -p` run executes the project's hooks in a folder
+never trusted, so a headless session there gets each part twice.
 
 Claude Code reads `.claude/settings.json` only from the folder it is started
 in, so started in a subdirectory it runs none of the project scope's hooks, and

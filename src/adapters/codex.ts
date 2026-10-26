@@ -3,7 +3,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { mainCheckoutRoot } from "../core/git.ts";
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookPart, HookSite } from "../core/hook.ts";
+import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
 import { realDir } from "../core/store.ts";
 import {
   agentStatus,
@@ -320,10 +320,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
   },
 
   // A global entry stays silent where a project hooks file Codex reads for the session holds the project's own entry for its part (ADR 0004).
-  async hookSilence(
-    _ctx: UserContext,
-    site: HookSite
-  ): Promise<string | undefined> {
+  async hookVerdict(_ctx: UserContext, site: HookSite): Promise<HookVerdict> {
     if (!site.global) {
       return undefined;
     }
@@ -332,7 +329,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
       // oxlint-disable-next-line no-await-in-loop -- a few files, the nearest first
       const read = await configDocument(site.cwd, file);
       if ("doc" in read && entry.has(read.doc)) {
-        return globalSilence(file, site.part);
+        return { silence: globalSilence(file, site.part) };
       }
     }
     return undefined;

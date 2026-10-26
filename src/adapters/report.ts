@@ -25,6 +25,7 @@ import {
   storeAt,
 } from "../core/store.ts";
 import type { MemoryStore, Placement } from "../core/store.ts";
+import { bothScopesNote, wiredInBothScopes } from "./adapter.ts";
 import type {
   Adapter,
   AdapterContext,
@@ -317,6 +318,13 @@ function wiringProblems(
   ];
 }
 
+/** The notes of the agents' wiring, as the check reports them: each agent wired in both scopes. */
+function wiringNotes(statuses: readonly AgentStatus[]): string[] {
+  return statuses
+    .filter(wiredInBothScopes)
+    .map(({ title }) => bothScopesNote(title));
+}
+
 /** The Check of a project with no store, or of no project: nothing in it. */
 const NO_STORE_CHECK: Check = {
   memoryCount: 0,
@@ -351,17 +359,19 @@ function projectStoreLine(ctx: AdapterContext): string | undefined {
     : noStoreLine(store.root);
 }
 
-/** The store's Check with the wiring's problems after its own; without a store, the wiring's alone. */
+/** The store's Check with the wiring's problems and notes after its own; without a store, the wiring's alone. */
 async function withWiring(
   ctx: AdapterContext,
   store: MemoryStore | undefined,
-  wiring: readonly string[]
+  wiring: readonly string[],
+  notes: readonly string[]
 ): Promise<ProjectCheck> {
   const check = store === undefined ? NO_STORE_CHECK : await checkStore(store);
   const storeLine = projectStoreLine(ctx);
   return {
     ...check,
     problems: [...check.problems, ...wiring],
+    notes: [...check.notes, ...notes],
     hasStore: store !== undefined,
     ...(storeLine === undefined ? {} : { storeLine }),
   };
@@ -370,16 +380,23 @@ async function withWiring(
 /** Run the check: the store's Check, then the problems of the agents' wiring. It never writes. */
 export async function checkProject(ctx: AdapterContext): Promise<ProjectCheck> {
   const statuses = await agentStatuses(ctx);
-  return withWiring(ctx, existingStore(ctx), wiringProblems(ctx, statuses));
+  return withWiring(
+    ctx,
+    existingStore(ctx),
+    wiringProblems(ctx, statuses),
+    wiringNotes(statuses)
+  );
 }
 
-/** A ProjectCheck as both surfaces print it: the store's line, then the check; without a store, no problems but the wiring's. */
+/** A ProjectCheck as both surfaces print it: the store's line, then the check; without a store, no problems or notes but the wiring's. */
 export function formatProjectCheck(check: ProjectCheck): string {
-  // A check with no store has no notes: they are about memories.
+  // Without a store there are no memories to count.
   const body =
     check.hasStore || check.problems.length > 0
       ? formatCheck(check)
-      : "✓ no problems";
+      : ["✓ no problems", ...check.notes.map((note) => `note: ${note}`)].join(
+          "\n"
+        );
   return check.storeLine === undefined ? body : `${check.storeLine}\n${body}`;
 }
 
@@ -432,7 +449,7 @@ export async function projectStatus(
     hiddenHomeStoreWarnings(ctx, store),
   ]);
   const wiring = wiringProblems(ctx, agents);
-  const check = await withWiring(ctx, store, wiring);
+  const check = await withWiring(ctx, store, wiring, wiringNotes(agents));
   return {
     ...(ctx.project === undefined
       ? {}

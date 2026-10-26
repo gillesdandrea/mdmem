@@ -13,7 +13,12 @@
 import { isAbsolute } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookAgent, HookPart, HookSite } from "../core/hook.ts";
+import type {
+  HookAgent,
+  HookPart,
+  HookSite,
+  HookVerdict,
+} from "../core/hook.ts";
 import { isObject } from "../core/object.ts";
 import type { SessionHistory } from "../core/protocol.ts";
 import { realDir } from "../core/store.ts";
@@ -255,6 +260,18 @@ function unreadableProblem(
   return `${adapter.title}: ${file} ${reason}: fix it, then run the check again`;
 }
 
+/** Whether an agent is wired in both scopes, every entry of each present, which status and the check note. */
+export function wiredInBothScopes({
+  scopes,
+}: Pick<AgentStatus, "scopes">): boolean {
+  return scopes.filter(({ wired }) => wired).length === SCOPES.length;
+}
+
+/** The note of an agent wired in both scopes: not a problem, since each part is injected once. */
+export function bothScopesNote(title: string): string {
+  return `${title} is wired in both scopes: where its project hooks run, its global ones stay silent, so a session gets the protocol and the index once.`;
+}
+
 /**
  * An agent's status from its scopes: wired when every entry of some scope is
  * present, and with the problems, notes and further warnings of `whenEnabled`,
@@ -324,7 +341,10 @@ export async function agentStatus(
       ...warnings,
       ...(more.warnings ?? []),
     ],
-    notes: more.notes,
+    notes: [
+      ...(wiredInBothScopes({ scopes }) ? [bothScopesNote(adapter.title)] : []),
+      ...more.notes,
+    ],
   };
 }
 
@@ -424,15 +444,12 @@ export interface Adapter {
    */
   readonly submoduleClause?: string;
   /**
-   * Why the agent's session-start hook stays silent at `site`, one line naming the
-   * file that decides it, or undefined where it speaks: a global entry stays silent
-   * where the project's own entries run. Absent for an agent whose hook always
-   * speaks.
+   * Whether the agent's session-start hook speaks at `site`: a global entry stays
+   * silent where the project's own entries run, saying why in one line naming the
+   * file that decides it, and may speak with a note where they are present but do
+   * not run. Absent for an agent whose hook always speaks.
    */
-  hookSilence?: (
-    ctx: UserContext,
-    site: HookSite
-  ) => Promise<string | undefined>;
+  hookVerdict?: (ctx: UserContext, site: HookSite) => Promise<HookVerdict>;
   /**
    * Plan importing the memories the agent kept in its own directories into a store
    * being created, for an agent wired in either scope with its own memory off.

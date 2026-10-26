@@ -91,7 +91,16 @@ with session-start hooks are supported. The wiring goes in one of two scopes:
 
 A repository may be wired in both scopes, by different people: each session
 still gets the protocol and the index once, and the agent runs one mdmem
-server. Running `enable` again changes nothing, and `mdmem disable` (with
+server. The global hooks stay silent where the project's own hooks run.
+Claude Code runs the project's hooks only in a folder you have trusted, so its
+global hooks speak until you accept the folder's trust dialog: mdmem reads that
+trust from Claude Code's `~/.claude.json` (in `$CLAUDE_CONFIG_DIR` when it is
+set). One exception: `claude -p` runs the project's hooks in a folder never
+trusted, so a headless session there gets each part twice. Bob and Codex keep
+their global hooks silent wherever the project's own hooks are present, so a folder Bob
+does not trust, or a project hook Codex has not had reviewed, gets nothing
+until you trust or review it. `mdmem status` notes each agent wired in both
+scopes. Running `enable` again changes nothing, and `mdmem disable` (with
 `--project` for the repository's files) removes exactly mdmem's entries and
 leaves the store.
 
