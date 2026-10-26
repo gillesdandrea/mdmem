@@ -21,5 +21,5 @@ We chose this on 2026-10-26 over the in-tree store alone (ADR 0003, ADR 0004), w
 - Outside git a session in a subdirectory is its own project with its own home store, as in Claude Code.
 - Every line that names the store names its placement: `Store: home, ~/.mdmem/<key>` or `Store: local, <root>/.mdmem`. The gitignore note appears for a local store only.
 - The no-tools fallback (reading the store's files, writing a memory file, `mdmem reindex`) works only where the agent can reach the store: a sandboxed agent (Codex, child processes included) cannot write a home store without the MCP tools, and the protocol says so. The MCP server, which runs outside the sandboxes, is the write path (ADR 0003).
-- The hook's remaining silences are a missing payload, a resumed or forked session, and `--global` where the project's own hook speaks.
+- The hook's remaining silences are a missing payload, an event other than SessionStart or a resumed or forked session, `--global` where the project's own hook speaks, and Codex's hook where neither its user config nor the project's registers the mdmem server. Each one is named on stderr.
 - `.memory/` means nothing to mdmem any more; the two stores that existed were renamed by hand. ADR 0003's first paragraph and ADR 0004's outside-git rule are superseded by this record.
