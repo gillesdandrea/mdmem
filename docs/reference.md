@@ -212,11 +212,16 @@ it makes about an external tool, library or service, before acting on it or
 repeating it, naming the memory an answer comes from, and saving through the
 MCP tools (writing files directly only when an agent lacks them). It also says
 to load every mdmem tool in one request where the agent loads tools on demand,
-to keep project knowledge in the store where the agent has a memory of its own,
-and that a changed-on-disk notice for a file in the store right after a
-`memory_write` is that write. It names the store's path for writing memory
-files without the tools, and says that a sandboxed agent may not reach a home
-store without them, in which case it tells the user.
+that the store is the primary place for project knowledge and what the user
+wants, saved unasked, while a memory the agent's harness keeps of its own holds
+what is about the agent and its sessions under that harness's rules for when to
+update it; that the user's current instructions and verified facts take
+precedence over any memory, and the store over older notes in the harness's
+memory on anything about the project; and that a changed-on-disk notice for a
+file in the store right after a `memory_write` is that write. It names the
+store's path for writing memory files without the tools, and says that a
+sandboxed agent may not reach a home store without them, in which case it tells
+the user.
 
 Its text lives in `templates/memory-protocol.md` and is easy to edit; a test
 keeps it at 6,000 characters at most, about three times Claude Code's own

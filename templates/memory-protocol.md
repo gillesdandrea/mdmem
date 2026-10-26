@@ -67,9 +67,12 @@ the memory.
 
 Save a correction, a confirmation or a stated preference in the reply where you
 learn it: a session can end at any turn. Save what you learn about the environment
-that will hold next session. Where your harness keeps a memory of its own, it keeps
-what is about you and your sessions; everything about the project, how to work in it
-and what the user wants goes to the store.
+that will hold next session. The store is the primary place for what the user wants,
+what is known about the project and how to work in it, saved without waiting to be
+asked; a memory your harness keeps of its own holds what is about you and your
+sessions, under that harness's own rules for when to update it. The user's current
+instructions and verified facts take precedence over any memory; on anything about
+the project, the store takes precedence over older notes in your harness's memory.
 
 Leave out what the repo already records (code, conventions, git history, instruction
 files), task state (plans, progress, this conversation), secrets and credentials, and

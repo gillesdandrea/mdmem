@@ -846,8 +846,12 @@ describe("templates", () => {
       "When an answer comes from a memory, name that memory's path in the store, so the user can open or correct it.",
     ],
     [
-      "keep project knowledge in the store",
-      "Where your harness keeps a memory of its own, it keeps what is about you and your sessions; everything about the project, how to work in it and what the user wants goes to the store.",
+      "keep project knowledge in the store, and the harness's memory under its own rules",
+      "The store is the primary place for what the user wants, what is known about the project and how to work in it, saved without waiting to be asked; a memory your harness keeps of its own holds what is about you and your sessions, under that harness's own rules for when to update it.",
+    ],
+    [
+      "put current instructions and verified facts first, then the store over the harness's memory",
+      "The user's current instructions and verified facts take precedence over any memory; on anything about the project, the store takes precedence over older notes in your harness's memory.",
     ],
     [
       "expect the changed-on-disk notice after a memory_write",

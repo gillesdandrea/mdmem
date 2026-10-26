@@ -96,9 +96,14 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   tool, library or service before acting on it or repeating it, since a memory
   records what was believed when it was written; to name the path of the memory
   an answer comes from; to load every mdmem tool in one request where the agent
-  loads tools on demand; to keep project knowledge in the store where the
-  agent keeps a memory of its own; and that a file in the store reported
-  changed on disk right after the agent's own `memory_write` is that write.
+  loads tools on demand; that the store is the primary place for project
+  knowledge and what the user wants, saved unasked, while a memory the agent's
+  harness keeps of its own holds what is about the agent and its sessions,
+  under that harness's rules for when to update it; that the user's current
+  instructions and verified facts take precedence over any memory, and the
+  store over older notes in the harness's memory on anything about the project;
+  and that a file in the store reported changed on disk right after the agent's
+  own `memory_write` is that write.
 - README's "Codex's own memory" section says Codex's own memory stays on
   beside mdmem, and why Claude Code's auto memory is turned off instead.
 - `mdmem hook` says on stderr why it printed nothing: no payload on stdin

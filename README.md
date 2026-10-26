@@ -139,10 +139,12 @@ memory itself after each session, as summaries of its sessions and tasks, so it
 does not compete with the store, and turning it off would cost Codex its
 continuity. The memory protocol tells Codex to keep what is about itself and its
 sessions there and to save everything about the project, how to work in it and
-what the user wants to the store. Claude Code's auto memory is different: it
-holds facts the agent saves deliberately, in the store's own format, and so
-competes with the store. `mdmem enable claude-code` turns it off and imports its
-memories once, when the store is created.
+what the user wants to the store. When Codex's memory and the store disagree,
+the user's current instructions and verified facts come first, then the store
+over older notes in Codex's memory on anything about the project. Claude Code's
+auto memory is different: it holds facts the agent saves deliberately, in the
+store's own format, and so competes with the store. `mdmem enable claude-code`
+turns it off and imports its memories once, when the store is created.
 [ADR 0003](docs/adr/0003-one-store-per-project-injected-by-hooks.md) records
 both decisions.
 
