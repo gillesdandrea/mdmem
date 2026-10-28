@@ -87,6 +87,26 @@ _Avoid_: index entry, index line
 Reading the index, then the memories relevant to the work at hand, into an agent's context.
 _Avoid_: retrieval, lookup
 
+**Search**:
+Finding the memories whose text matches a query, ranked by how well they match; what `memory_search` and `mdmem search` do. A search finds; recall is what reaches the agent's context.
+_Avoid_: lookup, grep, query (the text searched for)
+
+**Hit**:
+A memory a search found for a query, in rank order; at each prompt, a hit is one of the few pointers recall offers unasked.
+_Avoid_: match, result (the whole list)
+
+**Delta**:
+The memories added, updated or deleted since an agent's session last saw the store, offered as pointers at the next prompt.
+_Avoid_: diff, changes
+
+**Snapshot**:
+What a session last saw of a memory store: each memory and the content it had then; what a delta is computed against.
+_Avoid_: baseline, state
+
+**Session state**:
+What mdmem keeps about one agent session between prompts, outside the store: its snapshot and the hits already shown. Not memory: a cache a session can lose and rebuild.
+_Avoid_: session file, cache (alone)
+
 **Save**:
 Writing a new memory, or updating an existing one in place of a duplicate.
 _Avoid_: record, remember
@@ -112,6 +132,14 @@ _Avoid_: link (a `[[name]]` in a memory), integration, setup
 **Scope**:
 Where an agent's wiring lives: global, in the agent's user-wide files, so it applies in every project; or project, in files committed with one repository, so it applies only there.
 _Avoid_: mode, level, installation
+
+**Session**:
+One run of an agent, from its start to its end, that mdmem keeps session state for: the unit a delta and the hits already shown belong to.
+_Avoid_: conversation, run, chat
+
+**Child session**:
+A session an agent starts inside another, such as a subagent, a teammate or a spawned thread, with session state of its own.
+_Avoid_: subagent session, thread, nested session
 
 **Import**:
 The one-time copy of the memories an agent kept in its own directories into the project's memory store, when that store is created and the agent is wired with its own memory turned off: Claude Code's auto memory, from each of its memory directories for the repository, which are left untouched.
