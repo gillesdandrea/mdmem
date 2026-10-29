@@ -1,6 +1,6 @@
 {
   "name": "mdmem",
-  "version": "0.2.0",
+  "version": "0.3.0-beta.1",
   "description": "Shared, Claude-style file-based memory for any coding agent",
   "keywords": [
     "claude-code",
@@ -23,7 +23,7 @@
     "url": "git+https://github.com/gillesdandrea/mdmem.git"
   },
   "bin": {
-    "mdmem": "./dist/index.js"
+    "mdmem": "dist/index.js"
   },
   "files": [
     "dist",
