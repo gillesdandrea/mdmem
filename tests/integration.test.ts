@@ -8,7 +8,9 @@ import {
   readFile,
   realpath,
   rm,
+  stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,7 +51,8 @@ import {
   getMemoryProtocol,
 } from "../src/core/protocol.ts";
 import { RefusalError } from "../src/core/refusal.ts";
-import { MemoryStore } from "../src/core/store.ts";
+import type { SessionState } from "../src/core/session.ts";
+import { MemoryStore, versionOf } from "../src/core/store.ts";
 import { git, gitRepo } from "./git-fixture.ts";
 
 const CLI = join(import.meta.dir, "..", "src", "cli", "index.ts");
@@ -2108,6 +2111,8 @@ function runHookCli(
       ...process.env,
       CLAUDE_CONFIG_DIR: join(cwd, "claude-config"),
       CODEX_HOME: join(cwd, "codex-home"),
+      // never the real ~/.cache, where a payload with a session_id has the index part write session state
+      XDG_CACHE_HOME: join(cwd, "cache"),
       ...env,
     },
     stdin: Buffer.from(
@@ -2161,6 +2166,20 @@ function storeHeader(root: string): string {
 /** A SessionStart payload for a new session in `cwd`. */
 function startPayload(cwd: string) {
   return { cwd, hook_event_name: "SessionStart", source: "startup" };
+}
+
+/** A SessionStart payload in `cwd` from `source`, with `fields` such as session_id and agent_id. */
+function sessionPayload(
+  cwd: string,
+  source: string,
+  fields: Record<string, string>
+) {
+  return { ...startPayload(cwd), source, ...fields };
+}
+
+/** The session state the index part wrote to `file`. */
+async function readState(file: string): Promise<SessionState> {
+  return JSON.parse(await readFile(file, "utf-8")) as SessionState;
 }
 
 /** The context `mdmem hook` printed, after checking its output is the SessionStart form. */
@@ -2571,6 +2590,216 @@ describe("hook", () => {
       expect(context).not.toContain("\n");
       expect(context).not.toContain("    at ");
     });
+  });
+
+  test("the index part writes the session's state under the cache directory before it prints, a child session's in a file of its own", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 2);
+      const home = join(root, "home");
+      const env = { HOME: home, XDG_CACHE_HOME: "" };
+      const sessions = join(home, ".cache", "mdmem", "sessions");
+      const plain = runHookCli(root, "index", startPayload(root), "codex", env);
+      // no session_id, no state
+      expect(existsSync(sessions)).toBe(false);
+      const hook = runHookCli(
+        root,
+        "index",
+        sessionPayload(root, "startup", { session_id: "s1" }),
+        "codex",
+        env
+      );
+      expect(hook).toEqual(plain);
+      const state = await readState(join(sessions, "codex", "s1.json"));
+      const snapshot = Object.fromEntries(
+        await Promise.all(
+          ["m-0.md", "m-1.md"].map(async (file) => {
+            const info = await stat(join(store.root, file));
+            const hash = versionOf(await store.view(file));
+            return [file, { hash, size: info.size, mtime: info.mtimeMs }];
+          })
+        )
+      );
+      expect(state).toEqual({
+        version: 1,
+        agent: "codex",
+        store: store.root,
+        snapshot,
+        lastInjection: expect.any(String),
+        shown: [],
+      });
+
+      runHookCli(
+        root,
+        "index",
+        sessionPayload(root, "startup", { session_id: "s1", agent_id: "a1" }),
+        "codex",
+        env
+      );
+      expect(
+        await readState(join(sessions, "codex", "s1", "a1.json"))
+      ).toMatchObject({ agent: "codex", snapshot });
+
+      const xdg = join(root, "xdg");
+      runHookCli(
+        root,
+        "index",
+        sessionPayload(root, "startup", { session_id: "s2" }),
+        "bob",
+        { HOME: home, XDG_CACHE_HOME: xdg }
+      );
+      expect(existsSync(join(xdg, "mdmem", "sessions", "bob", "s2.json"))).toBe(
+        true
+      );
+      expect(existsSync(join(sessions, "bob"))).toBe(false);
+
+      // an id that is not one path component names no file: the output stays, and stderr says why
+      const unsafe = runHookCli(
+        root,
+        "index",
+        sessionPayload(root, "startup", { session_id: "../up" }),
+        "codex",
+        env
+      );
+      expect(unsafe.out).toBe(plain.out);
+      expect(unsafe.err).toBe(
+        'mdmem hook: the payload\'s session_id "../up" cannot name a session file, so it keeps no session state.\n'
+      );
+      expect(existsSync(join(sessions, "up.json"))).toBe(false);
+    });
+  });
+
+  test("compact rewrites the session's state and empties its shown hits, and resume leaves it alone", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1);
+      const file = join(root, "cache", "mdmem", "sessions", "bob", "s1.json");
+      const seeded = `${JSON.stringify({
+        version: 1,
+        agent: "bob",
+        store: store.root,
+        snapshot: {},
+        lastInjection: "2026-10-01T00:00:00.000Z",
+        shown: ["m-0.md"],
+      })}\n`;
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(file, seeded);
+
+      runHookCli(
+        root,
+        "index",
+        sessionPayload(root, "resume", { session_id: "s1" }),
+        "bob"
+      );
+      expect(await readFile(file, "utf-8")).toBe(seeded);
+
+      runHookCli(
+        root,
+        "index",
+        sessionPayload(root, "compact", { session_id: "s1" }),
+        "bob"
+      );
+      const state = await readState(file);
+      expect(state.shown).toEqual([]);
+      expect(Object.keys(state.snapshot)).toEqual(["m-0.md"]);
+      expect(state.lastInjection).not.toBe("2026-10-01T00:00:00.000Z");
+    });
+  });
+
+  test("writing a session's state removes session files older than 30 days, and the session directories that leaves empty", async () => {
+    await withCliProject(async (root) => {
+      const sessions = join(root, "cache", "mdmem", "sessions");
+      const day = 24 * 60 * 60;
+      const now = Date.now() / 1000;
+      const aged = async (path: string, days: number) => {
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, "{}");
+        await utimes(path, now - days * day, now - days * day);
+      };
+      await aged(join(sessions, "codex", "old.json"), 31);
+      await aged(join(sessions, "codex", "parent", "child.json"), 31);
+      await aged(join(sessions, "claude-code", "young.json"), 29);
+
+      runHookCli(
+        root,
+        "index",
+        sessionPayload(root, "startup", { session_id: "new" })
+      );
+      expect(existsSync(join(sessions, "codex", "old.json"))).toBe(false);
+      expect(existsSync(join(sessions, "codex", "parent"))).toBe(false);
+      expect(existsSync(join(sessions, "claude-code", "young.json"))).toBe(
+        true
+      );
+      expect(existsSync(join(sessions, "claude-code", "new.json"))).toBe(true);
+    });
+  });
+
+  test("a corrupt session file, one with another schema version, or one naming another store directory, is replaced without being read, and the output is unchanged", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 1);
+      const file = join(
+        root,
+        "cache",
+        "mdmem",
+        "sessions",
+        "claude-code",
+        "s1.json"
+      );
+      const payload = sessionPayload(root, "startup", { session_id: "s1" });
+      const plain = runHookCli(root, "index", startPayload(root));
+      const info = await stat(join(store.root, "m-0.md"));
+      const hash = versionOf(await store.view("m-0.md"));
+      // read, these files' matching size and mtime would carry their wrong hash over
+      const misleading = {
+        version: 1,
+        agent: "claude-code",
+        store: join(root, "elsewhere"),
+        snapshot: {
+          "m-0.md": { hash: "wrong", size: info.size, mtime: info.mtimeMs },
+        },
+        lastInjection: "2026-10-01T00:00:00.000Z",
+        shown: ["m-0.md"],
+      };
+      await mkdir(dirname(file), { recursive: true });
+      const replaced = async (seeded: string) => {
+        await writeFile(file, seeded);
+        expect(runHookCli(root, "index", payload)).toEqual(plain);
+        const state = await readState(file);
+        expect(state.store).toBe(store.root);
+        expect(state.snapshot["m-0.md"]?.hash).toBe(hash);
+        expect(state.shown).toEqual([]);
+      };
+      await replaced("{not json");
+      await replaced(JSON.stringify(misleading));
+      await replaced(
+        JSON.stringify({ ...misleading, version: 2, store: store.root })
+      );
+    });
+  });
+
+  test("with no store yet, clear writes a session state naming the home store's directory and an empty snapshot", async () => {
+    const tmp = await realpath(await mkdtemp(join(tmpdir(), "mdmem-hook-")));
+    try {
+      const bare = join(tmp, "project");
+      await mkdir(bare);
+      const home = join(tmp, "home");
+      runHookCli(
+        bare,
+        "index",
+        sessionPayload(bare, "clear", { session_id: "s1" }),
+        "claude-code",
+        { HOME: home }
+      );
+      const state = await readState(
+        join(bare, "cache", "mdmem", "sessions", "claude-code", "s1.json")
+      );
+      expect(state).toMatchObject({
+        store: join(home, ".mdmem", projectKey(bare)),
+        snapshot: {},
+        shown: [],
+      });
+      expect(existsSync(join(home, ".mdmem"))).toBe(false);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 });
 

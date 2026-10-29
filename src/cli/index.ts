@@ -59,6 +59,7 @@ import {
 import type { WriteResult } from "../core/operations.ts";
 import { getConsolidatePrompt } from "../core/protocol.ts";
 import { RefusalError } from "../core/refusal.ts";
+import { sessionsDir } from "../core/session.ts";
 import type { Placement } from "../core/store.ts";
 import {
   homeStoresDir,
@@ -609,7 +610,7 @@ async function cmdStore(args: string[]): Promise<void> {
 /** Run by an agent's session-start hook, never by hand; it always exits 0. */
 async function cmdHook(args: string[]): Promise<void> {
   const [agent = "", part = "", ...flags] = args;
-  const { stdout, silence, note } = await runHook({
+  const { stdout, silence, note, stateProblem } = await runHook({
     agent,
     part,
     global: flags.includes(GLOBAL_HOOK_FLAG),
@@ -623,6 +624,7 @@ async function cmdHook(args: string[]): Promise<void> {
         ? undefined
         : await hookVerdict({ env: process.env, home: homedir() }, site);
     },
+    sessionsDir: sessionsDir(process.env, homedir()),
   });
   if (stdout !== "") {
     print(stdout);
@@ -631,8 +633,10 @@ async function cmdHook(args: string[]): Promise<void> {
   if (silence !== undefined) {
     process.stderr.write(`mdmem hook printed nothing: ${silence}\n`);
   }
-  if (note !== undefined) {
-    process.stderr.write(`mdmem hook: ${note}\n`);
+  for (const line of [note, stateProblem]) {
+    if (line !== undefined) {
+      process.stderr.write(`mdmem hook: ${line}\n`);
+    }
   }
 }
 

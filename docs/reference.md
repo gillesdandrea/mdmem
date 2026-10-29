@@ -211,6 +211,24 @@ which is everywhere but where its agent's silences apply. It never fails a
 session: an error becomes a one-line context saying why the memory could not be
 loaded, and it exits 0.
 
+Where the index part speaks for a payload with a `session_id`, it first writes
+the session's state, a cache the per-prompt hook will read:
+`$XDG_CACHE_HOME/mdmem/sessions/<agent>/<session_id>.json` when
+`XDG_CACHE_HOME` is set to an absolute path, else under `~/.cache/mdmem/sessions/`, and
+`<agent>/<session_id>/<agent_id>.json` for a child session whose payload
+carries `agent_id`. The file names the store's directory and holds a snapshot
+of its memories (each file's content hash, size and mtime, the index left out),
+the injection time and the hits already shown, none at the start. A session
+started by startup, clear or compact gets a fresh file; a resumed one keeps
+its own, since the hook is silent then. A file that cannot be read or parsed,
+or that names another store's directory (after `mdmem store local` or
+`mdmem store home`), is replaced without being read. Each write removes the
+session files older than 30 days by mtime and the session directories that
+leaves empty; nothing else prunes the directory,
+which lies outside every store, so `mdmem store list` never sees it. A state
+it cannot write leaves the hook's output as it is, with one line on stderr
+saying why.
+
 ### mdmem edit
 
 `mdmem edit` saves the copy back the way `add` saves a memory, so an edit that

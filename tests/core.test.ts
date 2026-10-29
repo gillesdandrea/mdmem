@@ -46,6 +46,7 @@ import {
 import { porterStem, rankDocuments } from "../src/core/search.ts";
 import type { SearchDocument, SearchOptions } from "../src/core/search.ts";
 import { findSecrets } from "../src/core/secrets.ts";
+import { snapshotOf } from "../src/core/session.ts";
 import {
   locateStore,
   MemoryStore,
@@ -1106,6 +1107,19 @@ describe("hook", () => {
     expect(reads).toBe(0);
     expect(await stdinPayload(undefined, read)).toBe("{}");
     expect(reads).toBe(1);
+  });
+
+  test("a snapshot leaves out a memory removed after the store listed it", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdmem-"));
+    try {
+      const store = new MemoryStore(dir);
+      await store.create("kept.md", "x");
+      // a concurrent memory_delete between listing and reading
+      store.listFiles = () => Promise.resolve(["gone.md", "kept.md"]);
+      expect(Object.keys(await snapshotOf(store))).toEqual(["kept.md"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

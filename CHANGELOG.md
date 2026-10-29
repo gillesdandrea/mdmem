@@ -124,6 +124,19 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   the mdmem tools, for an agent or a person who opens the directory. `reindex`
   keeps it and never adds it to a store without one; a move keeps it. The
   import of Claude Code's memories into a new store keeps it first.
+- Session state, kept for the per-prompt hook to come. Where the index part
+  speaks for a payload with a `session_id` (startup, clear, compact), it
+  writes one file per session under `$XDG_CACHE_HOME/mdmem/sessions/` when
+  that is an absolute path, else
+  `~/.cache/mdmem/sessions/`, outside every store: `<agent>/<session_id>.json`,
+  or `<agent>/<session_id>/<agent_id>.json` for a child session. The file
+  holds the store's directory, a snapshot of each memory's hash, size and
+  mtime, the injection time and the hits shown, none yet. It is written
+  atomically before the output is printed, a resumed session keeps its file,
+  and a file that does not parse or names another store is replaced. Each
+  write removes the session files older than 30 days and the session
+  directories that leaves empty. A state the hook cannot
+  write leaves its output as it is and says why on stderr.
 
 ### Changed
 

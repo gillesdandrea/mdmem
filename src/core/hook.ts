@@ -5,6 +5,15 @@ import { workTreeRoot } from "./git.ts";
 import { isObject } from "./object.ts";
 import type { PlainObject } from "./object.ts";
 import { getMemoryProtocol } from "./protocol.ts";
+import {
+  pruneSessions,
+  readSessionState,
+  SESSION_STATE_VERSION,
+  sessionFile,
+  snapshotOf,
+  unusableKey,
+  writeSessionState,
+} from "./session.ts";
 import { locateStore, placementLine, storeAt } from "./store.ts";
 import type { MemoryStore, StoreLocation } from "./store.ts";
 import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
@@ -28,6 +37,11 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
  * becomes a one-line context saying why the memory could not be loaded. A payload
  * that does not parse is reported only where the hook would speak from the process's
  * working directory; elsewhere the hook prints nothing.
+ *
+ * Where the index part speaks for a payload with a session_id, it writes the
+ * session's state (./session.ts) before it returns its output: the store's
+ * snapshot and no hits shown yet. A state it cannot write leaves the output as it
+ * is, with the reason for stderr.
  */
 
 /** The supported agents, in the order mdmem lists them: only those with session-start hooks. The adapter registry is built from this list. */
@@ -47,11 +61,13 @@ const SKIPPED_SOURCES: ReadonlySet<string | undefined> = new Set([
   "fork",
 ]);
 
-/** The fields of a hook payload mdmem reads; all three agents send them. */
+/** The fields of a hook payload mdmem reads, whatever the event; all three agents send them, agent_id only in a child session. */
 interface HookPayload {
   cwd?: string;
   hookEventName?: string;
   source?: string;
+  sessionId?: string;
+  agentId?: string;
 }
 
 /** A text's length in code points, the measure check.ts holds the index limit to. */
@@ -81,6 +97,8 @@ function parsePayload(text: string): HookPayload {
     cwd: stringField(parsed, "cwd"),
     hookEventName: stringField(parsed, "hook_event_name"),
     source: stringField(parsed, "source"),
+    sessionId: stringField(parsed, "session_id"),
+    agentId: stringField(parsed, "agent_id"),
   };
 }
 
@@ -249,6 +267,8 @@ export interface HookRequest {
   cwd: string;
   /** Whether the agent's hook speaks at `site`: a global entry stays silent where the project's own entries run. */
   verdict: (agent: HookAgent, site: HookSite) => Promise<HookVerdict>;
+  /** The sessions directory the index part writes session state in (sessionsDir in ./session.ts). */
+  sessionsDir: string;
 }
 
 /** What `mdmem hook` prints: the output for stdout, and why it stayed silent or its agent's note, for stderr. */
@@ -259,6 +279,15 @@ export interface HookResult {
   silence?: string;
   /** Why the hook spoke where it might have stayed silent, one line, as its agent says it. */
   note?: string;
+  /** Why the index part spoke without writing the session's state, one line. */
+  stateProblem?: string;
+}
+
+/** What the hook injects, and what it has for stderr. */
+interface HookContext {
+  context: string;
+  note?: string;
+  stateProblem?: string;
 }
 
 /** The session's store and the agent's note, or why the hook stays silent there. */
@@ -336,10 +365,51 @@ function eventSilence(payload: HookPayload): string | undefined {
   return undefined;
 }
 
+/**
+ * Write the session state of `payload`'s session in `request.sessionsDir`: the
+ * store's snapshot, no hits shown, then prune the old files. Nothing for a payload
+ * with no session_id; why it could not, for one whose state it cannot write.
+ */
+async function saveSessionState(
+  request: HookRequest,
+  payload: HookPayload,
+  location: StoreLocation
+): Promise<string | undefined> {
+  if (payload.sessionId === undefined) {
+    return undefined;
+  }
+  const key = {
+    agent: request.agent,
+    sessionId: payload.sessionId,
+    agentId: payload.agentId,
+  };
+  const unusable = unusableKey(key);
+  if (unusable !== undefined) {
+    return `${unusable}, so it keeps no session state.`;
+  }
+  const file = sessionFile(request.sessionsDir, key);
+  try {
+    const store = storeAt(location);
+    const previous = await readSessionState(file, store.root);
+    await writeSessionState(file, {
+      version: SESSION_STATE_VERSION,
+      agent: request.agent,
+      store: store.root,
+      snapshot: await snapshotOf(store, previous?.snapshot),
+      lastInjection: new Date().toISOString(),
+      shown: [],
+    });
+  } catch (error) {
+    return `could not write the session state ${file}: ${oneLine(messageOf(error))}`;
+  }
+  await pruneSessions(request.sessionsDir, Date.now());
+  return undefined;
+}
+
 /** The context to inject, or why the hook stays silent. */
 async function hookContext(
   request: HookRequest
-): Promise<{ context: string; note?: string } | { silence: string }> {
+): Promise<HookContext | { silence: string }> {
   const text = await request.readPayload();
   if (text.trim() === "") {
     return { silence: noPayloadSilence(request) };
@@ -371,11 +441,15 @@ async function hookContext(
   if (request.part === "protocol") {
     return { context: getMemoryProtocol(location.dir), ...note };
   }
+  const context = location.exists
+    ? await indexContext(storeAt(location))
+    : noStoreYetContext(location);
+  // The state is written before the output is printed: a dropped output loses a delta rather than repeating it (ADR 0002).
+  const stateProblem = await saveSessionState(request, payload, location);
   return {
-    context: location.exists
-      ? await indexContext(storeAt(location))
-      : noStoreYetContext(location),
+    context,
     ...note,
+    ...(stateProblem === undefined ? {} : { stateProblem }),
   };
 }
 
@@ -391,10 +465,8 @@ export async function runHook(request: HookRequest): Promise<HookResult> {
     if ("silence" in result) {
       return { stdout: "", silence: result.silence };
     }
-    const stdout = sessionStartOutput(result.context);
-    return result.note === undefined
-      ? { stdout }
-      : { stdout, note: result.note };
+    const { context, ...stderr } = result;
+    return { stdout: sessionStartOutput(context), ...stderr };
   } catch (error) {
     return {
       stdout: sessionStartOutput(
