@@ -43,6 +43,19 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 
 ### Added
 
+- mdmem runs on Node: the package npm ships is `dist/`, built by `bun run build`
+  (`prepublishOnly`) from the sources, dependencies left external, with
+  `templates/` beside it, and `bin` points at `dist/index.js`. `src/` uses no
+  Bun API any more (git and the editor through `node:child_process`, stdin read
+  to its end, a `which` over PATH, `node:util`'s `isDeepStrictEqual`), the
+  templates are found from the package root, and the build refuses a Bun API in
+  `src/`. `engines.node` is `>=22`. CI builds, packs and installs the tarball
+  into a temporary prefix under Node 22 and 24 with no bun on PATH, then runs
+  `scripts/smoke-node.sh`: `--version`, `help`, `add` from `--body` and from
+  stdin, `read`, `status`, `doctor`, the session-start hook and an MCP
+  `initialize`. README's Install section says `npm i -g mdmem`; a checkout runs
+  `bun install && bun run build && bun link`, and the "not on PATH" problem names
+  both. The registry publish itself stays a maintainer step.
 - Two wiring scopes (ADR 0004). The global scope writes Claude Code's
   `~/.claude/settings.json` and the top-level `mcpServers` of `~/.claude.json`
   (in `$CLAUDE_CONFIG_DIR` when set), Bob's `~/.bob/settings/settings.json` and

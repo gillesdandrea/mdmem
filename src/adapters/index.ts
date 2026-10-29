@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 
 import { HOOK_AGENTS } from "../core/hook.ts";
 import type { HookAgent } from "../core/hook.ts";
+import { which } from "../core/which.ts";
 import type { Adapter, AdapterContext, AdapterFor } from "./adapter.ts";
 import { bobAdapter } from "./bob.ts";
 import { claudeCodeAdapter } from "./claude-code.ts";
@@ -41,7 +42,7 @@ function isFound(
   ctx: Pick<AdapterContext, "env" | "home">
 ): boolean {
   return (
-    Bun.which(adapter.command, { PATH: ctx.env.PATH ?? "" }) !== null ||
+    which(adapter.command, ctx.env.PATH ?? "") !== null ||
     existsSync(adapter.configDir(ctx))
   );
 }

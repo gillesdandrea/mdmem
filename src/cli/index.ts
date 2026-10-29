@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
@@ -74,6 +74,15 @@ import {
 import { messageOf } from "../core/text.ts";
 import { commandHelp, topLevelHelp, unknownCommandHelp } from "./help.ts";
 
+/** Everything on stdin, once it closes: a memory's body or a hook's payload piped in. */
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
 function print(msg = ""): void {
   process.stdout.write(`${msg}\n`);
 }
@@ -136,7 +145,7 @@ async function cmdAdd(args: string[]): Promise<void> {
   const description = values.description ?? die("--description is required");
   let { body } = values;
   if (body === undefined) {
-    body = process.stdin.isTTY ? "" : await Bun.stdin.text();
+    body = process.stdin.isTTY ? "" : await readStdin();
   }
 
   const input = { name, description, type: values.type, body: body.trim() };
@@ -197,12 +206,10 @@ async function cmdRead(args: string[]): Promise<void> {
 /** Open `path` in `editor` (a command, possibly with arguments), wait for it to exit, and return its exit code. */
 function runEditor(editor: string, path: string): number | null {
   const [cmd, ...editorArgs] = editor.split(" ");
-  const proc = Bun.spawnSync([cmd ?? editor, ...editorArgs, path], {
-    stdin: "inherit",
-    stdout: "inherit",
-    stderr: "inherit",
+  const proc = spawnSync(cmd ?? editor, [...editorArgs, path], {
+    stdio: "inherit",
   });
-  return proc.exitCode;
+  return proc.status;
 }
 
 /** End `mdmem edit` on `reason`, printing where the edited copy is kept so the edit is not lost. */
@@ -624,8 +631,7 @@ async function cmdHook(args: string[]): Promise<void> {
     agent,
     part,
     global: flags.includes(GLOBAL_HOOK_FLAG),
-    readPayload: () =>
-      stdinPayload(process.stdin.isTTY, () => Bun.stdin.text()),
+    readPayload: () => stdinPayload(process.stdin.isTTY, readStdin),
     cwd: process.cwd(),
     // The agent decides where its global entry stays silent: beside the project's own.
     verdict: async (hookAgent, site) => {

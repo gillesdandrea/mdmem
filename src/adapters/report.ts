@@ -25,6 +25,7 @@ import {
   storeAt,
 } from "../core/store.ts";
 import type { MemoryStore, Placement } from "../core/store.ts";
+import { which } from "../core/which.ts";
 import { bothScopesNote, projectAtHome, wiredInBothScopes } from "./adapter.ts";
 import type {
   Adapter,
@@ -319,15 +320,12 @@ function pathProblem(
   statuses: readonly AgentStatus[]
 ): string[] {
   const enabled = statuses.filter((status) => status.enabled);
-  if (
-    enabled.length === 0 ||
-    Bun.which("mdmem", { PATH: ctx.env.PATH ?? "" }) !== null
-  ) {
+  if (enabled.length === 0 || which("mdmem", ctx.env.PATH ?? "") !== null) {
     return [];
   }
   const titles = enabled.map(({ title }) => title).join(", ");
   return [
-    `mdmem is not on PATH, so the session-start hooks and the MCP server wired for ${titles}, which run \`mdmem\`, fail — put it on PATH (\`bun link\` in mdmem's checkout)`,
+    `mdmem is not on PATH, so the session-start hooks and the MCP server wired for ${titles}, which run \`mdmem\`, fail — put it on PATH (\`npm i -g mdmem\`, or \`bun link\` in mdmem's checkout)`,
   ];
 }
 

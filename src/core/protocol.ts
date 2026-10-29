@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { INDEX_MAX_CHARS, POINTER_MAX_CHARS } from "./check.ts";
+import { PACKAGE_ROOT } from "./package-root.ts";
 
 /**
  * The text mdmem hands to agents lives as editable Markdown under `templates/`, so it
@@ -34,7 +36,7 @@ function loadTemplate(name: TemplateName): string {
   let template = cache.get(name);
   if (template === undefined) {
     template = readFileSync(
-      new URL(`../../templates/${name}.md`, import.meta.url),
+      join(PACKAGE_ROOT, "templates", `${name}.md`),
       "utf-8"
     );
     cache.set(name, template);

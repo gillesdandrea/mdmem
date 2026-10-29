@@ -11,6 +11,7 @@
  */
 
 import { isAbsolute } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { PROMPT_PART, SESSION_START_PARTS } from "../core/hook.ts";
 import type {
@@ -199,7 +200,7 @@ export const MCP_SERVER_IDENTITY: KeyIdentity = {
   matches: (value) =>
     isObject(value) &&
     value.command === MCP_SERVER.command &&
-    Bun.deepEquals(value.args, MCP_SERVER.args),
+    isDeepStrictEqual(value.args, MCP_SERVER.args),
   fix: `remove or rename it, or set its command to ${JSON.stringify(MCP_SERVER.command)} and its args to ${JSON.stringify(MCP_SERVER.args)}`,
 };
 

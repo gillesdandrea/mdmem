@@ -13,3 +13,27 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run all:check
+      - run: bun run build
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: mdmem-*.tgz
+          if-no-files-found: error
+
+  # The published package runs on Node alone: install the tarball with no bun on PATH and run it.
+  smoke-node:
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball
+      - run: scripts/smoke-node.sh mdmem-*.tgz

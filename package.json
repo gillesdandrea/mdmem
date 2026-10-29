@@ -3,7 +3,6 @@
   "version": "0.2.0",
   "description": "Shared, Claude-style file-based memory for any coding agent",
   "keywords": [
-    "bun",
     "claude-code",
     "cli",
     "coding-agent",
@@ -24,10 +23,17 @@
     "url": "git+https://github.com/gillesdandrea/mdmem.git"
   },
   "bin": {
-    "mdmem": "./src/cli/index.ts"
+    "mdmem": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "templates",
+    "CHANGELOG.md"
+  ],
   "type": "module",
   "scripts": {
+    "build": "bun run scripts/build.ts",
+    "prepublishOnly": "bun run build",
     "test": "bun test",
     "type:check": "tsc --noEmit",
     "all:check": "bun run type:check && ultracite check && bun test",
@@ -47,5 +53,8 @@
     "oxlint": "^1.88.0",
     "typescript": "^7.0.2",
     "ultracite": "8.0.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

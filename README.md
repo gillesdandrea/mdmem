@@ -24,18 +24,15 @@ which is where a home store always is
 
 ## Install
 
-mdmem runs on [bun](https://bun.sh), which you need until mdmem is published
-on npm:
+mdmem runs on Node 22 or later:
 
 ```bash
-git clone https://github.com/gillesdandrea/mdmem.git
-cd mdmem
-bun install
-bun link          # puts `mdmem` on your PATH
+npm i -g mdmem    # puts `mdmem` on your PATH
 ```
 
 The agents' hooks and MCP server run `mdmem`, so it has to stay on your PATH.
-Everyone who clones a repository wired with `--project` needs it too.
+Everyone who clones a repository wired with `--project` needs it too. To run
+it from a checkout instead, see [Development](#development).
 
 ## Quickstart
 
@@ -120,7 +117,7 @@ Each agent's hooks go in the settings or hooks file listed first: two
 session-start hooks and the per-prompt hook, in both scopes.
 
 With `--project`, commit the files `enable` names. Everyone working in the
-repository then needs mdmem on their PATH, and so bun, until mdmem is on npm.
+repository then needs mdmem on their PATH (`npm i -g mdmem`).
 
 **Claude Code.** `enable claude-code` turns Claude's own auto memory off (on
 the whole machine in the global scope, for the repository in the project
@@ -373,15 +370,31 @@ files each agent's wiring writes are in [docs/reference.md](docs/reference.md).
 
 ## Development
 
+Development runs on [bun](https://bun.sh); the published package runs on Node.
+
 ```bash
+git clone https://github.com/gillesdandrea/mdmem.git
+cd mdmem
+bun install
+bun run build      # builds dist/, what `mdmem` on your PATH runs
+bun link           # puts this checkout's `mdmem` on your PATH
+
 bun run all:check  # type:check + ultracite check + test (what CI runs)
 bun run check      # ultracite check: oxlint + oxfmt
 bun run fix        # ultracite fix
 bun test           # tests only
+bun src/cli/index.ts <command>   # the sources, with no build
 ```
 
-Stack: `bun` (runtime, tests), TypeScript 7 (`tsc`, typecheck), `ultracite`
-driving `oxlint` + `oxfmt`.
+Run `bun run build` again after changing `src/` so the linked `mdmem` follows.
+`bun run build` bundles `src/` into `dist/` for Node, dependencies left
+external, and refuses a Bun API in `src/`; `npm pack` ships `dist/`,
+`templates/` and the docs, and `scripts/smoke-node.sh <tarball>` installs the
+tarball into a temporary prefix and runs it with Node alone, as CI does.
+
+Stack: `bun` (development runtime, bundler, tests), Node 22+ (the published
+package), TypeScript 7 (`tsc`, typecheck), `ultracite` driving `oxlint` +
+`oxfmt`.
 
 ## Not yet included
 

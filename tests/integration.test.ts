@@ -4051,7 +4051,7 @@ describe("status and check", () => {
         env: { ...ctx.env, PATH: join(ctx.home, "empty") },
       };
       expect(await projectProblems(noMdmem)).toEqual([
-        "mdmem is not on PATH, so the session-start hooks and the MCP server wired for Claude Code, IBM Bob, Codex CLI, which run `mdmem`, fail — put it on PATH (`bun link` in mdmem's checkout)",
+        "mdmem is not on PATH, so the session-start hooks and the MCP server wired for Claude Code, IBM Bob, Codex CLI, which run `mdmem`, fail — put it on PATH (`npm i -g mdmem`, or `bun link` in mdmem's checkout)",
       ]);
       for (const adapter of [claudeCodeAdapter, bobAdapter, codexAdapter]) {
         // oxlint-disable-next-line no-await-in-loop -- one adapter at a time, as the CLI unwires them
@@ -4393,7 +4393,7 @@ describe("scopes and store creation", () => {
         PATH: join(home, "empty"),
       });
       expect(doctor.out).toBe(
-        `${none}\nFound 1 problem(s):\n  - mdmem is not on PATH, so the session-start hooks and the MCP server wired for IBM Bob, which run \`mdmem\`, fail — put it on PATH (\`bun link\` in mdmem's checkout)\n`
+        `${none}\nFound 1 problem(s):\n  - mdmem is not on PATH, so the session-start hooks and the MCP server wired for IBM Bob, which run \`mdmem\`, fail — put it on PATH (\`npm i -g mdmem\`, or \`bun link\` in mdmem's checkout)\n`
       );
       expect(doctor.code).toBe(1);
       expect(runCliWith(dir, ["disable", "bob"], env).code).toBe(0);

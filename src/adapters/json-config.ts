@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { isObject, valueAt } from "../core/object.ts";
 import type { PlainObject } from "../core/object.ts";
@@ -111,7 +112,7 @@ function splitPath(path: readonly string[]): [string[], string] {
 /** The identity of a plain value: equal to it, and set to it to make room for mdmem's. */
 function valueIdentity(value: unknown): KeyIdentity {
   return {
-    matches: (found) => Bun.deepEquals(found, value),
+    matches: (found) => isDeepStrictEqual(found, value),
     fix: `remove it or set it to ${JSON.stringify(value)}`,
   };
 }
@@ -191,7 +192,7 @@ export function arrayItemEntry(
   path: readonly string[],
   item: unknown
 ): JsonEntry {
-  const isItem = (value: unknown): boolean => Bun.deepEquals(value, item);
+  const isItem = (value: unknown): boolean => isDeepStrictEqual(value, item);
   return {
     label,
     has: (doc) => itemsAt(doc, path).some(isItem),
