@@ -44,7 +44,7 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 ### Added
 
 - mdmem runs on Node: the package npm ships is `dist/`, built by `bun run build`
-  (`prepublishOnly`) from the sources, dependencies left external, with
+  (`prepack`) from the sources, dependencies left external, with
   `templates/` beside it, and `bin` points at `dist/index.js`. `src/` uses no
   Bun API any more (git and the editor through `node:child_process`, stdin read
   to its end, a `which` over PATH, `node:util`'s `isDeepStrictEqual`), the

@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { text } from "node:stream/consumers";
 import { parseArgs } from "node:util";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -75,13 +76,7 @@ import { messageOf } from "../core/text.ts";
 import { commandHelp, topLevelHelp, unknownCommandHelp } from "./help.ts";
 
 /** Everything on stdin, once it closes: a memory's body or a hook's payload piped in. */
-async function readStdin(): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) {
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks).toString("utf-8");
-}
+const readStdin = (): Promise<string> => text(process.stdin);
 
 function print(msg = ""): void {
   process.stdout.write(`${msg}\n`);
@@ -203,13 +198,26 @@ async function cmdRead(args: string[]): Promise<void> {
   print(content);
 }
 
-/** Open `path` in `editor` (a command, possibly with arguments), wait for it to exit, and return its exit code. */
-function runEditor(editor: string, path: string): number | null {
-  const [cmd, ...editorArgs] = editor.split(" ");
-  const proc = spawnSync(cmd ?? editor, [...editorArgs, path], {
-    stdio: "inherit",
-  });
-  return proc.status;
+/** Open `path` in `editor` (a command, possibly with arguments) and wait for it to exit: its exit code, or why it could not run. */
+function runEditor(
+  editor: string,
+  path: string
+): { exitCode: number | null; failure?: string } {
+  const [cmd = editor, ...editorArgs] = editor.split(" ");
+  const proc = spawnSync(cmd, [...editorArgs, path], { stdio: "inherit" });
+  if (proc.error !== undefined) {
+    return {
+      exitCode: null,
+      failure: `could not run the editor ${JSON.stringify(cmd)} — ${messageOf(proc.error)}`,
+    };
+  }
+  if (proc.signal !== null) {
+    return {
+      exitCode: null,
+      failure: `the editor was killed by ${proc.signal}`,
+    };
+  }
+  return { exitCode: proc.status };
 }
 
 /** End `mdmem edit` on `reason`, printing where the edited copy is kept so the edit is not lost. */
@@ -238,7 +246,10 @@ async function cmdEdit(args: string[]): Promise<void> {
   const copyDir = await mkdtemp(join(tmpdir(), "mdmem-"));
   const copy = join(copyDir, basename(file));
   await writeFile(copy, content, "utf-8");
-  const exitCode = runEditor(editor, copy);
+  const { exitCode, failure } = runEditor(editor, copy);
+  if (failure !== undefined) {
+    dieKeepingCopy(failure, copy);
+  }
   if (exitCode !== 0) {
     dieKeepingCopy(`editor exited with code ${exitCode}`, copy);
   }

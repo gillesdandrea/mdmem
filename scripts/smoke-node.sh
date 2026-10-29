@@ -4,14 +4,19 @@
 set -euo pipefail
 
 tarball=$(cd "$(dirname "$1")" && pwd)/$(basename "$1")
-version=$(node -p "require('./package.json').version")
+version=$(tar -xzOf "$tarball" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-node_bin=$(dirname "$(command -v node)")
+# A PATH holding node and npm alone, wherever they are installed, and never bun.
+mkdir -p "$work/nodebin" "$work/home" "$work/prefix" "$work/project"
+real_node=$(command -v node)
+npm_cli="$(npm root -g)/npm/bin/npm-cli.js"
+printf '#!/bin/sh\nexec "%s" "$@"\n' "$real_node" >"$work/nodebin/node"
+printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$real_node" "$npm_cli" >"$work/nodebin/npm"
+chmod +x "$work/nodebin/node" "$work/nodebin/npm"
 export HOME="$work/home"
-export PATH="$work/prefix/bin:$node_bin:/usr/bin:/bin"
-mkdir -p "$HOME" "$work/prefix" "$work/project"
+export PATH="$work/prefix/bin:$work/nodebin:/usr/bin:/bin"
 
 if command -v bun >/dev/null; then
   echo "bun is on PATH ($(command -v bun)): the smoke must run on Node alone" >&2

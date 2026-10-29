@@ -6,9 +6,11 @@
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-const SRC = "src";
-const DIST = "dist";
-const BUN_API = /\bBun\./u;
+const ROOT = join(import.meta.dirname, "..");
+const SRC = join(ROOT, "src");
+const DIST = join(ROOT, "dist");
+// The Bun global, a "bun" or "bun:*" import, or a Bun-only import.meta field.
+const BUN_API = /\bBun\.|from "bun[:"]|import\.meta\.(?:dir|file|main|path)\b/u;
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -17,7 +19,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-// The built code runs on Node: a Bun API in src/ would fail there.
+// The built code runs on Node: a Bun API in src/ would fail there (comments included: keep them honest).
 const usingBun = sourceFiles(SRC).filter((file) =>
   BUN_API.test(readFileSync(file, "utf-8"))
 );
@@ -36,9 +38,6 @@ const result = await Bun.build({
   splitting: true,
   banner: "#!/usr/bin/env node",
 });
-if (!result.success) {
-  throw new AggregateError(result.logs, "build failed");
-}
 for (const output of result.outputs) {
   process.stdout.write(`${output.path} ${output.size} bytes\n`);
 }

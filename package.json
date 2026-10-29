@@ -33,7 +33,7 @@
   "type": "module",
   "scripts": {
     "build": "bun run scripts/build.ts",
-    "prepublishOnly": "bun run build",
+    "prepack": "bun run build",
     "test": "bun test",
     "type:check": "tsc --noEmit",
     "all:check": "bun run type:check && ultracite check && bun test",
