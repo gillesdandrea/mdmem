@@ -173,16 +173,17 @@ server.
 
 ### mdmem hook
 
-`mdmem hook` is what the agents' session-start hooks run: `<agent>` is
+`mdmem hook` is what the agents' hooks run: `<agent>` is
 `claude-code`, `bob` or `codex`, and `<part>` is `protocol` (the memory
-protocol) or `index` (a line naming the store's placement and absolute path,
+protocol), `prompt` (the per-prompt block, below) or `index` (a line naming the store's placement and absolute path,
 `Store: home, <path>` or `Store: local, <path>`, the check's
 warnings for unparseable memories and a stale index, then `MEMORY.md`). It
 reads the hook's JSON payload on stdin, resolves the store from the payload's
-`cwd` (else the working directory), and prints the part as SessionStart
-context, each under 10,000 characters: warnings past that are counted instead
-of listed, and an index over its limit is cut short with a note to
-`memory_read` the rest and run a consolidation.
+`cwd` (else the working directory), and prints the part as context on its
+event: SessionStart for `protocol` and `index`, each under 10,000 characters,
+where warnings past that are counted instead of listed and an index over its
+limit is cut short with a note to `memory_read` the rest and run a
+consolidation; UserPromptSubmit for `prompt`, under 4,000 characters (below).
 
 It speaks in every directory, git or not, store or not: with no store yet, the
 index part is the line
@@ -197,12 +198,15 @@ elsewhere it speaks, since the project's hooks do not run, and says why on
 stderr.
 
 The hook also prints nothing on a resumed or forked session, for any event but
-SessionStart, and with no payload on stdin, as when it is run by hand.
+its part's own (SessionStart for `protocol` and `index`, UserPromptSubmit for
+`prompt`), and with no payload on stdin, as when it is run by hand.
 Wherever it prints nothing, it writes one line on stderr saying why, which never
 reaches the agent's context: no payload (with the `echo '<payload>' | mdmem hook
 <agent> <part>` command that shows what it would inject in the working
-directory), the event, a resumed or forked session, or a global entry beside the
-project's own (naming the project's settings or hooks file). Where Claude Code's
+directory), the event, a resumed or forked session, a global entry beside the
+project's own (naming the project's settings or hooks file), or, for the
+`prompt` part, a payload with no `session_id` or a prompt with nothing to say
+(below). Where Claude Code's
 global entry speaks beside the project's own in a folder it does not trust, it
 writes one line on stderr too, naming the user config that records no trust for
 the folder. A payload that is not a
@@ -212,7 +216,7 @@ session: an error becomes a one-line context saying why the memory could not be
 loaded, and it exits 0.
 
 Where the index part speaks for a payload with a `session_id`, it first writes
-the session's state, a cache the per-prompt hook will read:
+the session's state, a cache the `prompt` part reads:
 `$XDG_CACHE_HOME/mdmem/sessions/<agent>/<session_id>.json` when
 `XDG_CACHE_HOME` is set to an absolute path, else under `~/.cache/mdmem/sessions/`, and
 `<agent>/<session_id>/<agent_id>.json` for a child session whose payload
@@ -222,12 +226,57 @@ the injection time and the hits already shown, none at the start. A session
 started by startup, clear or compact gets a fresh file; a resumed one keeps
 its own, since the hook is silent then. A file that cannot be read or parsed,
 or that names another store's directory (after `mdmem store local` or
-`mdmem store home`), is replaced without being read. Each write removes the
+`mdmem store home`), is replaced without being read. Each of the index part's
+writes removes the
 session files older than 30 days by mtime and the session directories that
 leaves empty; nothing else prunes the directory,
 which lies outside every store, so `mdmem store list` never sees it. A state
 it cannot write leaves the hook's output as it is, with one line on stderr
 saying why.
+
+The `prompt` part runs before each user prompt, on UserPromptSubmit, and
+injects pointers only, never a memory's body. `mdmem enable` does not wire it
+yet: until it does, an entry must run `mdmem hook <agent> prompt [--global]`
+under `hooks.UserPromptSubmit`. The part reads the session's state, compares
+the store with its snapshot (by size and mtime, then by content hash), searches
+the store with the payload's `prompt` text, and prints
+`{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"<block>"}}`,
+the same for all three agents. The block has two sections, each left out when
+it has nothing to say:
+
+```
+Memory changes since your last prompt:
+- [codex-hook-review](codex-hook-review.md) — Codex reviews a project hook once per path (new)
+- old-note.md (deleted)
+Memories that may bear on this prompt, open with memory_read:
+- [workflow-run-records](workflow-run-records.md) — where Workflow runs persist
+```
+
+- The changes list each memory added (new), updated (updated) or deleted
+  (deleted, as its file name) since the session's last prompt, at most 20,
+  then one line counting the rest and saying to `memory_read` `MEMORY.md`.
+- The hits are the memories the search of `memory_search` finds for the
+  prompt's whole text, with its stop list, above a relevance floor, and at 60%
+  of the top hit's score or more. A memory already shown as a hit in the
+  session, or listed in the changes, is left out; at most 5 remain.
+- Each pointer is the index's own line for the memory, else the line `reindex`
+  would write, cut to 150 characters. The block stays under 4,000 characters:
+  change lines that do not fit beside the hits are counted in the last line of
+  the changes.
+
+A session's first prompt with no state file, a child session's included (its
+payload carries `agent_id`), takes the store's snapshot and gets hits only.
+Each prompt writes the state, the new snapshot and the hits it shows, before
+printing, even when it prints nothing. The part prints nothing, and says why
+on stderr, when the payload names no `session_id`, when its `--global` entry
+defers to the project's own `prompt` entry (by the rule above), and when
+nothing changed and no memory bears on the prompt; only the last of these
+writes the state. A `session_id` that cannot name a file leaves the part
+injecting hits only, with one line on stderr. With no store yet, the part
+prints nothing and writes a state naming the home store to come, with an empty
+snapshot. It keeps no cache and no index
+between prompts: reading and ranking the store takes about 0.1 s at 200
+memories.
 
 ### mdmem edit
 

@@ -5,6 +5,7 @@ import { workTreeRoot } from "./git.ts";
 import { isObject } from "./object.ts";
 import type { PlainObject } from "./object.ts";
 import { getMemoryProtocol } from "./protocol.ts";
+import { recall } from "./recall.ts";
 import {
   pruneSessions,
   readSessionState,
@@ -42,6 +43,13 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
  * session's state (./session.ts) before it returns its output: the store's
  * snapshot and no hits shown yet. A state it cannot write leaves the output as it
  * is, with the reason for stderr.
+ *
+ * The prompt part speaks on UserPromptSubmit, the other two on SessionStart: it
+ * injects the pointers of the memories changed since the session's snapshot and of
+ * those the prompt bears on (./recall.ts), under 4,000 characters, and stays silent
+ * when there are none or the payload names no session_id. It writes the session's
+ * state wherever it reaches the store, silent or not, never where a silence above
+ * applies.
  */
 
 /** The supported agents, in the order mdmem lists them: only those with session-start hooks. The adapter registry is built from this list. */
@@ -51,10 +59,19 @@ export type HookAgent = (typeof HOOK_AGENTS)[number];
 export const HOOK_PARTS = ["protocol", "index"] as const;
 export type HookPart = (typeof HOOK_PARTS)[number];
 
+/**
+ * The parts `mdmem hook` runs: HOOK_PARTS and the per-prompt part, which no
+ * adapter wires yet (mdmem-02l.50 moves it into HOOK_PARTS and drops this list), so
+ * an agent wired before the part shows no missing hook.
+ */
+export const HOOK_COMMAND_PARTS = [...HOOK_PARTS, "prompt"] as const;
+export type HookCommandPart = (typeof HOOK_COMMAND_PARTS)[number];
+
 /** Claude Code replaces a hook entry's context longer than about this with a file path; each part stays under it. */
 export const HOOK_CONTEXT_MAX_CHARS = 10_000;
 
 const SESSION_START = "SessionStart";
+const USER_PROMPT_SUBMIT = "UserPromptSubmit";
 /** A resumed or forked (Codex) session's history already holds what its start injected. */
 const SKIPPED_SOURCES: ReadonlySet<string | undefined> = new Set([
   "resume",
@@ -68,6 +85,8 @@ interface HookPayload {
   source?: string;
   sessionId?: string;
   agentId?: string;
+  /** UserPromptSubmit's text of the prompt, whatever put it there. */
+  prompt?: string;
 }
 
 /** A text's length in code points, the measure check.ts holds the index limit to. */
@@ -99,6 +118,7 @@ function parsePayload(text: string): HookPayload {
     source: stringField(parsed, "source"),
     sessionId: stringField(parsed, "session_id"),
     agentId: stringField(parsed, "agent_id"),
+    prompt: stringField(parsed, "prompt"),
   };
 }
 
@@ -136,11 +156,16 @@ export async function stdinPayload(
   return isTTY === true ? "" : await read();
 }
 
-/** The SessionStart output, in the form every supported agent takes. */
-function sessionStartOutput(context: string): string {
+/** The event a part speaks on: the per-prompt part on UserPromptSubmit, the others on SessionStart. */
+function partEvent(part: string): string {
+  return part === "prompt" ? USER_PROMPT_SUBMIT : SESSION_START;
+}
+
+/** The output injecting `context` on `event`, in the form every supported agent takes. */
+function hookOutput(event: string, context: string): string {
   return JSON.stringify({
     hookSpecificOutput: {
-      hookEventName: SESSION_START,
+      hookEventName: event,
       additionalContext: context,
     },
   });
@@ -240,7 +265,7 @@ export interface HookSite {
   cwd: string;
   /** The session's work tree, else the store's project directory; it runs git, so call it only when needed. */
   projectRoot: () => string;
-  part: HookPart;
+  part: HookCommandPart;
   /** Whether the hook entry is the global scope's (`--global`). */
   global: boolean;
 }
@@ -257,7 +282,7 @@ export type HookVerdict = { silence: string } | { note: string } | undefined;
 export interface HookRequest {
   /** The agent whose hook runs; one of HOOK_AGENTS. */
   agent: string;
-  /** What to inject; one of HOOK_PARTS. */
+  /** What to inject; one of HOOK_COMMAND_PARTS. */
   part: string;
   /** Whether the hook entry carries `--global`, the global scope's marker. */
   global: boolean;
@@ -267,19 +292,25 @@ export interface HookRequest {
   cwd: string;
   /** Whether the agent's hook speaks at `site`: a global entry stays silent where the project's own entries run. */
   verdict: (agent: HookAgent, site: HookSite) => Promise<HookVerdict>;
-  /** The sessions directory the index part writes session state in (sessionsDir in ./session.ts). */
+  /** The sessions directory the index and prompt parts write session state in (sessionsDir in ./session.ts). */
   sessionsDir: string;
 }
 
 /** What `mdmem hook` prints: the output for stdout, and why it stayed silent or its agent's note, for stderr. */
 export interface HookResult {
-  /** The SessionStart output, or an empty string when the hook stays silent. */
+  /** The output on the part's event, or an empty string when the hook stays silent. */
   stdout: string;
   /** Why the hook printed nothing, one line; undefined when it spoke. */
   silence?: string;
   /** Why the hook spoke where it might have stayed silent, one line, as its agent says it. */
   note?: string;
-  /** Why the index part spoke without writing the session's state, one line. */
+  /** Why the index or prompt part ran without writing the session's state, one line. */
+  stateProblem?: string;
+}
+
+/** Why the hook stays silent, and why it could not write the session's state when it read one. */
+interface HookSilence {
+  silence: string;
   stateProblem?: string;
 }
 
@@ -302,7 +333,7 @@ async function sessionStore(
 ): Promise<SessionStore> {
   const location = locateStore(cwd);
   const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
-  const part = oneOf(request.part, HOOK_PARTS, "part");
+  const part = oneOf(request.part, HOOK_COMMAND_PARTS, "part");
   // The work tree as `mdmem enable --project` wires it: the session's own, else the project's directory.
   const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
   const verdict = await request.verdict(agent, {
@@ -332,37 +363,57 @@ function noPayloadSilence(request: HookRequest): string {
   // A command with an unknown agent or part would fail once piped, so the hint names the mistake instead.
   const unknown =
     unknownName(request.agent, HOOK_AGENTS, "agent") ??
-    unknownName(request.part, HOOK_PARTS, "part");
+    unknownName(request.part, HOOK_COMMAND_PARTS, "part");
   if (unknown !== undefined) {
     return `no hook payload on stdin, and ${unknown}.`;
   }
-  const payload = JSON.stringify({
-    cwd: request.cwd,
-    hook_event_name: SESSION_START,
-    source: "startup",
-  });
+  const prompt = request.part === "prompt";
+  const payload = JSON.stringify(
+    prompt
+      ? {
+          cwd: request.cwd,
+          hook_event_name: USER_PROMPT_SUBMIT,
+          session_id: "by-hand",
+          prompt: "what do you remember about this project?",
+        }
+      : { cwd: request.cwd, hook_event_name: SESSION_START, source: "startup" }
+  );
   const command = [
     "mdmem hook",
     request.agent,
     request.part,
     ...(request.global ? ["--global"] : []),
   ].join(" ");
-  return `no hook payload on stdin. An agent's session-start hook runs this command with a JSON payload; to see what it would inject here, run: echo ${shellQuote(payload)} | ${command}`;
+  return `no hook payload on stdin. An agent's ${prompt ? "per-prompt" : "session-start"} hook runs this command with a JSON payload; to see what it would inject here, run: echo ${shellQuote(payload)} | ${command}`;
 }
 
-/** Why a hook printed nothing for `payload`'s event or source, or undefined when the hook may speak. */
-function eventSilence(payload: HookPayload): string | undefined {
+/** Why the hook's `part` printed nothing for `payload`'s event or source, or undefined when it may speak. */
+function eventSilence(payload: HookPayload, part: string): string | undefined {
+  const event = partEvent(part);
   if (payload.hookEventName === undefined) {
-    return `the payload names no hook_event_name; mdmem injects only on ${SESSION_START}.`;
+    return `the payload names no hook_event_name; the ${part} part injects only on ${event}.`;
   }
-  if (payload.hookEventName !== SESSION_START) {
-    return `the event is ${payload.hookEventName}; mdmem injects only on ${SESSION_START}.`;
+  if (payload.hookEventName !== event) {
+    return `the event is ${payload.hookEventName}; the ${part} part injects only on ${event}.`;
   }
-  if (SKIPPED_SOURCES.has(payload.source)) {
+  if (event === SESSION_START && SKIPPED_SOURCES.has(payload.source)) {
     const how = payload.source === "fork" ? "forked" : "resumed";
     return `the session is ${how}, and its history already holds what its start injected; start a new session to inject the memory again.`;
   }
   return undefined;
+}
+
+/** The session file of the session `sessionId` names, or why the payload's ids cannot name one. */
+function sessionFileOf(
+  request: HookRequest,
+  payload: HookPayload,
+  sessionId: string
+): { file: string } | { problem: string } {
+  const key = { agent: request.agent, sessionId, agentId: payload.agentId };
+  const unusable = unusableKey(key);
+  return unusable === undefined
+    ? { file: sessionFile(request.sessionsDir, key) }
+    : { problem: `${unusable}, so it keeps no session state.` };
 }
 
 /**
@@ -378,16 +429,11 @@ async function saveSessionState(
   if (payload.sessionId === undefined) {
     return undefined;
   }
-  const key = {
-    agent: request.agent,
-    sessionId: payload.sessionId,
-    agentId: payload.agentId,
-  };
-  const unusable = unusableKey(key);
-  if (unusable !== undefined) {
-    return `${unusable}, so it keeps no session state.`;
+  const target = sessionFileOf(request, payload, payload.sessionId);
+  if ("problem" in target) {
+    return target.problem;
   }
-  const file = sessionFile(request.sessionsDir, key);
+  const { file } = target;
   try {
     const store = storeAt(location);
     const previous = await readSessionState(file, store.root);
@@ -406,10 +452,56 @@ async function saveSessionState(
   return undefined;
 }
 
+/**
+ * The prompt part: the session's delta and the prompt's hits (./recall.ts) against
+ * its session state, which it writes, the snapshot and the shown-set extended by
+ * this prompt's hits, before it returns. A session with no state yet gets hits
+ * only; one whose ids cannot name a file, hits only at every prompt.
+ */
+async function promptContext(
+  request: HookRequest,
+  payload: HookPayload,
+  location: StoreLocation
+): Promise<HookContext | HookSilence> {
+  if (payload.sessionId === undefined) {
+    return {
+      silence:
+        "the payload names no session_id, which the prompt part needs to know what the session has already seen.",
+    };
+  }
+  const store = storeAt(location);
+  const target = sessionFileOf(request, payload, payload.sessionId);
+  const previous =
+    "file" in target
+      ? await readSessionState(target.file, store.root)
+      : undefined;
+  const found = await recall(store, previous, payload.prompt ?? "");
+  let stateProblem = "problem" in target ? target.problem : undefined;
+  if ("file" in target) {
+    try {
+      // The state is written before the output is printed: a dropped output loses a delta rather than repeating it (ADR 0002).
+      await writeSessionState(target.file, {
+        version: SESSION_STATE_VERSION,
+        agent: request.agent,
+        store: store.root,
+        snapshot: found.snapshot,
+        lastInjection: new Date().toISOString(),
+        shown: [...(previous?.shown ?? []), ...found.hits],
+      });
+    } catch (error) {
+      stateProblem = `could not write the session state ${target.file}: ${oneLine(messageOf(error))}`;
+    }
+  }
+  const problem = stateProblem === undefined ? {} : { stateProblem };
+  return found.silence === undefined
+    ? { context: found.block, ...problem }
+    : { silence: found.silence, ...problem };
+}
+
 /** The context to inject, or why the hook stays silent. */
 async function hookContext(
   request: HookRequest
-): Promise<HookContext | { silence: string }> {
+): Promise<HookContext | HookSilence> {
   const text = await request.readPayload();
   if (text.trim() === "") {
     return { silence: noPayloadSilence(request) };
@@ -425,7 +517,7 @@ async function hookContext(
     }
     throw error;
   }
-  const skipped = eventSilence(payload);
+  const skipped = eventSilence(payload, request.part);
   if (skipped !== undefined) {
     return { silence: skipped };
   }
@@ -438,6 +530,11 @@ async function hookContext(
   }
   const { location } = site;
   const note = site.note === undefined ? {} : { note: site.note };
+  if (request.part === "prompt") {
+    const prompted = await promptContext(request, payload, location);
+    // The note says why the entry speaks, so a silent entry leaves it out.
+    return "context" in prompted ? { ...prompted, ...note } : prompted;
+  }
   if (request.part === "protocol") {
     return { context: getMemoryProtocol(location.dir), ...note };
   }
@@ -454,22 +551,24 @@ async function hookContext(
 }
 
 /**
- * What `mdmem hook` prints: on stdout, the agent's SessionStart output carrying the
- * part's context, or an empty string when the hook stays silent, with the reason
- * for stderr. It never throws: an error becomes a one-line context saying the
- * memory could not be loaded, and why.
+ * What `mdmem hook` prints: on stdout, the agent's output on the part's event
+ * carrying its context, or an empty string when the hook stays silent, with the
+ * reason for stderr. It never throws: an error becomes a one-line context saying
+ * the memory could not be loaded, and why.
  */
 export async function runHook(request: HookRequest): Promise<HookResult> {
+  const event = partEvent(request.part);
   try {
     const result = await hookContext(request);
     if ("silence" in result) {
-      return { stdout: "", silence: result.silence };
+      return { stdout: "", ...result };
     }
     const { context, ...stderr } = result;
-    return { stdout: sessionStartOutput(context), ...stderr };
+    return { stdout: hookOutput(event, context), ...stderr };
   } catch (error) {
     return {
-      stdout: sessionStartOutput(
+      stdout: hookOutput(
+        event,
         `mdmem could not load the memory: ${oneLine(messageOf(error))}`
       ),
     };

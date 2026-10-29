@@ -50,6 +50,11 @@ import {
   getConsolidatePrompt,
   getMemoryProtocol,
 } from "../src/core/protocol.ts";
+import {
+  DELTA_HEADER,
+  HITS_HEADER,
+  PROMPT_CONTEXT_MAX_CHARS,
+} from "../src/core/recall.ts";
 import { RefusalError } from "../src/core/refusal.ts";
 import type { SessionState } from "../src/core/session.ts";
 import { MemoryStore, versionOf } from "../src/core/store.ts";
@@ -2265,26 +2270,28 @@ describe("hook", () => {
         for (const [payload, why] of [
           [
             { ...startPayload(root), source: "resume" },
-            `the session is resumed, ${history}`,
+            () => `the session is resumed, ${history}`,
           ],
           [
             { ...startPayload(root), source: "fork" },
-            `the session is forked, ${history}`,
+            () => `the session is forked, ${history}`,
           ],
           [
             { cwd: root, hook_event_name: "UserPromptSubmit" },
-            "the event is UserPromptSubmit; mdmem injects only on SessionStart.",
+            (part: string) =>
+              `the event is UserPromptSubmit; the ${part} part injects only on SessionStart.`,
           ],
           [
             { cwd: root },
-            "the payload names no hook_event_name; mdmem injects only on SessionStart.",
+            (part: string) =>
+              `the payload names no hook_event_name; the ${part} part injects only on SessionStart.`,
           ],
         ] as const) {
           for (const part of HOOK_PARTS) {
             expect(runHookCli(root, part, payload)).toEqual({
               code: 0,
               out: "",
-              err: `mdmem hook printed nothing: ${why}\n`,
+              err: `mdmem hook printed nothing: ${why(part)}\n`,
             });
           }
         }
@@ -2848,6 +2855,459 @@ async function withWiredRepo(
     await rm(repo.root, { recursive: true, force: true });
   }
 }
+
+/** A UserPromptSubmit payload in `cwd` for the session `sessionId` with `prompt`, and `fields` such as agent_id. */
+function promptPayload(
+  cwd: string,
+  sessionId: string,
+  prompt: string,
+  fields: Record<string, string> = {}
+) {
+  return {
+    cwd,
+    hook_event_name: "UserPromptSubmit",
+    session_id: sessionId,
+    prompt,
+    ...fields,
+  };
+}
+
+/** The block the prompt part printed, after checking its output is the UserPromptSubmit form, under its cap. */
+function promptBlock(hook: { code: number | null; out: string }): string {
+  expect(hook.code).toBe(0);
+  const parsed = JSON.parse(hook.out) as {
+    hookSpecificOutput: { hookEventName: string; additionalContext: string };
+  };
+  expect(Object.keys(parsed)).toEqual(["hookSpecificOutput"]);
+  expect(parsed.hookSpecificOutput.hookEventName).toBe("UserPromptSubmit");
+  const block = parsed.hookSpecificOutput.additionalContext;
+  expect([...block].length).toBeLessThan(PROMPT_CONTEXT_MAX_CHARS);
+  return block;
+}
+
+/** What the prompt part prints when it stays silent for `why`. */
+function promptSilence(why: string) {
+  return { code: 0, out: "", err: `mdmem hook printed nothing: ${why}\n` };
+}
+
+/** Write the project memory `name` with `description` and `body`. */
+async function writeMemory(
+  store: MemoryStore,
+  name: string,
+  description: string,
+  body = "b"
+): Promise<void> {
+  await store.create(
+    `${name}.md`,
+    serializeMemory({
+      frontmatter: { name, description, metadata: { type: "project" } },
+      body,
+    })
+  );
+}
+
+/** The session file of `agent`'s session `id` under the cache runHookCli gives a project at `root`. */
+function promptSessionFile(root: string, id: string, agent = "claude-code") {
+  return join(root, "cache", "mdmem", "sessions", agent, `${id}.json`);
+}
+
+/** A hooks file holding only the project's own prompt entry of `agent`, its handler with `handler`'s fields. */
+function promptProjectEntry(agent: string, handler: Record<string, unknown>) {
+  return {
+    hooks: {
+      UserPromptSubmit: [
+        {
+          hooks: [
+            {
+              type: "command",
+              command: `mdmem hook ${agent} prompt`,
+              ...handler,
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+/** A 124-character description opening with `word`, which makes a 150-character pointer for a 7-character name. */
+function longDescription(word: string): string {
+  return `${word} ${"y".repeat(120 - word.length)} end`;
+}
+
+const CODEX_REVIEW = "Codex reviews a project hook once per path";
+const CODEX_REVIEW_POINTER = `- [codex-hook-review](codex-hook-review.md) — ${CODEX_REVIEW}`;
+const REVIEW_PROMPT = "Will Codex review the hook again after I edit it?";
+const NOTHING_CHANGED = "no memory changed since the session's last prompt";
+
+describe("prompt hook", () => {
+  test("a first prompt writes the baseline and injects hits only; the next injects the delta with its tags, and a 21st change the overflow line", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 2);
+      await writeMemory(store, "codex-hook-review", CODEX_REVIEW);
+      await reindex(store);
+      const first = runHookCli(
+        root,
+        "prompt",
+        promptPayload(root, "s1", REVIEW_PROMPT)
+      );
+      expect(promptBlock(first)).toBe(
+        `${HITS_HEADER}\n${CODEX_REVIEW_POINTER}`
+      );
+      const baseline = await readState(promptSessionFile(root, "s1"));
+      expect(Object.keys(baseline.snapshot).toSorted()).toEqual([
+        "codex-hook-review.md",
+        "m-0.md",
+        "m-1.md",
+      ]);
+      expect(baseline.shown).toEqual(["codex-hook-review.md"]);
+
+      await writeMemory(store, "added", "A memory written since");
+      // a longer description, so the edit changes the file's size whatever its mtime
+      await writeMemory(store, "m-0", "d, edited since the last prompt");
+      await store.remove("m-1.md");
+      await reindex(store);
+      const second = runHookCli(
+        root,
+        "prompt",
+        promptPayload(root, "s1", "thanks")
+      );
+      expect(promptBlock(second)).toBe(
+        [
+          DELTA_HEADER,
+          "- [added](added.md) — A memory written since (new)",
+          "- [m-0](m-0.md) — d, edited since the last prompt (updated)",
+          "- m-1.md (deleted)",
+        ].join("\n")
+      );
+
+      await Promise.all(
+        Array.from({ length: 21 }, (_, i) =>
+          writeMemory(store, `n-${String(i).padStart(2, "0")}`, "n")
+        )
+      );
+      await reindex(store);
+      const lines = promptBlock(
+        runHookCli(root, "prompt", promptPayload(root, "s1", "thanks"))
+      ).split("\n");
+      expect(lines).toHaveLength(22);
+      expect(lines[0]).toBe(DELTA_HEADER);
+      expect(lines[20]).toBe("- [n-19](n-19.md) — n (new)");
+      expect(lines[21]).toBe(
+        "1 more memory changed; memory_read MEMORY.md for the current index."
+      );
+    });
+  });
+
+  test("a hit is injected once per session and never beside its own delta line, and an unrelated prompt injects nothing, saying why", async () => {
+    await withCliProject(async (root, store) => {
+      await seedMemories(store, 2);
+      await writeMemory(store, "codex-hook-review", CODEX_REVIEW);
+      await reindex(store);
+      expect(
+        promptBlock(
+          runHookCli(root, "prompt", promptPayload(root, "s1", REVIEW_PROMPT))
+        )
+      ).toBe(`${HITS_HEADER}\n${CODEX_REVIEW_POINTER}`);
+      expect(
+        runHookCli(root, "prompt", promptPayload(root, "s1", REVIEW_PROMPT))
+      ).toEqual(
+        promptSilence(
+          `${NOTHING_CHANGED}, and the memories that bear on the prompt were already shown this session.`
+        )
+      );
+      expect(
+        runHookCli(
+          root,
+          "prompt",
+          promptPayload(root, "s2", "thanks, all good")
+        )
+      ).toEqual(
+        promptSilence(
+          "the session had no state yet, so mdmem took the store's snapshot for its next prompt, and no memory bears on the prompt."
+        )
+      );
+      await writeMemory(store, "codex-hook-review", `${CODEX_REVIEW}, again`);
+      await reindex(store);
+      expect(
+        promptBlock(
+          runHookCli(root, "prompt", promptPayload(root, "s2", REVIEW_PROMPT))
+        )
+      ).toBe(`${DELTA_HEADER}\n${CODEX_REVIEW_POINTER}, again (updated)`);
+    });
+  });
+
+  test("in a store of 16 memories, a hit under the floor and a weak one under 60% of the top are left out, and at most 5 hits are injected", async () => {
+    await withCliProject(async (root, store) => {
+      const fruits = [
+        "apple",
+        "banana",
+        "cherry",
+        "grape",
+        "lemon",
+        "mango",
+        "melon",
+        "olive",
+        "peach",
+        "pear",
+        "plum",
+        "quince",
+        "berry",
+      ];
+      await Promise.all(
+        fruits.map((fruit) =>
+          writeMemory(
+            store,
+            `fruit-${fruit}`,
+            `The ${fruit} orchard notes`,
+            `Harvest the ${fruit} in autumn.`
+          )
+        )
+      );
+      await writeMemory(
+        store,
+        "codex-hook-review",
+        CODEX_REVIEW,
+        "Approve it in an interactive session."
+      );
+      // a weak hit, over the floor but under 60% of the top hit's score
+      await writeMemory(
+        store,
+        "hook-timeouts",
+        "Timeouts for agent hooks",
+        "Codex waits ten seconds."
+      );
+      // under the floor: one plain mention of hook in its body
+      await writeMemory(
+        store,
+        "release-steps",
+        "How a release goes out",
+        "Tag, then publish; a hook runs the tests."
+      );
+      await reindex(store);
+      expect(
+        promptBlock(
+          runHookCli(root, "prompt", promptPayload(root, "s1", REVIEW_PROMPT))
+        )
+      ).toBe(`${HITS_HEADER}\n${CODEX_REVIEW_POINTER}`);
+
+      // six memories the prompt matches equally, each by a word of its own
+      const words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"];
+      await Promise.all(
+        words.map((word, i) =>
+          writeMemory(store, `deploy-${i}`, `The ${word} pipeline`)
+        )
+      );
+      await reindex(store);
+      expect(
+        promptBlock(
+          runHookCli(
+            root,
+            "prompt",
+            promptPayload(
+              root,
+              "s2",
+              `how do the ${words.join(", ")} pipelines run?`
+            )
+          )
+        ).split("\n")
+      ).toEqual([
+        HITS_HEADER,
+        ...words
+          .slice(0, 5)
+          .map(
+            (word, i) =>
+              `- [deploy-${i}](deploy-${i}.md) — The ${word} pipeline`
+          ),
+      ]);
+    });
+  });
+
+  test("each silence prints nothing and says why on stderr, and a deferring --global entry leaves the session file untouched", async () => {
+    await withCliProject(async (root, store) => {
+      await writeMemory(store, "codex-hook-review", CODEX_REVIEW);
+      await reindex(store);
+      const payload = JSON.stringify(
+        promptPayload(
+          root,
+          "by-hand",
+          "what do you remember about this project?"
+        )
+      );
+      expect(runHookCli(root, "prompt", "")).toEqual(
+        promptSilence(
+          `no hook payload on stdin. An agent's per-prompt hook runs this command with a JSON payload; to see what it would inject here, run: echo '${payload}' | mdmem hook claude-code prompt`
+        )
+      );
+      for (const start of [
+        startPayload(root),
+        { ...startPayload(root), session_id: "s1" },
+      ]) {
+        expect(runHookCli(root, "prompt", start)).toEqual(
+          promptSilence(
+            "the event is SessionStart; the prompt part injects only on UserPromptSubmit."
+          )
+        );
+      }
+      const { session_id: _, ...anonymous } = promptPayload(
+        root,
+        "s1",
+        REVIEW_PROMPT
+      );
+      expect(runHookCli(root, "prompt", anonymous)).toEqual(
+        promptSilence(
+          "the payload names no session_id, which the prompt part needs to know what the session has already seen."
+        )
+      );
+      expect(existsSync(join(root, "cache", "mdmem"))).toBe(false);
+
+      await mkdir(join(root, "claude-config"), { recursive: true });
+      await recordTrust(join(root, "claude-config"), root);
+      await mkdir(join(root, ".claude"), { recursive: true });
+      await mkdir(join(root, ".bob"), { recursive: true });
+      await mkdir(join(root, ".codex"), { recursive: true });
+      await writeFile(
+        join(root, CLAUDE_SETTINGS),
+        JSON.stringify(promptProjectEntry("claude-code", {})),
+        "utf-8"
+      );
+      await writeFile(
+        join(root, BOB_SETTINGS),
+        JSON.stringify(promptProjectEntry("bob", { timeout: 10 })),
+        "utf-8"
+      );
+      await writeFile(
+        join(root, CODEX_HOOKS_FILE),
+        JSON.stringify(promptProjectEntry("codex", { timeout: 10 })),
+        "utf-8"
+      );
+      const agents = [
+        ["claude-code", CLAUDE_SETTINGS],
+        ["bob", BOB_SETTINGS],
+        ["codex", CODEX_HOOKS_FILE],
+      ] as const;
+      // the project's own entry speaks and writes the session's state
+      for (const [agent] of agents) {
+        promptBlock(
+          runHookCli(
+            root,
+            "prompt",
+            promptPayload(root, "s1", REVIEW_PROMPT),
+            agent
+          )
+        );
+      }
+      const states = agents.map(([agent]) =>
+        promptSessionFile(root, "s1", agent)
+      );
+      const before = await Promise.all(
+        states.map((state) => readFile(state, "utf-8"))
+      );
+      // a change the global entry would record, had it written the state
+      await writeMemory(store, "added", "A memory written since");
+      for (const [agent, file] of agents) {
+        expect(
+          runHookCli(
+            root,
+            "prompt",
+            promptPayload(root, "s1", REVIEW_PROMPT),
+            agent,
+            {},
+            ["--global"]
+          )
+        ).toEqual(
+          promptSilence(
+            `this --global entry stays silent because ${join(root, file)} holds the project's own mdmem hook for the prompt part, which injects it instead.`
+          )
+        );
+      }
+      expect(
+        await Promise.all(states.map((state) => readFile(state, "utf-8")))
+      ).toEqual(before);
+    });
+  });
+
+  test("a payload with agent_id is a child session with its own file and its own baseline", async () => {
+    await withCliProject(async (root, store) => {
+      await writeMemory(store, "codex-hook-review", CODEX_REVIEW);
+      await reindex(store);
+      expect(
+        runHookCli(root, "prompt", promptPayload(root, "s1", "thanks"), "codex")
+          .out
+      ).toBe("");
+      await writeMemory(store, "added", "A memory written since");
+      await reindex(store);
+      const child = runHookCli(
+        root,
+        "prompt",
+        promptPayload(root, "s1", REVIEW_PROMPT, { agent_id: "a1" }),
+        "codex"
+      );
+      expect(promptBlock(child)).toBe(
+        `${HITS_HEADER}\n${CODEX_REVIEW_POINTER}`
+      );
+      const state = await readState(
+        join(root, "cache", "mdmem", "sessions", "codex", "s1", "a1.json")
+      );
+      expect(state.shown).toEqual(["codex-hook-review.md"]);
+      // the parent's state is its own: it still sees the new memory, and the hit the child was shown
+      expect(
+        promptBlock(
+          runHookCli(
+            root,
+            "prompt",
+            promptPayload(root, "s1", REVIEW_PROMPT),
+            "codex"
+          )
+        )
+      ).toBe(
+        `${DELTA_HEADER}\n- [added](added.md) — A memory written since (new)\n${HITS_HEADER}\n${CODEX_REVIEW_POINTER}`
+      );
+    });
+  });
+
+  test("with 20 delta lines and 5 hits of the longest pointer the check allows, the block stays under 4,000 characters", async () => {
+    await withCliProject(async (root, store) => {
+      // "- [long-00](long-00.md) — " is 26 characters, so a 124-character description makes a 150-character pointer
+      const names = Array.from(
+        { length: 20 },
+        (_, i) => `long-${String(i).padStart(2, "0")}`
+      );
+      // five hits the prompt matches equally, each by a word of its own
+      const words = ["alpha", "bravo", "charlie", "delta", "echo"];
+      await Promise.all([
+        ...names.map((name) => writeMemory(store, name, "short")),
+        ...words.map((word, i) =>
+          writeMemory(store, `hits-0${i}`, longDescription(word))
+        ),
+      ]);
+      await reindex(store);
+      expect(
+        runHookCli(root, "prompt", promptPayload(root, "s1", "thanks")).out
+      ).toBe("");
+      await Promise.all(
+        names.map((name) => writeMemory(store, name, longDescription("lion")))
+      );
+      await reindex(store);
+      const lines = promptBlock(
+        runHookCli(root, "prompt", promptPayload(root, "s1", words.join(" ")))
+      ).split("\n");
+      const pointers = lines.filter((line) => line.startsWith("- "));
+      expect(
+        pointers.every(
+          (line) => [...line.replace(/ \(updated\)$/u, "")].length === 150
+        )
+      ).toBe(true);
+      const hitsAt = lines.indexOf(HITS_HEADER);
+      expect(lines.slice(hitsAt + 1)).toHaveLength(5);
+      const kept = lines.slice(1, hitsAt - 1);
+      expect(kept.every((line) => line.endsWith(" (updated)"))).toBe(true);
+      expect(lines[hitsAt - 1]).toBe(
+        `${20 - kept.length} more ${20 - kept.length === 1 ? "memory" : "memories"} changed; memory_read MEMORY.md for the current index.`
+      );
+    });
+  });
+});
 
 /** The check's problems for the project of `ctx`. */
 async function projectProblems(ctx: AdapterContext): Promise<string[]> {

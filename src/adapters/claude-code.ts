@@ -2,7 +2,12 @@ import { dirname, join, resolve } from "node:path";
 
 import { mainCheckoutRoot, workTreeRoot } from "../core/git.ts";
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
+import type {
+  HookCommandPart,
+  HookPart,
+  HookSite,
+  HookVerdict,
+} from "../core/hook.ts";
 import {
   claudeConfigDir,
   claudeProjectDir,
@@ -21,6 +26,7 @@ import {
   globalSilence,
   hookCommand,
   hooksLabel,
+  promptHookLabel,
   MCP_SERVER,
   MCP_SERVER_IDENTITY,
   missingHooksProblem,
@@ -90,6 +96,18 @@ function hookEntry(part: HookPart, global: boolean): JsonEntry {
     matcher: HOOK_MATCHER,
     hooks: [{ type: "command", command }],
   });
+}
+
+// No matcher, which UserPromptSubmit does not support, and no timeout field, as the SessionStart entries.
+const PROJECT_PROMPT_HOOK = hookGroupEntry(
+  promptHookLabel(hookCommand(ID, "prompt")),
+  ["hooks", "UserPromptSubmit"],
+  { hooks: [{ type: "command", command: hookCommand(ID, "prompt") }] }
+);
+
+/** The project's entry injecting `part`, which a global entry of that part defers to. */
+function projectPartEntry(part: HookCommandPart): JsonEntry {
+  return part === "prompt" ? PROJECT_PROMPT_HOOK : hookEntry(part, false);
 }
 
 const PROJECT_HOOKS = HOOK_PARTS.map((part) => hookEntry(part, false));
@@ -455,7 +473,7 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
     }
     const settings = join(site.cwd, SETTINGS);
     const read = await configDocument(site.cwd, SETTINGS);
-    if (!("doc" in read && hookEntry(site.part, false).has(read.doc))) {
+    if (!("doc" in read && projectPartEntry(site.part).has(read.doc))) {
       return undefined;
     }
     if (await trusted(ctx, site.cwd)) {

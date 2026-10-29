@@ -124,7 +124,7 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   the mdmem tools, for an agent or a person who opens the directory. `reindex`
   keeps it and never adds it to a store without one; a move keeps it. The
   import of Claude Code's memories into a new store keeps it first.
-- Session state, kept for the per-prompt hook to come. Where the index part
+- Session state, kept for the per-prompt hook. Where the index part
   speaks for a payload with a `session_id` (startup, clear, compact), it
   writes one file per session under `$XDG_CACHE_HOME/mdmem/sessions/` when
   that is an absolute path, else
@@ -137,6 +137,18 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   write removes the session files older than 30 days and the session
   directories that leaves empty. A state the hook cannot
   write leaves its output as it is and says why on stderr.
+- The per-prompt hook part, `mdmem hook <agent> prompt [--global]`, for
+  UserPromptSubmit. Before each user prompt it injects pointers only: the
+  memories added, updated or deleted since the session's last prompt (at most
+  20, then a line counting the rest), and up to 5 memories the prompt's text
+  finds with the ranked search, above a relevance floor and 60% of the top
+  hit's score, each shown as a hit once per session. The block stays under
+  4,000 characters, and the hook prints nothing when it has nothing to say, when
+  the payload names no `session_id`, or for a `--global` entry where the
+  project's own prompt entry runs, saying why on stderr. A session's first
+  prompt takes the store's snapshot and gets hits only. `mdmem enable` does not
+  wire the part yet. The memory protocol's Recall section tells agents to open
+  a listed memory with `memory_read` before relying on it.
 
 ### Changed
 

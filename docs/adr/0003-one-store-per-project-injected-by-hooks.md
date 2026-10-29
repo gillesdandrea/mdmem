@@ -15,4 +15,5 @@ We chose this over sharing the store through Claude Code's auto-memory directory
 - Anyone working in the repository needs `mdmem` on PATH, or the hooks and the server fail; a failed session-start hook does not block the agent.
 - Only agents with session-start hooks are supported. There is no `AGENTS.md` block and no fallback when hooks do not run (untrusted folder, hooks off); `mdmem status` reports it.
 - Claude Code caps one hook entry's context at about 10,000 characters, so the protocol and the index are two entries, the protocol stays under that size, and the index's limit is about 9,500 characters.
+- A third part, `prompt`, runs before each user prompt (UserPromptSubmit) and injects pointers only, to the memories changed since the session last saw the store and to those the prompt bears on, under 4,000 characters, or nothing when there are none (amended 2026-10-29).
 - `.memory/` is a real directory and normally not committed; mdmem never edits `.gitignore`. Committing suits projects without worktrees, since each worktree would check out its own copy.

@@ -15,7 +15,7 @@ import { isAbsolute } from "node:path";
 import { HOOK_PARTS } from "../core/hook.ts";
 import type {
   HookAgent,
-  HookPart,
+  HookCommandPart,
   HookSite,
   HookVerdict,
 } from "../core/hook.ts";
@@ -206,10 +206,10 @@ export const MCP_SERVER_IDENTITY: KeyIdentity = {
 /** The marker of a global hook entry, which project entries leave out so a 0.2.0 repository needs no migration (ADR 0004). */
 export const GLOBAL_HOOK_FLAG = "--global";
 
-/** The command of the agent's session-start hook that injects `part`; a global entry's carries GLOBAL_HOOK_FLAG. */
+/** The command of the agent's hook that injects `part`; a global entry's carries GLOBAL_HOOK_FLAG. */
 export function hookCommand(
   agent: HookAgent,
-  part: HookPart,
+  part: HookCommandPart,
   global = false
 ): string {
   return `mdmem hook ${agent} ${part}${global ? ` ${GLOBAL_HOOK_FLAG}` : ""}`;
@@ -221,8 +221,13 @@ export function hookCommands(agent: HookAgent, global = false): string[] {
 }
 
 /** Why a global hook entry for `part` stays silent: `file`, the project's settings, holds the project's own entry. */
-export function globalSilence(file: string, part: HookPart): string {
+export function globalSilence(file: string, part: HookCommandPart): string {
   return `this --global entry stays silent because ${file} holds the project's own mdmem hook for the ${part} part, which injects it instead.`;
+}
+
+/** The label of an entry holding the per-prompt hook that runs `command`. */
+export function promptHookLabel(command: string): string {
+  return `UserPromptSubmit hook "${command}"`;
 }
 
 /** The label of an entry holding the session-start hooks that run `commands`. */

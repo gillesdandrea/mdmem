@@ -3,7 +3,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { mainCheckoutRoot } from "../core/git.ts";
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
+import type { HookCommandPart, HookSite, HookVerdict } from "../core/hook.ts";
 import { realDir } from "../core/store.ts";
 import {
   agentStatus,
@@ -12,6 +12,7 @@ import {
   hookCommand,
   hookCommands,
   hooksLabel,
+  promptHookLabel,
   MCP_SERVER,
   MCP_SERVER_IDENTITY,
   missingHooksProblem,
@@ -89,8 +90,16 @@ function hookEntry(global: boolean): JsonEntry {
 }
 
 /** The project entry of one part, which a global entry of that part defers to. */
-function projectPartEntry(part: HookPart): JsonEntry {
+function projectPartEntry(part: HookCommandPart): JsonEntry {
   const command = hookCommand(ID, part);
+  if (part === "prompt") {
+    // No additionalContextLimit: the per-prompt block stays under Codex's cap.
+    return hookGroupEntry(
+      promptHookLabel(command),
+      ["hooks", "UserPromptSubmit"],
+      { hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT }] }
+    );
+  }
   return hookGroupEntry(hooksLabel([command]), HOOKS_PATH, {
     hooks: [handler(command)],
   });

@@ -50,7 +50,9 @@ At session start, a block opening with `Store: <placement>, <absolute path>` hol
 the index; if it did not arrive, `memory_read` `MEMORY.md`, or without the mdmem tools
 read the store's files directly. Open a memory whose pointer bears on the task with
 `memory_read`, find one by its content with `memory_search`, list the store with
-`memory_list`; `memory_check` reports the store's problems. If your harness loads
+`memory_list`; `memory_check` reports the store's problems. At each prompt a block
+may list memories changed since your last prompt and memories that may bear on the
+prompt; open one with `memory_read` before relying on it. If your harness loads
 tools on demand, load every mdmem tool in one request. Recall memory also when the
 user refers to earlier work, and always when they ask what you know. When an answer
 comes from a memory, name that memory's path in the store, so the user can open or

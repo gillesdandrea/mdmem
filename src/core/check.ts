@@ -173,6 +173,11 @@ function pointerSource({ file, memory }: LoadedMemory): PointerSource {
   return { file, frontmatter: memory.frontmatter };
 }
 
+/** The pointer mdmem writes for a memory that parsed. */
+export function memoryPointer(loaded: LoadedMemory): string {
+  return pointerLine(pointerSource(loaded));
+}
+
 /**
  * A line that points at a memory file: a list item, bulleted or numbered, opening
  * with a Markdown link whose target is a `<file>.md` with no directory, or `./` before
@@ -388,7 +393,7 @@ function reconcileIndex(
 }
 
 /** The index's text, or empty when there is none yet. */
-async function currentIndex(store: MemoryStore): Promise<string> {
+export async function currentIndex(store: MemoryStore): Promise<string> {
   return store.exists(INDEX_FILE) ? await store.view(INDEX_FILE) : "";
 }
 

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
 import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
+import type { HookCommandPart, HookSite, HookVerdict } from "../core/hook.ts";
 import {
   agentStatus,
   commitLine,
@@ -9,6 +9,7 @@ import {
   hookCommand,
   hookCommands,
   hooksLabel,
+  promptHookLabel,
   MCP_SERVER,
   MCP_SERVER_IDENTITY,
   missingHooksProblem,
@@ -79,8 +80,16 @@ function hookEntry(global: boolean): JsonEntry {
 }
 
 /** The project entry of one part, which a global entry of that part defers to. */
-function projectPartEntry(part: HookPart): JsonEntry {
+function projectPartEntry(part: HookCommandPart): JsonEntry {
   const command = hookCommand(ID, part);
+  if (part === "prompt") {
+    // No matcher, which Bob's schema makes optional.
+    return hookGroupEntry(
+      promptHookLabel(command),
+      ["hooks", "UserPromptSubmit"],
+      { hooks: [handler(command)] }
+    );
+  }
   return hookGroupEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
     matcher: HOOK_MATCHER,
     hooks: [handler(command)],
