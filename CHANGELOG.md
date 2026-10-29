@@ -222,6 +222,11 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 
 ### Fixed
 
+- `mdmem edit` with an editor whose command cannot run (`$VISUAL` naming a
+  program that is not installed) refuses with `could not run the editor "<cmd>"
+  — <reason>` and keeps the edited copy, where Bun's process call used to crash
+  with a stack trace; an editor killed by a signal is reported by that signal
+  instead of `exited with code null`.
 - `mdmem search` takes every argument as a word of the query: `mdmem search
   deploy friday` searched `deploy` alone and said nothing of `friday`. The
   usage is now `mdmem search [--] <word>...`.
