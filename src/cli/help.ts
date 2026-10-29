@@ -277,7 +277,7 @@ const PAGES: Record<string, CommandPage> = {
   search: {
     usage: "mdmem search [--] <query>",
     about:
-      "Print each memory whose text contains the query, ignoring case, with its description. A memory that does not parse is left out and named in a warning. Put -- before a query that is -h or --help.",
+      "Print the memories whose name, description, headings or body hold the words of the query, each word stemmed and matched on its own, best match first, each with its description; quote text to require it as an exact phrase, and common function words are ignored. A memory that does not parse is left out and named in a warning. Put -- before a query that is -h or --help.",
     example: "mdmem search bun",
     refuses: ["no query is given", NO_STORE],
   },
@@ -410,7 +410,7 @@ const GROUPS: readonly { heading: string; rows: readonly Row[] }[] = [
       ["edit <name>", "Edit a memory in $VISUAL or $EDITOR"],
       ["delete <name>", "Delete a memory"],
       ["list", "Print the index"],
-      ["search <query>", "Find the memories that contain some text"],
+      ["search <query>", "Find the memories that match some words"],
       ["reindex", "Bring the index up to date with the memories"],
       ["path", "Print the store's directory"],
     ],

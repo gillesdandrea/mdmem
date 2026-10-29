@@ -373,10 +373,14 @@ export async function startMcpServer(): Promise<void> {
     {
       ...titled("Search memory", "read"),
       description:
-        "Find the memories in a memory store whose text (name, description or body) contains the query, ignoring case. The result opens with a line naming the store that answered, Store: <id> (<placement>, <path>), its placement home or local; each line after it gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it.",
+        "Find the memories whose name, description, headings or body hold the words of the query, each word stemmed and matched on its own, best match first; quote text to require it as an exact phrase; common function words are ignored. The result opens with a line naming the store that answered, Store: <id> (<placement>, <path>), its placement home or local; each line after it gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it.",
       inputSchema: z.object({
         store: storeParam,
-        query: z.string().describe("text to search for"),
+        query: z
+          .string()
+          .describe(
+            "words to find, each matched on its own; quote an exact phrase"
+          ),
       }),
     },
     ({ store: id, query }) =>

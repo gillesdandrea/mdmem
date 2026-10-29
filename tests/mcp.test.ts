@@ -781,6 +781,41 @@ describe("mcp server", () => {
     });
   });
 
+  test("memory_search and mdmem search rank the same store in the same order", async () => {
+    await withServer(async ({ client, store, storeId }) => {
+      const dir = dirname(store.root);
+      await store.create(
+        "in-body.md",
+        memory("in-body", "We deploy on friday.")
+      );
+      await store.create("deploy-steps.md", memory("deploy-steps", "Run it."));
+      await store.create(
+        "friday-deploy.md",
+        memory("friday-deploy", "Deploy.")
+      );
+      await store.create("lint.md", memory("lint", "Run the linter."));
+
+      const result = await client.callTool({
+        name: "memory_search",
+        arguments: { store: storeId, query: "deploy friday" },
+      });
+      const cli = Bun.spawnSync(
+        [process.execPath, CLI, "search", "deploy friday"],
+        {
+          cwd: dir,
+          env: { ...process.env, ...tempHomeEnv(dir) },
+        }
+      );
+      const lines = textOf(result).split("\n").slice(1);
+      expect(lines).toEqual([
+        "friday-deploy.md — About friday-deploy",
+        "deploy-steps.md — About deploy-steps",
+        "in-body.md — About in-body",
+      ]);
+      expect(cli.stdout.toString()).toBe(`${lines.join("\n")}\n`);
+    });
+  });
+
   test("memory_check on a clean store reports no problems with the memory count", async () => {
     await withServer(async ({ client, store, storeId }) => {
       await write(client, "uses-bun.md", memory("uses-bun", "Use bun."), "new");

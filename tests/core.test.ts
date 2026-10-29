@@ -43,6 +43,8 @@ import {
   getMemoryProtocol,
   PROTOCOL_MAX_CHARS,
 } from "../src/core/protocol.ts";
+import { porterStem, rankDocuments } from "../src/core/search.ts";
+import type { SearchDocument, SearchOptions } from "../src/core/search.ts";
 import { findSecrets } from "../src/core/secrets.ts";
 import {
   locateStore,
@@ -625,6 +627,212 @@ describe("index", () => {
       hits: [{ file: "uses-bun.md", description: "About uses-bun" }],
       warnings: [BROKEN_MEMORY_PROBLEM],
     });
+  });
+});
+
+/** A document to rank: a memory named `name` with this description and body. */
+function searchDoc(name: string, description: string, body: string) {
+  return { file: `${name}.md`, raw: memoryText(name, { description, body }) };
+}
+
+/** Memories about nothing a search test asks for, so its words are rare enough to rank. */
+const FILLERS = ["lint", "format", "release", "editor"].map((topic) =>
+  searchDoc(`${topic}-notes`, `Notes on ${topic}`, `Something about ${topic}.`)
+);
+
+/** The files of the hits for `query` over `documents`, best first. */
+function ranked(
+  documents: SearchDocument[],
+  query: string,
+  options: SearchOptions = {}
+): string[] {
+  return rankDocuments(documents, query, { stopWords: true, ...options }).map(
+    ({ document }) => document.file
+  );
+}
+
+describe("search", () => {
+  test("Porter stems words as the 1980 algorithm does", () => {
+    const stems = {
+      caresses: "caress",
+      ponies: "poni",
+      agreed: "agre",
+      hopping: "hop",
+      filing: "file",
+      happy: "happi",
+      relational: "relat",
+      generalizations: "gener",
+      configuring: "configur",
+      configured: "configur",
+      adjustment: "adjust",
+      controll: "control",
+    };
+    expect(
+      Object.fromEntries(
+        Object.keys(stems).map((word) => [word, porterStem(word)])
+      )
+    ).toEqual(stems);
+  });
+
+  test("each word of the query matches on its own, and quoted words must be adjacent", () => {
+    const documents = [
+      searchDoc("preferred-stack", "The stack", "TypeScript, Bun and React."),
+      searchDoc(
+        "runtime",
+        "Languages",
+        "TypeScript is typed. The runtime is Bun."
+      ),
+      searchDoc(
+        "test-status",
+        "Suite",
+        "The testing of the importer is now complete."
+      ),
+      ...FILLERS,
+    ];
+    // TypeScript's part "type" is no hit: frontmatter keys are not indexed (mdmem-02l.52)
+    expect(ranked(documents, "TypeScript Bun")).toEqual([
+      "preferred-stack.md",
+      "runtime.md",
+    ]);
+    expect(ranked(documents, "testing complete")).toEqual(["test-status.md"]);
+    expect(ranked(documents, '"TypeScript Bun"')).toEqual([
+      "preferred-stack.md",
+    ]);
+    expect(ranked(documents, '"typescript bun"')).toEqual([
+      "preferred-stack.md",
+    ]);
+  });
+
+  test("a quoted phrase matches word by word across a compound in either case, and keeps its function words", () => {
+    const documents = [
+      searchDoc("stack", "Languages", "We use TypeScript daily."),
+      searchDoc("auto-memory", "Setting", "Set autoMemoryEnabled to false."),
+      searchDoc("hamlet", "A play", "To be, or not to be."),
+      ...FILLERS,
+    ];
+    expect(ranked(documents, '"use TypeScript"')).toEqual(["stack.md"]);
+    expect(ranked(documents, '"set autoMemoryEnabled"')).toEqual([
+      "auto-memory.md",
+    ]);
+    expect(ranked(documents, '"autoMemoryEnabled to"')).toEqual([
+      "auto-memory.md",
+    ]);
+    // a compound typed lowercase is one word, as its camelCase whole is in the text
+    expect(ranked(documents, '"typescript daily"')).toEqual(["stack.md"]);
+    expect(ranked(documents, '"set automemoryenabled to"')).toEqual([
+      "auto-memory.md",
+    ]);
+    // a plain word in a phrase is a word of the text, not a part of a compound
+    expect(ranked(documents, '"use script"')).toEqual([]);
+    expect(ranked(documents, '"set enabled"')).toEqual([]);
+    expect(ranked(documents, '"to be"')).toEqual(["hamlet.md"]);
+  });
+
+  test("a version matches in its dotted form and with its digits run together", () => {
+    const documents = [
+      searchDoc("release", "Claude Code", "Claude Code v2.1.306 shipped."),
+      ...FILLERS,
+    ];
+    expect(ranked(documents, "2.1.306")).toEqual(["release.md"]);
+    expect(ranked(documents, "21306")).toEqual(["release.md"]);
+  });
+
+  test("a frontmatter line that continues a value keeps its first word", () => {
+    const documents = [
+      {
+        file: "wrapped.md",
+        raw: "---\nname: wrapped\ndescription: |\n  Caveat: hooks run twice\nmetadata:\n  type: project\n---\n\nBody.\n",
+      },
+      ...FILLERS,
+    ];
+    expect(ranked(documents, "caveat")).toEqual(["wrapped.md"]);
+    expect(ranked(documents, "metadata")).toEqual([]);
+  });
+
+  test("words match through stemming, the query's raw form, compounds and folded accents", () => {
+    const documents = [
+      searchDoc("hooks", "Hooks", "The hooks are configured once."),
+      searchDoc(
+        "auto-memory",
+        "A Claude setting",
+        "Set autoMemoryEnabled to false."
+      ),
+      searchDoc("cahier", "Un cahier", "Le cahier de l'élève."),
+      ...FILLERS,
+    ];
+    expect(ranked(documents, "configuring")).toEqual(["hooks.md"]);
+    // the compound is indexed whole, unstemmed: the query's raw form finds it
+    expect(porterStem("automemoryenabled")).not.toBe("automemoryenabled");
+    expect(ranked(documents, "automemoryenabled")).toEqual(["auto-memory.md"]);
+    expect(ranked(documents, "memory enabled")).toEqual(["auto-memory.md"]);
+    expect(ranked(documents, "élève")).toEqual(["cahier.md"]);
+    expect(ranked(documents, "eleve")).toEqual(["cahier.md"]);
+  });
+
+  test("a match in the name or description outranks one in the body, more words outrank fewer, and function words alone match nothing", () => {
+    const documents = [
+      searchDoc("in-body", "Misc", "We deploy the site."),
+      searchDoc("checklist", "Deploy checklist", "Run the script."),
+      ...FILLERS,
+    ];
+    expect(ranked(documents, "deploy")).toEqual(["checklist.md", "in-body.md"]);
+    const fewer = [
+      searchDoc("one-word", "Misc", "We deploy the site."),
+      searchDoc("two-words", "Misc", "We deploy the site on friday."),
+      ...FILLERS,
+    ];
+    expect(ranked(fewer, "deploy friday")).toEqual([
+      "two-words.md",
+      "one-word.md",
+    ]);
+    expect(ranked(fewer, "we the on")).toEqual([]);
+    expect(ranked(fewer, "le la des")).toEqual([]);
+  });
+
+  test("AI is a word to find, not a French function word (mdmem-02l.56)", () => {
+    const documents = [
+      searchDoc("agents", "AI agents", "Notes on AI agents."),
+      ...FILLERS,
+    ];
+    expect(ranked(documents, "AI agents")).toEqual(["agents.md"]);
+    expect(ranked(documents, "AI")).toEqual(["agents.md"]);
+  });
+
+  test("the floor and the limit drop weak and extra hits, and a search applies neither", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mdmem-"));
+    const store = new MemoryStore(dir);
+    const documents = Array.from({ length: 16 }, (_, i) => {
+      if (i === 0) {
+        return searchDoc("m-0", "Alpha beta", "Alpha beta and gamma.");
+      }
+      return searchDoc(
+        `m-${i}`,
+        "d",
+        i <= 6 ? "A common word." : "Other text."
+      );
+    });
+    await Promise.all(
+      documents.map(({ file, raw }) => store.create(file, raw))
+    );
+    const query = "alpha beta common";
+    const all = rankDocuments(documents, query);
+    expect(all).toHaveLength(7);
+    // 0.7 × the IDF of a term only one of the 16 memories holds
+    const floor = 0.7 * Math.log((16 - 1 + 0.5) / (1 + 0.5));
+    expect(rankDocuments(documents, query, { floor: true })).toEqual(
+      all.filter(({ score }) => score >= floor)
+    );
+    expect(ranked(documents, query, { floor: true })).toEqual(["m-0.md"]);
+    expect(rankDocuments(documents, query, { limit: 2 })).toEqual(
+      all.slice(0, 2)
+    );
+    expect(rankDocuments(documents, query, { limit: -1 })).toEqual([]);
+    // a one-term hit is under the floor, and a search still lists it
+    expect(ranked(documents, "common", { floor: true })).toEqual([]);
+    const { hits } = await searchMemories(store, "common");
+    expect(hits.map(({ file }) => file)).toEqual(ranked(documents, "common"));
+    expect(hits).toHaveLength(6);
+    await rm(dir, { recursive: true, force: true });
   });
 });
 

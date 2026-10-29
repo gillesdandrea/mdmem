@@ -127,6 +127,17 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 
 ### Changed
 
+- `memory_search` and `mdmem search` match the words of the query instead of
+  the whole query as one piece of text: each word is stemmed and matched on its
+  own in a memory's name, description, headings or body, so "TypeScript Bun"
+  finds "TypeScript, Bun", "configuring" finds "configured" and
+  "memory enabled" finds `autoMemoryEnabled`; accents and case are folded.
+  Hits come best match first, ranked as Claude Code ranks its own memories
+  (BM25F, a match in the name or description counting most), and every hit is
+  listed. Quoted text is required as an exact phrase of whole words. Unlike
+  Claude Code, common English and French function words in the query are
+  ignored, and frontmatter keys such as `type:` are not matched, only their
+  values. The output keeps its shape.
 - README is a user document: why mdmem exists, install (bun required until
   mdmem is on npm), the quickstart, what happens in each agent and the
   approvals it needs, where the store lives (home or local), a team workflow

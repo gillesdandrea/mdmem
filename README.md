@@ -316,12 +316,14 @@ did not write; a store without it stays without it.
 `mdmem mcp`, which each agent starts in the session's working directory, serves
 the same memory-store tools as Claude Code, `memory_list`, `memory_read`,
 `memory_write` and `memory_delete`, plus `memory_search`, `memory_check` and
-the prompt `consolidate`. Every write and delete carries the version the agent
-last read (`new` for a new memory), and a write over a newer version is refused
-with the current content. The first `memory_write` creates the store, in its
-home placement unless a local store exists. Each
-tool's arguments and results:
-[MCP server](docs/reference.md#mcp-server).
+the prompt `consolidate`. `memory_search` finds the memories whose name,
+description, headings or body hold the words of the query, each word stemmed
+and matched on its own, best match first; quote text to require it as an exact
+phrase; common function words are ignored. Every write and delete carries the
+version the agent last read (`new` for a new memory), and a write over a newer
+version is refused with the current content. The first `memory_write` creates
+the store, in its home placement unless a local store exists. Each tool's
+arguments and results: [MCP server](docs/reference.md#mcp-server).
 
 ## Consolidation
 

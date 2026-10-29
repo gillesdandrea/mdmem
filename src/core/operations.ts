@@ -29,6 +29,7 @@ import {
   serializeMemory,
 } from "./memory.ts";
 import { RefusalError } from "./refusal.ts";
+import { rankDocuments } from "./search.ts";
 import { assertNoSecrets } from "./secrets.ts";
 import {
   locateStore,
@@ -52,7 +53,8 @@ import { messageOf } from "./text.ts";
  * the CLI and MCP keep only their own argument parsing and output. The document
  * operations (writeDocument, deleteDocument) are the one path by which a memory is
  * written or deleted, and every validation lives there; readDocument reads one memory
- * by its path, and searchMemories searches the memories the Check module loads.
+ * by its path, and searchMemories ranks the memories the Check module loads with the
+ * search module (./search.ts).
  */
 
 /**
@@ -307,22 +309,23 @@ export interface SearchResult {
 }
 
 /**
- * The memories whose raw text contains `query` (case-insensitive), with their
- * descriptions, in file order. It answers from the memories that parse; each broken
- * one is a warning, not a failure (ADR 0002).
+ * The memories matching `query`, best first, with their descriptions: each word of the
+ * query stemmed and matched on its own, quoted text required as a phrase, function words
+ * ignored (search.ts). Every hit is kept: a search applies no floor and no limit. It
+ * answers from the memories that parse; each broken one is a warning, not a failure
+ * (ADR 0002).
  */
 export async function searchMemories(
   store: MemoryStore,
   query: string
 ): Promise<SearchResult> {
-  const needle = query.toLowerCase();
   const { memories, broken } = await loadMemories(store);
-  const hits = memories
-    .filter(({ raw }) => raw.toLowerCase().includes(needle))
-    .map(({ file, memory }) => ({
+  const hits = rankDocuments(memories, query, { stopWords: true }).map(
+    ({ document: { file, memory } }) => ({
       file,
       description: memory.frontmatter.description,
-    }));
+    })
+  );
   return { hits, warnings: broken.map(({ problem }) => problem) };
 }
 
