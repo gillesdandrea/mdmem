@@ -278,9 +278,10 @@ async function cmdDelete(args: string[]): Promise<void> {
 
 async function cmdSearch(args: string[]): Promise<void> {
   // A leading `--` lets the query be -h or --help, which main otherwise takes as asking for help.
-  const [query] = args[0] === "--" ? args.slice(1) : args;
+  // Every argument is a word of the query, so an unquoted query of several words searches them all.
+  const query = (args[0] === "--" ? args.slice(1) : args).join(" ").trim();
   if (!query) {
-    die("usage: mdmem search <query>");
+    die("usage: mdmem search <word>...");
   }
   const store = resolveStore();
   const { hits, warnings } = await searchMemories(store, query);

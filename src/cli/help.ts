@@ -275,10 +275,10 @@ const PAGES: Record<string, CommandPage> = {
     refuses: [NO_STORE],
   },
   search: {
-    usage: "mdmem search [--] <query>",
+    usage: "mdmem search [--] <word>...",
     about:
-      "Print the memories whose name, description, headings or body hold the words of the query, each word stemmed and matched on its own, best match first, each with its description; quote text to require it as an exact phrase, and common function words are ignored. A memory that does not parse is left out and named in a warning. Put -- before a query that is -h or --help.",
-    example: "mdmem search bun",
+      "Print the memories whose name, description, headings or body hold the words of the query, each word stemmed and matched on its own, best match first, each with its description; quote text to require it as an exact phrase, and common function words are ignored. The arguments are the words of the query, quoted or not. A memory that does not parse is left out and named in a warning. Put -- before a query that is -h or --help.",
+    example: "mdmem search bun tests",
     refuses: ["no query is given", NO_STORE],
   },
   reindex: {

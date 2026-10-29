@@ -208,6 +208,9 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 
 ### Fixed
 
+- `mdmem search` takes every argument as a word of the query: `mdmem search
+  deploy friday` searched `deploy` alone and said nothing of `friday`. The
+  usage is now `mdmem search [--] <word>...`.
 - `memory_read` and `memory_write` no longer hide their content from agents
   that read the structured result, as Claude Code does when a tool declares an
   output schema: the structured result held only the version, so the agent saw

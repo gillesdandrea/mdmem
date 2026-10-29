@@ -1402,6 +1402,39 @@ describe("cli", () => {
         expect(del.code).toBe(0);
         expect(existsSync(join(storeDir, "uses-bun.md"))).toBe(false);
 
+        // every argument is a word of the query, quoted or not
+        run(
+          "add",
+          "--type",
+          "project",
+          "--name",
+          "deploys-site",
+          "--description",
+          "We deploy the site",
+          "--body",
+          "Deploy on push."
+        );
+        run(
+          "add",
+          "--type",
+          "project",
+          "--name",
+          "rests-friday",
+          "--description",
+          "On friday we rest",
+          "--body",
+          "No deploy on friday."
+        );
+        const words = run("search", "deploy", "friday");
+        expect(words.code).toBe(0);
+        expect(words.out).toBe(run("search", "deploy friday").out);
+        expect(words.out.split("\n").filter(Boolean)).toHaveLength(2);
+        expect(run("search", "friday").out).toBe(
+          "rests-friday.md — On friday we rest\n"
+        );
+        run("delete", "deploys-site");
+        run("delete", "rests-friday");
+
         // a search skips a broken memory and warns of it on stderr
         await writeFile(join(storeDir, "broken.md"), "no frontmatter\n");
         const search = run("search", "frontmatter");
