@@ -2,20 +2,20 @@
  * An Adapter wires one agent to mdmem in that agent's own files, in one of two
  * scopes (ADR 0003, ADR 0004): global, in its user-wide files, so it applies in
  * every project; or project, in files committed with one repository. The wiring is
- * its session-start hooks and its registration of the mdmem MCP server, plus
- * whatever else the agent needs (Claude Code: its auto memory off, and its memories
- * imported when a store is created). Each adapter declares its entries per scope;
- * enable adds the missing ones, disable removes exactly mdmem's, and status reports
- * each one. Adapters are the only agent-specific code; everything else is
+ * its session-start and per-prompt hooks and its registration of the mdmem MCP
+ * server, plus whatever else the agent needs (Claude Code: its auto memory off, and
+ * its memories imported when a store is created). Each adapter declares its entries
+ * per scope; enable adds the missing ones, disable removes exactly mdmem's, and
+ * status reports each one. Adapters are the only agent-specific code; everything else is
  * agent-neutral.
  */
 
 import { isAbsolute } from "node:path";
 
-import { HOOK_PARTS } from "../core/hook.ts";
+import { PROMPT_PART, SESSION_START_PARTS } from "../core/hook.ts";
 import type {
   HookAgent,
-  HookCommandPart,
+  HookPart,
   HookSite,
   HookVerdict,
 } from "../core/hook.ts";
@@ -209,19 +209,19 @@ export const GLOBAL_HOOK_FLAG = "--global";
 /** The command of the agent's hook that injects `part`; a global entry's carries GLOBAL_HOOK_FLAG. */
 export function hookCommand(
   agent: HookAgent,
-  part: HookCommandPart,
+  part: HookPart,
   global = false
 ): string {
   return `mdmem hook ${agent} ${part}${global ? ` ${GLOBAL_HOOK_FLAG}` : ""}`;
 }
 
-/** The commands of the agent's session-start hooks, one per part. */
+/** The commands of the agent's session-start hooks, one per part; the prompt part's entry is the agent's UserPromptSubmit group. */
 export function hookCommands(agent: HookAgent, global = false): string[] {
-  return HOOK_PARTS.map((part) => hookCommand(agent, part, global));
+  return SESSION_START_PARTS.map((part) => hookCommand(agent, part, global));
 }
 
 /** Why a global hook entry for `part` stays silent: `file`, the project's settings, holds the project's own entry. */
-export function globalSilence(file: string, part: HookCommandPart): string {
+export function globalSilence(file: string, part: HookPart): string {
   return `this --global entry stays silent because ${file} holds the project's own mdmem hook for the ${part} part, which injects it instead.`;
 }
 
@@ -389,30 +389,34 @@ export function scopeStatus(
 }
 
 /**
- * The problem of an enabled agent whose session-start hooks are missing: its
- * sessions start without the protocol, the index or both. `hooksIn` says how many
- * hooks an entry holds, 0 for an entry that is not a hook.
+ * The problem of an enabled agent whose hooks are missing: its sessions start
+ * without the protocol, the index or both, or, when only the prompt part's entry is
+ * missing, are not told at each prompt which memories changed or bear on it.
+ * `partsIn` says which parts an entry's hooks inject, none for an entry that is
+ * not a hook.
  */
 export function missingHooksProblem(
   adapter: Pick<Adapter, "id" | "title">,
   scope: Scope,
   entries: readonly WiringEntry[],
-  hooksIn: (entry: WiringEntry) => number
+  partsIn: (entry: WiringEntry) => readonly HookPart[]
 ): string[] {
   // An entry in a file that cannot be read is reported as that file instead.
   const missing = entries.filter(
-    (entry) => hooksIn(entry) > 0 && !entry.present && !entry.unreadable
+    (entry) => partsIn(entry).length > 0 && !entry.present && !entry.unreadable
   );
   if (missing.length === 0) {
     return [];
   }
   const where = missing.map(({ label, file }) => `${label} (${file})`);
+  const parts = missing.flatMap(partsIn);
   const injected =
-    missing.reduce((count, entry) => count + hooksIn(entry), 0) === 1
-      ? "what that hook injects"
-      : "what those hooks inject";
+    parts.length === 1 ? "what that hook injects" : "what those hooks inject";
+  const consequence = parts.every((part) => part === PROMPT_PART)
+    ? "its sessions are not told at each prompt which memories changed or bear on the prompt"
+    : `its sessions start without ${injected}`;
   return [
-    `${adapter.title}: missing ${where.join(", ")}, so its sessions start without ${injected}${enableAdvice(adapter.id, scope)}`,
+    `${adapter.title}: missing ${where.join(", ")}, so ${consequence}${enableAdvice(adapter.id, scope)}`,
   ];
 }
 
@@ -470,7 +474,7 @@ export interface Adapter {
    */
   readonly submoduleClause?: string;
   /**
-   * Whether the agent's session-start hook speaks at `site`: a global entry stays
+   * Whether the agent's hook (any part) speaks at `site`: a global entry stays
    * silent where the project's own entries run, saying why in one line naming the
    * file that decides it, and may speak with a note where they are present but do
    * not run. Absent for an agent whose hook always speaks.

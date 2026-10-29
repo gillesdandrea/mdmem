@@ -89,7 +89,7 @@ const PAGES: Record<string, CommandPage> = {
   enable: {
     usage: "mdmem enable <agent…> | --all [--project]",
     about:
-      "Wire agents to mdmem in one scope: their session-start hooks and the mdmem MCP server, and for Claude Code its auto memory turned off and the mdmem tools' permission. Neither scope needs a store or creates one: the first memory saved creates it. Every agent is planned before any file is written, so a refusal leaves every file as it was, and running it again changes nothing.",
+      "Wire agents to mdmem in one scope: their session-start hooks, their per-prompt hook and the mdmem MCP server, and for Claude Code its auto memory turned off and the mdmem tools' permission. Neither scope needs a store or creates one: the first memory saved creates it. Every agent is planned before any file is written, so a refusal leaves every file as it was, and running it again changes nothing.",
     sections: [
       {
         heading: "Options:",
@@ -298,7 +298,7 @@ const PAGES: Record<string, CommandPage> = {
   hook: {
     usage: "mdmem hook <agent> <part> [--global]",
     about:
-      "Run by an agent's session-start hook, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index as context for the session. It speaks in every directory, git or not; with no store yet, the index part names the home store the first save creates. Where it prints nothing, one line on stderr says why; with no payload, that line gives the command that shows what it would inject here, or names an unknown agent or part.",
+      "Run by an agent's hooks, not typed by hand: read the hook's payload on stdin and print the memory protocol or the index at session start, or, before each prompt, pointers to the memories that changed or bear on it. It speaks in every directory, git or not; with no store yet, the index part names the home store the first save creates. Where it prints nothing, one line on stderr says why; with no payload, that line gives the command that shows what it would inject here, or names an unknown agent or part.",
     sections: [
       {
         heading: "Arguments:",
@@ -420,7 +420,7 @@ const GROUPS: readonly { heading: string; rows: readonly Row[] }[] = [
     rows: [
       [
         "hook <agent> <part> [--global]",
-        "Print the memory protocol or the index at session start",
+        "Print the memory protocol, the index or the per-prompt pointers",
       ],
       ["mcp", "Serve the mdmem MCP tools over stdio"],
     ],

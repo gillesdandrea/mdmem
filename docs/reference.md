@@ -137,7 +137,7 @@ command's usage, options, an example and the refusals it can give.
 | `mdmem path` | Print the store directory, home or local |
 | `mdmem version` (also `--version`, `-v`, `-V`) | Print `mdmem` and its version, the one the MCP server reports |
 | `mdmem mcp` | Run the MCP server over stdio |
-| `mdmem hook <agent> <part> [--global]` | Run by an agent's session-start hook, not typed by hand (see [mdmem hook](#mdmem-hook)) |
+| `mdmem hook <agent> <part> [--global]` | Run by an agent's hooks, not typed by hand (see [mdmem hook](#mdmem-hook)) |
 
 Agents: `claude-code`, `bob`, `codex`. Memory types: `user`, `feedback`,
 `project`, `reference`.
@@ -166,6 +166,17 @@ scope only. Neither command creates a
 store, and `disable` needs none, so it works after the store was deleted.
 mdmem 0.2.0's `init`, `enable --prefer` and
 `disable --global` are refused, naming what replaced them.
+
+Each scope's wiring holds three hook entries per agent: two on SessionStart,
+running `mdmem hook <agent> protocol` and `mdmem hook <agent> index`, and the
+per-prompt hook on UserPromptSubmit, running `mdmem hook <agent> prompt`, in
+the same file and followed by `--global` in the global scope. Every agent gets
+all three, and none can be left out: `mdmem status` lists the prompt entry as
+`UserPromptSubmit hook "mdmem hook <agent> prompt"`, and an agent counts as
+wired in a scope only with all three present. A wiring made before the prompt
+entry existed shows it missing; running `mdmem enable` again adds only that
+entry. `disable` removes it with the rest, and leaves the session state under
+`~/.cache/mdmem` as it is.
 
 A repository may be wired in both scopes, by different people: each session
 still gets the protocol and the index once, and the agent runs one mdmem
@@ -235,9 +246,9 @@ it cannot write leaves the hook's output as it is, with one line on stderr
 saying why.
 
 The `prompt` part runs before each user prompt, on UserPromptSubmit, and
-injects pointers only, never a memory's body. `mdmem enable` does not wire it
-yet: until it does, an entry must run `mdmem hook <agent> prompt [--global]`
-under `hooks.UserPromptSubmit`. The part reads the session's state, compares
+injects pointers only, never a memory's body. `mdmem enable` wires it in every
+agent and scope, under `hooks.UserPromptSubmit` (see each agent's section
+below). The part reads the session's state, compares
 the store with its snapshot (by size and mtime, then by content hash), searches
 the store with the payload's `prompt` text, and prints
 `{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"<block>"}}`,
@@ -344,8 +355,12 @@ that breaks saving or injection and that you can fix is a check problem:
   that `enable` fixes in that scope say to fix that file first. It does not
   read `.claude/settings.local.json`: while only that cannot be read, the
   agent's other problems still say to run `mdmem enable`.
-- A session-start hook missing in a scope the agent is enabled in, the fix
-  naming that scope's command (`mdmem enable <agent>`, or with `--project`).
+- A hook missing in a scope the agent is enabled in, the fix naming that
+  scope's command (`mdmem enable <agent>`, or with `--project`). When the
+  prompt entry is the only one missing, as in a wiring made before it existed,
+  the problem says the agent's sessions are not told at each prompt which
+  memories changed or bear on the prompt; when a session-start entry is
+  missing too, it says they start without what those hooks inject.
   `memory_check` called from Codex leaves Codex's user files out unless
   `CODEX_HOME` reaches the server: Codex starts MCP servers with only a few
   environment variables (`HOME`, `PATH` and the like, not `CODEX_HOME`), so the
@@ -376,16 +391,18 @@ The rest are `status` lines only, because they are your choice, depend on where
   reads them while `.mdmem/` exists, and the warning names
   `mdmem consolidate --from <home store>`.
 - A warning when `status` runs below the checkout's root of a project wired for
-  Bob in the project scope, unless the global scope holds both its hooks and
-  its server: a Bob launched there reads neither `.bob/settings.json` nor
-  `.bob/mcp.json`, so it gets only what the global scope holds. The warning
-  names what is missing: no mdmem tools when the global scope holds only the
-  hooks, no protocol and no index when it holds only the server, and all three
-  when it holds neither. It says to launch Bob at the root or run
-  `mdmem enable bob`.
+  Bob in the project scope, unless the global scope holds both its
+  session-start hooks and its server: a Bob launched there reads neither
+  `.bob/settings.json` nor `.bob/mcp.json`, so it gets only what the global
+  scope holds. The warning names what is missing: no mdmem tools when the
+  global scope holds the session-start hooks but not the server, no protocol
+  and no index when it holds the server but not the session-start hooks, and
+  all three when it holds neither. Whether the global scope holds its
+  per-prompt hook makes no difference to this warning. It says to launch Bob
+  at the root or run `mdmem enable bob`.
 - A warning when `status` runs below the checkout's root of a project wired for
-  Claude Code in the project scope, with none of mdmem's hooks in your user
-  settings: a Claude Code started there does not read the project's
+  Claude Code in the project scope, with neither of mdmem's session-start hooks
+  in your user settings: a Claude Code started there does not read the project's
   `.claude/settings.json`, so it gets no protocol and no index, and keeps its
   auto memory on unless your user settings turn it off.
 - A warning when `status` runs in a submodule of a project whose files wire an
@@ -412,6 +429,9 @@ user config, `~/.claude.json` (both in `$CLAUDE_CONFIG_DIR` when it is set);
   - two `SessionStart` hooks, matcher `startup|clear|compact`, running
     `mdmem hook claude-code protocol` and `mdmem hook claude-code index`, each
     followed by `--global` in the global scope;
+  - one `UserPromptSubmit` hook with no matcher, which the event does not
+    support, running `mdmem hook claude-code prompt` (`--global` in the global
+    scope);
   - `"permissions": {"allow": ["mcp__mdmem"]}`, so the mdmem tools run without
     asking.
 - The mdmem server,
@@ -502,7 +522,7 @@ project's; both run `mdmem mcp`.
 
 ## IBM Bob
 
-`mdmem enable bob` merges two entries into Bob's files, leaving their other
+`mdmem enable bob` merges three entries into Bob's files, leaving their other
 keys, and their order and indentation, as they were: in the global scope its
 user files `~/.bob/settings/settings.json` and `~/.bob/settings/mcp.json` (the
 file `bob mcp add -s global` writes), and with `--project` its workspace files
@@ -514,6 +534,9 @@ file `bob mcp add -s global` writes), and with `--project` its workspace files
   followed by `--global` in the global scope and with a 10-second timeout. Bob
   validates hooks strictly, so a single unknown key voids the whole `hooks`
   block: the group holds only documented fields.
+- In the settings too, one `UserPromptSubmit` hook group with no matcher and
+  one command handler, `mdmem hook bob prompt` (`--global` in the global
+  scope), with a 10-second timeout.
 - In the MCP config, the mdmem server:
   `"mcpServers": {"mdmem": {"command": "mdmem", "args": ["mcp"]}}`.
 
@@ -536,7 +559,7 @@ in a subdirectory of a repository wired in both scopes still gets them.
 
 ## Codex CLI
 
-`mdmem enable codex` merges two entries into Codex's files, leaving their other
+`mdmem enable codex` merges three entries into Codex's files, leaving their other
 content as it was: in the global scope `~/.codex/hooks.json` and
 `~/.codex/config.toml` (under `$CODEX_HOME` when it is set), and with
 `--project` the repository's `.codex/hooks.json` and `.codex/config.toml`.
@@ -548,6 +571,10 @@ content as it was: in the global scope `~/.codex/hooks.json` and
   limit, Codex replaces a hook context over about 2,500 tokens with a preview
   and the path of a temporary file. `mdmem hook` skips a resumed or forked
   session itself.
+- In the hooks file too, one `UserPromptSubmit` hook group with no matcher and
+  one command handler, `mdmem hook codex prompt` (`--global` in the global
+  scope), with a 10-second timeout and no `additionalContextLimit`: the
+  per-prompt block stays under 4,000 characters, below Codex's cap.
 - In the config, the mdmem server:
 
   ```toml
@@ -570,10 +597,11 @@ reviewed. Codex ties the review to the path of the hooks file, to the group's
 position in `hooks.SessionStart` and to its content, so adding or removing a
 `SessionStart` group before mdmem's, or editing mdmem's, makes Codex ask again;
 an edited group still runs mdmem's commands, so `enable` does not add a second
-one. The global hooks are reviewed once per machine. The project's are reviewed
-once per clone: in a linked worktree Codex reads the hooks from the main
-checkout's `.codex/hooks.json`, whose review it shares, and only when the
-worktree's own commit has a `.codex/` folder (Codex 0.164.0).
+one. The prompt hook is a new handler, so a wiring that gains it asks for one
+more review per hooks file. The global hooks are reviewed once per machine.
+The project's are reviewed once per clone: in a linked worktree Codex reads the
+hooks from the main checkout's `.codex/hooks.json`, whose review it shares, and
+only when the worktree's own commit has a `.codex/` folder (Codex 0.164.0).
 
 Codex reads a project's `.codex/` folders only in a folder you have trusted,
 and trusting it for one run with a `-c` override does not count; in an

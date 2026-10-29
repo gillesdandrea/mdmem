@@ -42,7 +42,11 @@ import {
   projectStatus,
 } from "../src/adapters/report.ts";
 import { checkSummary, INDEX_MAX_CHARS, reindex } from "../src/core/check.ts";
-import { HOOK_CONTEXT_MAX_CHARS, HOOK_PARTS } from "../src/core/hook.ts";
+import {
+  HOOK_CONTEXT_MAX_CHARS,
+  SESSION_START_PARTS,
+} from "../src/core/hook.ts";
+import type { HookAgent } from "../src/core/hook.ts";
 import { claudeProjectDir, importMarker } from "../src/core/import.ts";
 import { projectKey } from "../src/core/key.ts";
 import { parseMemory, serializeMemory } from "../src/core/memory.ts";
@@ -135,6 +139,12 @@ const mdmemHook = (part: string) => ({
   matcher: HOOK_MATCHER,
   hooks: [{ type: "command", command: `mdmem hook claude-code ${part}` }],
 });
+/** Claude Code's UserPromptSubmit group: no matcher, no timeout. */
+const mdmemPromptHook = (suffix = "") => ({
+  hooks: [
+    { type: "command", command: `mdmem hook claude-code prompt${suffix}` },
+  ],
+});
 const MDMEM_SERVER = { type: "stdio", command: "mdmem", args: ["mcp"] };
 
 describe("claude-code wiring", () => {
@@ -145,6 +155,9 @@ describe("claude-code wiring", () => {
         matcher: "startup",
         hooks: [{ type: "command", command: "echo hi" }],
       };
+      const otherPromptHook = {
+        hooks: [{ type: "command", command: "echo prompt" }],
+      };
       const settings = {
         model: "opus",
         hooks: {
@@ -152,6 +165,7 @@ describe("claude-code wiring", () => {
             { matcher: "Bash", hooks: [{ type: "command", command: "lint" }] },
           ],
           SessionStart: [otherHook],
+          UserPromptSubmit: [otherPromptHook],
         },
         permissions: { allow: ["Bash(ls:*)"], deny: ["Read(.env)"] },
       };
@@ -164,13 +178,14 @@ describe("claude-code wiring", () => {
 
       const enabled = await wire(claudeCodeAdapter.enable(ctx, "project"));
       expect(enabled.actions).toContain(
-        `added in ${CLAUDE_SETTINGS}: autoMemoryEnabled: false, SessionStart hook "mdmem hook claude-code protocol", SessionStart hook "mdmem hook claude-code index", permissions.allow "mcp__mdmem"`
+        `added in ${CLAUDE_SETTINGS}: autoMemoryEnabled: false, SessionStart hook "mdmem hook claude-code protocol", SessionStart hook "mdmem hook claude-code index", UserPromptSubmit hook "mdmem hook claude-code prompt", permissions.allow "mcp__mdmem"`
       );
       const wiredSettings = {
         model: "opus",
         hooks: {
           PreToolUse: settings.hooks.PreToolUse,
           SessionStart: [otherHook, mdmemHook("protocol"), mdmemHook("index")],
+          UserPromptSubmit: [otherPromptHook, mdmemPromptHook()],
         },
         permissions: {
           allow: ["Bash(ls:*)", "mcp__mdmem"],
@@ -189,7 +204,7 @@ describe("claude-code wiring", () => {
       );
       const status = await claudeCodeAdapter.status(ctx);
       expect(status.wired).toBe(true);
-      expect(projectEntries(status)).toHaveLength(5);
+      expect(projectEntries(status)).toHaveLength(6);
 
       // a second run changes nothing
       const again = await wire(claudeCodeAdapter.enable(ctx, "project"));
@@ -263,7 +278,7 @@ describe("claude-code wiring", () => {
 
       const enabled = await wire(claudeCodeAdapter.enable(ctx, "global"));
       expect(enabled.actions).toContain(
-        `added in ${userSettings}: autoMemoryEnabled: false, SessionStart hook "mdmem hook claude-code protocol --global", SessionStart hook "mdmem hook claude-code index --global", permissions.allow "mcp__mdmem"`
+        `added in ${userSettings}: autoMemoryEnabled: false, SessionStart hook "mdmem hook claude-code protocol --global", SessionStart hook "mdmem hook claude-code index --global", UserPromptSubmit hook "mdmem hook claude-code prompt --global", permissions.allow "mcp__mdmem"`
       );
       expect(JSON.parse((await readText(userSettings)) ?? "{}")).toEqual({
         autoMemoryEnabled: false,
@@ -277,6 +292,7 @@ describe("claude-code wiring", () => {
               },
             ],
           })),
+          UserPromptSubmit: [mdmemPromptHook(" --global")],
         },
         permissions: { allow: ["mcp__mdmem"] },
       });
@@ -378,6 +394,12 @@ const BOB_HOOK_GROUP = {
     timeout: 10,
   })),
 };
+/** Bob's UserPromptSubmit group: no matcher, a 10-second timeout. */
+const bobPromptGroup = (suffix = "") => ({
+  hooks: [
+    { type: "command", command: `mdmem hook bob prompt${suffix}`, timeout: 10 },
+  ],
+});
 
 // Bob's documented hooks shape: strict at every level, so one unknown key voids the block.
 const bobCommandHandler = z
@@ -414,6 +436,9 @@ describe("bob wiring", () => {
             },
           ],
           SessionStart: [{ hooks: [{ type: "command", command: "echo hi" }] }],
+          UserPromptSubmit: [
+            { hooks: [{ type: "command", command: "echo prompt" }] },
+          ],
         },
       };
       const mcp = { mcpServers: { other: { command: "other-server" } } };
@@ -429,6 +454,10 @@ describe("bob wiring", () => {
         hooks: {
           ...settings.hooks,
           SessionStart: [...settings.hooks.SessionStart, BOB_HOOK_GROUP],
+          UserPromptSubmit: [
+            ...settings.hooks.UserPromptSubmit,
+            bobPromptGroup(),
+          ],
         },
       };
       const wiredMcp = {
@@ -479,6 +508,7 @@ describe("bob wiring", () => {
       expect(
         projectEntries(status).map(({ file, present }) => [file, present])
       ).toEqual([
+        [BOB_SETTINGS, true],
         [BOB_SETTINGS, true],
         [BOB_MCP, true],
       ]);
@@ -604,6 +634,9 @@ describe("bob wiring", () => {
         "mdmem hook bob protocol --global",
         "mdmem hook bob index --global",
       ]);
+      expect(settings.hooks.UserPromptSubmit).toEqual([
+        bobPromptGroup(" --global"),
+      ]);
       expect(
         JSON.parse((await readText(join(userDir, "mcp.json"))) ?? "{}")
       ).toEqual({ mcpServers: { mdmem: MCP_SERVER } });
@@ -691,12 +724,24 @@ args = ["a"]
 model = "mini"
 `;
 
-/** `CODEX_HOOKS` with `group` added to its SessionStart groups, as JSON text. */
-function codexHooksWith(group: unknown): string {
+/** Codex's UserPromptSubmit group: no matcher, a 10-second timeout, no additionalContextLimit. */
+const codexPromptGroup = (suffix = "") => ({
+  hooks: [
+    {
+      type: "command",
+      command: `mdmem hook codex prompt${suffix}`,
+      timeout: 10,
+    },
+  ],
+});
+
+/** `CODEX_HOOKS` with `group` added to its SessionStart groups, and `promptGroup` as its UserPromptSubmit group when given, as JSON text. */
+function codexHooksWith(group: unknown, promptGroup?: unknown): string {
   const hooks = {
     hooks: {
       ...CODEX_HOOKS.hooks,
       SessionStart: [...CODEX_HOOKS.hooks.SessionStart, group],
+      ...(promptGroup === undefined ? {} : { UserPromptSubmit: [promptGroup] }),
     },
   };
   return `${JSON.stringify(hooks, null, 2)}\n`;
@@ -748,7 +793,7 @@ describe("codex wiring", () => {
     try {
       const enabled = await wire(codexAdapter.enable(ctx, "project"));
       const hooks = await readText(join(root, CODEX_HOOKS_FILE));
-      expect(hooks).toBe(codexHooksWith(CODEX_HOOK_GROUP));
+      expect(hooks).toBe(codexHooksWith(CODEX_HOOK_GROUP, codexPromptGroup()));
       expect(codexHooksFile.safeParse(JSON.parse(hooks ?? "{}")).success).toBe(
         true
       );
@@ -801,7 +846,7 @@ describe("codex wiring", () => {
 
       const disabled = await wire(codexAdapter.disable(ctx, "project"));
       expect(disabled.actions).toEqual([
-        `removed in ${CODEX_HOOKS_FILE}: SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index"`,
+        `removed in ${CODEX_HOOKS_FILE}: SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index", UserPromptSubmit hook "mdmem hook codex prompt"`,
         `removed in ${CODEX_CONFIG}: [mcp_servers.mdmem]`,
       ]);
       expect(await readText(join(root, CODEX_HOOKS_FILE))).toBe(
@@ -832,12 +877,15 @@ describe("codex wiring", () => {
       const enabled = await wire(codexAdapter.enable(ctx, "global"));
       expect(await readText(userConfig)).toBe(CODEX_SECTION);
       expect(JSON.parse((await readText(hooksPath)) ?? "{}")).toEqual({
-        hooks: { SessionStart: [CODEX_GLOBAL_GROUP] },
+        hooks: {
+          SessionStart: [CODEX_GLOBAL_GROUP],
+          UserPromptSubmit: [codexPromptGroup(" --global")],
+        },
       });
       expect(existsSync(join(root, ".codex"))).toBe(false);
       expect(enabled.actions.join("\n")).not.toContain("Commit");
       expect(enabled.actions.at(-1)).toBe(
-        `Codex asks you once to review the hooks in ${hooksPath}, at its next interactive start or in /hooks; until then it runs neither, and \`codex exec\` never asks.`
+        `Codex asks you once to review the hooks in ${hooksPath} it has not reviewed yet, at its next interactive start or in /hooks; until then it runs none of them, and \`codex exec\` never asks.`
       );
       const status = await codexAdapter.status(ctx);
       expect(
@@ -878,7 +926,7 @@ describe("codex wiring", () => {
 
       const enabled = await wire(codexAdapter.enable(ctx, "global"));
       expect(await readText(hooksPath)).toBe(
-        codexHooksWith(CODEX_GLOBAL_GROUP)
+        codexHooksWith(CODEX_GLOBAL_GROUP, codexPromptGroup(" --global"))
       );
       expect(enabled.actions).toContain(
         `replaced mdmem 0.2.0's unmarked hook group in ${hooksPath} with the global scope's, marked --global.`
@@ -924,7 +972,13 @@ describe("codex wiring", () => {
         timeout: 30,
       })),
     };
-    const hooksText = `${JSON.stringify({ hooks: { SessionStart: [group] } }, null, 2)}\n`;
+    const promptGroup = {
+      hooks: codexPromptGroup().hooks.map((handler) => ({
+        ...handler,
+        timeout: 30,
+      })),
+    };
+    const hooksText = `${JSON.stringify({ hooks: { SessionStart: [group], UserPromptSubmit: [promptGroup] } }, null, 2)}\n`;
     const toml = `model = "x"\n\n${CODEX_SECTION}startup_timeout_sec = 30\nenv = { FOO = "bar" }\n`;
     const { root, ctx } = await codexProject(undefined, {
       projectHooks: hooksText,
@@ -1677,6 +1731,31 @@ describe("cli", () => {
     });
   });
 
+  test("hook's help, README, the reference, ADR 0004 and the changelog name the per-prompt part enable wires", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "mdmem-help-")));
+    try {
+      const page = runCli(root, "hook", "--help");
+      expect(page.out).toContain("  <part>   protocol, index, prompt\n");
+      expect(runCli(root, "enable", "--help").out).toContain("per-prompt");
+      const repo = join(import.meta.dir, "..");
+      for (const doc of [
+        "README.md",
+        "docs/reference.md",
+        "docs/adr/0004-two-wiring-scopes-store-on-first-save.md",
+        "CHANGELOG.md",
+      ]) {
+        // oxlint-disable-next-line no-await-in-loop -- a few files
+        const text = (await readText(join(repo, doc))) ?? "";
+        expect(text).toContain("per-prompt hook");
+      }
+      expect((await readText(join(repo, "CHANGELOG.md"))) ?? "").toContain(
+        "`mdmem enable` wires the per-prompt hook"
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("an unknown command, and help of one, exit 1 with a line naming it, the usage line and the footer", async () => {
     await withCliProject((root) => {
       for (const args of [["nope"], ["help", "nope"]]) {
@@ -2287,7 +2366,7 @@ describe("hook", () => {
               `the payload names no hook_event_name; the ${part} part injects only on SessionStart.`,
           ],
         ] as const) {
-          for (const part of HOOK_PARTS) {
+          for (const part of SESSION_START_PARTS) {
             expect(runHookCli(root, part, payload)).toEqual({
               code: 0,
               out: "",
@@ -2357,7 +2436,7 @@ describe("hook", () => {
       }
       // a forked Codex session gets neither part
       const fork = { ...startPayload(root), source: "fork" };
-      for (const part of HOOK_PARTS) {
+      for (const part of SESSION_START_PARTS) {
         expect(runHookCli(root, part, fork, "codex")).toEqual({
           code: 0,
           out: "",
@@ -3487,7 +3566,7 @@ describe("status and check", () => {
         return status.agents.find(({ title }) => title === "Claude Code")
           ?.warnings;
       };
-      const warning = `Claude Code reads .claude/settings.json only from the folder it is started in: started here, below ${root}, it runs neither mdmem hook, so its sessions start without the memory protocol and the index, and it applies neither the project's autoMemoryEnabled: false nor its permission for the mdmem tools. Start Claude Code at ${root}, or run \`mdmem enable claude-code\` to wire it in every folder.`;
+      const warning = `Claude Code reads .claude/settings.json only from the folder it is started in: started here, below ${root}, it runs none of the project's mdmem hooks, so its sessions start without the memory protocol and the index, and it applies neither the project's autoMemoryEnabled: false nor its permission for the mdmem tools. Start Claude Code at ${root}, or run \`mdmem enable claude-code\` to wire it in every folder.`;
       expect(await claudeWarnings()).toEqual([warning]);
       // at the root there is nothing to warn about
       const atRoot = await projectStatus(ctx);
@@ -3624,8 +3703,114 @@ describe("status and check", () => {
         'Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (.claude/settings.json), so its sessions start without what that hook injects — run `mdmem enable claude-code --project`',
         "Claude Code: .claude/settings.json sets disableAllHooks to true, so Claude Code runs no hooks and its sessions start without the memory protocol and the index — remove it",
         "IBM Bob: .bob/settings.json sets disableWorkspaceHooks to true, so Bob runs none of the workspace's hooks and its sessions start without the memory protocol and the index — remove it",
-        `Codex CLI: missing SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index" (${CODEX_HOOKS_FILE}), so its sessions start without what those hooks inject — run \`mdmem enable codex --project\``,
+        `Codex CLI: missing SessionStart hooks "mdmem hook codex protocol", "mdmem hook codex index" (${CODEX_HOOKS_FILE}), UserPromptSubmit hook "mdmem hook codex prompt" (${CODEX_HOOKS_FILE}), so its sessions start without what those hooks inject — run \`mdmem enable codex --project\``,
       ]);
+    });
+  });
+
+  test("every agent and scope wires the UserPromptSubmit entry: status lists it, the check names it alone when only it is missing, enable adds back only it, and disable keeps the user's own groups and the cache", async () => {
+    await withWiredRepo(async ({ root, ctx }) => {
+      for (const adapter of [claudeCodeAdapter, bobAdapter, codexAdapter]) {
+        // oxlint-disable-next-line no-await-in-loop -- one adapter at a time, as the CLI wires them
+        await wire(adapter.enable(ctx, "global"));
+      }
+      const cache = join(ctx.home, ".cache", "mdmem", "sessions");
+      await mkdir(cache, { recursive: true });
+      const files: Record<HookAgent, Record<Scope, string>> = {
+        "claude-code": {
+          global: join(ctx.env.CLAUDE_CONFIG_DIR ?? "", "settings.json"),
+          project: CLAUDE_SETTINGS,
+        },
+        bob: {
+          global: join(ctx.home, ".bob", "settings", "settings.json"),
+          project: BOB_SETTINGS,
+        },
+        codex: {
+          global: join(ctx.env.CODEX_HOME ?? "", "hooks.json"),
+          project: CODEX_HOOKS_FILE,
+        },
+      };
+      const userGroup = {
+        hooks: [{ type: "command", command: "echo mine" }],
+      };
+      for (const adapter of [claudeCodeAdapter, bobAdapter, codexAdapter]) {
+        for (const scope of ["global", "project"] as const) {
+          const file = files[adapter.id][scope];
+          const path = scope === "global" ? file : join(root, file);
+          const label = `UserPromptSubmit hook "mdmem hook ${adapter.id} prompt${scope === "global" ? " --global" : ""}"`;
+          const entryOf = (status: AgentStatus) =>
+            scopeEntries(status, scope).find((entry) => entry.label === label);
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          expect(entryOf(await adapter.status(ctx))).toEqual({
+            label,
+            file,
+            present: true,
+          });
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          const wiredText = (await readText(path)) ?? "";
+          const doc = JSON.parse(wiredText);
+          const { UserPromptSubmit: _prompt, ...sessionStartOnly } = doc.hooks;
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          await writeFile(
+            path,
+            `${JSON.stringify({ ...doc, hooks: sessionStartOnly }, null, 2)}\n`,
+            "utf-8"
+          );
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          const before = await adapter.status(ctx);
+          expect(entryOf(before)?.present).toBe(false);
+          expect(before.problems).toContain(
+            `${adapter.title}: missing ${label} (${file}), so its sessions are not told at each prompt which memories changed or bear on the prompt${enableAdvice(adapter.id, scope)}`
+          );
+
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          const enabled = await wire(adapter.enable(ctx, scope));
+          expect(enabled.actions).toContain(`added in ${file}: ${label}`);
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          expect(await readText(path)).toBe(wiredText);
+
+          // with the session-start entries missing too, the clause is the generic one
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          await writeFile(
+            path,
+            `${JSON.stringify({ ...doc, hooks: {} }, null, 2)}\n`,
+            "utf-8"
+          );
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          const bare = await adapter.status(ctx);
+          const missing = bare.problems.find((problem) =>
+            problem.includes(`(${file}), so`)
+          );
+          expect(missing).toContain(label);
+          expect(missing).toEndWith(
+            `, so its sessions start without what those hooks inject${enableAdvice(adapter.id, scope)}`
+          );
+
+          // disable takes out mdmem's group and keeps the user's own
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          await writeFile(
+            path,
+            `${JSON.stringify(
+              {
+                ...doc,
+                hooks: {
+                  ...doc.hooks,
+                  UserPromptSubmit: [...doc.hooks.UserPromptSubmit, userGroup],
+                },
+              },
+              null,
+              2
+            )}\n`,
+            "utf-8"
+          );
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          await wire(adapter.disable(ctx, scope));
+          // oxlint-disable-next-line no-await-in-loop -- one agent and scope at a time
+          const left = JSON.parse((await readText(path)) ?? "{}");
+          expect(left.hooks).toEqual({ UserPromptSubmit: [userGroup] });
+        }
+      }
+      expect(existsSync(cache)).toBe(true);
     });
   });
 
@@ -3675,7 +3860,7 @@ describe("status and check", () => {
       await writeFile(join(root, MCP_CONFIG), "{ broken", "utf-8");
       const problems = [
         `Claude Code: ${MCP_CONFIG} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`,
-        `Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (${CLAUDE_SETTINGS}), SessionStart hook "mdmem hook claude-code index" (${CLAUDE_SETTINGS}), so its sessions start without what those hooks inject — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code --project\``,
+        `Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (${CLAUDE_SETTINGS}), SessionStart hook "mdmem hook claude-code index" (${CLAUDE_SETTINGS}), UserPromptSubmit hook "mdmem hook claude-code prompt" (${CLAUDE_SETTINGS}), so its sessions start without what those hooks inject — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code --project\``,
         `Claude Code's auto memory is on: autoMemoryEnabled is not false in ${CLAUDE_SETTINGS}, ${AUTO_MEMORY_CONSEQUENCE} — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code --project\``,
       ];
       const status = await claudeCodeAdapter.status(ctx);
@@ -3762,7 +3947,7 @@ describe("status and check", () => {
           `Store: local, ${join(root, ".mdmem")}`,
           "Found 3 problem(s):",
           `  - Claude Code: ${MCP_CONFIG} is not valid JSON (JSON Parse error: Expected '}'): fix it, then run the check again`,
-          `  - Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (${CLAUDE_SETTINGS}), SessionStart hook "mdmem hook claude-code index" (${CLAUDE_SETTINGS}), so its sessions start without what those hooks inject — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code --project\``,
+          `  - Claude Code: missing SessionStart hook "mdmem hook claude-code protocol" (${CLAUDE_SETTINGS}), SessionStart hook "mdmem hook claude-code index" (${CLAUDE_SETTINGS}), UserPromptSubmit hook "mdmem hook claude-code prompt" (${CLAUDE_SETTINGS}), so its sessions start without what those hooks inject — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code --project\``,
           `  - Claude Code's auto memory is on: autoMemoryEnabled is not false in ${CLAUDE_SETTINGS}, ${AUTO_MEMORY_CONSEQUENCE} — fix ${MCP_CONFIG}, then run \`mdmem enable claude-code --project\``,
           "",
         ].join("\n")
@@ -4278,7 +4463,7 @@ describe("scopes and store creation", () => {
         ["bob", ".bob/settings.json"],
         ["codex", ".codex/hooks.json"],
       ] as const) {
-        for (const part of HOOK_PARTS) {
+        for (const part of SESSION_START_PARTS) {
           expect(
             runHookCli(root, part, payload, agent, env, ["--global"])
           ).toEqual({

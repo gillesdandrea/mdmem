@@ -22,8 +22,10 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
 /**
  * What `mdmem hook <agent> <part> [--global]` prints. Each wired agent runs two
  * session-start hook entries (ADR 0003): one injects the memory protocol, the other
- * the index with the store's path and the Check's warnings. Claude Code caps one
- * entry's context at about 10,000 characters, so each part stays under that.
+ * the index with the store's path and the Check's warnings; and one per-prompt entry,
+ * which points at the memories changed since the session's snapshot or bearing on
+ * the prompt. Claude Code caps one entry's context at about 10,000 characters, so
+ * each part stays under that.
  *
  * The hook speaks in every directory, git or not, store or not (ADR 0005); in a
  * project with no store yet, the index part names the home store the first
@@ -56,16 +58,13 @@ import { LINE_BREAK_RE, messageOf, oneLine } from "./text.ts";
 export const HOOK_AGENTS = ["claude-code", "bob", "codex"] as const;
 export type HookAgent = (typeof HOOK_AGENTS)[number];
 
-export const HOOK_PARTS = ["protocol", "index"] as const;
+/** The parts that speak on SessionStart, in the order an agent's hooks run them. */
+export const SESSION_START_PARTS = ["protocol", "index"] as const;
+/** The part that speaks on UserPromptSubmit. */
+export const PROMPT_PART = "prompt";
+/** The parts `mdmem hook` runs, each wired by an entry of its own event in every agent and scope. */
+export const HOOK_PARTS = [...SESSION_START_PARTS, PROMPT_PART] as const;
 export type HookPart = (typeof HOOK_PARTS)[number];
-
-/**
- * The parts `mdmem hook` runs: HOOK_PARTS and the per-prompt part, which no
- * adapter wires yet (mdmem-02l.50 moves it into HOOK_PARTS and drops this list), so
- * an agent wired before the part shows no missing hook.
- */
-export const HOOK_COMMAND_PARTS = [...HOOK_PARTS, "prompt"] as const;
-export type HookCommandPart = (typeof HOOK_COMMAND_PARTS)[number];
 
 /** Claude Code replaces a hook entry's context longer than about this with a file path; each part stays under it. */
 export const HOOK_CONTEXT_MAX_CHARS = 10_000;
@@ -265,7 +264,7 @@ export interface HookSite {
   cwd: string;
   /** The session's work tree, else the store's project directory; it runs git, so call it only when needed. */
   projectRoot: () => string;
-  part: HookCommandPart;
+  part: HookPart;
   /** Whether the hook entry is the global scope's (`--global`). */
   global: boolean;
 }
@@ -282,7 +281,7 @@ export type HookVerdict = { silence: string } | { note: string } | undefined;
 export interface HookRequest {
   /** The agent whose hook runs; one of HOOK_AGENTS. */
   agent: string;
-  /** What to inject; one of HOOK_COMMAND_PARTS. */
+  /** What to inject; one of HOOK_PARTS. */
   part: string;
   /** Whether the hook entry carries `--global`, the global scope's marker. */
   global: boolean;
@@ -333,7 +332,7 @@ async function sessionStore(
 ): Promise<SessionStore> {
   const location = locateStore(cwd);
   const agent = oneOf(request.agent, HOOK_AGENTS, "agent");
-  const part = oneOf(request.part, HOOK_COMMAND_PARTS, "part");
+  const part = oneOf(request.part, HOOK_PARTS, "part");
   // The work tree as `mdmem enable --project` wires it: the session's own, else the project's directory.
   const projectRoot = (): string => workTreeRoot(cwd) ?? location.root;
   const verdict = await request.verdict(agent, {
@@ -363,7 +362,7 @@ function noPayloadSilence(request: HookRequest): string {
   // A command with an unknown agent or part would fail once piped, so the hint names the mistake instead.
   const unknown =
     unknownName(request.agent, HOOK_AGENTS, "agent") ??
-    unknownName(request.part, HOOK_COMMAND_PARTS, "part");
+    unknownName(request.part, HOOK_PARTS, "part");
   if (unknown !== undefined) {
     return `no hook payload on stdin, and ${unknown}.`;
   }

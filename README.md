@@ -81,8 +81,10 @@ file naming the root the store serves.
 
 `mdmem enable` wires each agent in its own native way: session-start hooks
 inject the memory protocol (how to recall and save memories) and the store's
-index, and the mdmem MCP server gives the agent its memory tools. Only agents
-with session-start hooks are supported. The wiring goes in one of two scopes:
+index, a per-prompt hook points the agent before each prompt at the memories
+that changed or bear on it, and the mdmem MCP server gives the agent its memory
+tools. Only agents with session-start hooks are supported. The wiring goes in
+one of two scopes:
 
 - **global** (the default): the agent's user-wide files, so it works in every
   repository on your machine with no setup per project;
@@ -100,7 +102,8 @@ trusted, so a headless session there gets each part twice. Bob and Codex keep
 their global hooks silent wherever the project's own hooks are present, so a folder Bob
 does not trust, or a project hook Codex has not had reviewed, gets nothing
 until you trust or review it. `mdmem status` notes each agent wired in both
-scopes. Running `enable` again changes nothing, and `mdmem disable` (with
+scopes. Running `enable` again adds only what is missing, such as the
+per-prompt hook in a wiring made before it, and `mdmem disable` (with
 `--project` for the repository's files) removes exactly mdmem's entries and
 leaves the store. Your home directory is wired by the global scope: there
 Claude Code's and Codex's project files are, by default, their user-wide
@@ -113,12 +116,15 @@ scope only.
 | Codex CLI | `~/.codex/hooks.json`, `~/.codex/config.toml` | `.codex/hooks.json`, `.codex/config.toml` | review the hooks once (project scope: once per clone, interactively); project scope: trust the folder |
 | IBM Bob | `~/.bob/settings/settings.json`, `~/.bob/settings/mcp.json` | `.bob/settings.json`, `.bob/mcp.json` | project scope: trust the folder, launch Bob at the repository's root |
 
+Each agent's hooks go in the settings or hooks file listed first: two
+session-start hooks and the per-prompt hook, in both scopes.
+
 With `--project`, commit the files `enable` names. Everyone working in the
 repository then needs mdmem on their PATH, and so bun, until mdmem is on npm.
 
 **Claude Code.** `enable claude-code` turns Claude's own auto memory off (on
 the whole machine in the global scope, for the repository in the project
-scope), adds the two hooks, and allows the mdmem tools so they run without
+scope), adds the three hooks, and allows the mdmem tools so they run without
 asking. When the store is created in a project where Claude Code is wired, in
 either scope and in either placement, mdmem imports the memories Claude Code
 kept for the project and its worktrees, once, and lists what it copied.
@@ -130,6 +136,8 @@ project's server only once you approve it. Details:
 **Codex CLI.** Codex runs a hook only once you have reviewed it in an
 interactive session, at its next start or in `/hooks`, and ties that review to
 the hooks file's path. The global scope's hooks are reviewed once per machine.
+A wiring that gains a hook, such as the per-prompt hook when you run
+`mdmem enable codex` again, asks for one more review per hooks file.
 The project scope's are reviewed once per clone by each person, and its
 worktrees share that review; `codex exec` never asks, so a headless session in a
 clone nobody reviewed runs no hook. Prefer the global scope, unless the team

@@ -607,7 +607,7 @@ async function cmdStore(args: string[]): Promise<void> {
   die(`unknown store action "${action}" — ${STORE_USAGE}`);
 }
 
-/** Run by an agent's session-start hook, never by hand; it always exits 0. */
+/** Run by an agent's hooks, never by hand; it always exits 0. */
 async function cmdHook(args: string[]): Promise<void> {
   const [agent = "", part = "", ...flags] = args;
   const { stdout, silence, note, stateProblem } = await runHook({

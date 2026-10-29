@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
-import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookCommandPart, HookSite, HookVerdict } from "../core/hook.ts";
+import { PROMPT_PART, SESSION_START_PARTS } from "../core/hook.ts";
+import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
 import {
   agentStatus,
   commitLine,
@@ -28,6 +28,7 @@ import type {
   Scope,
   ScopeStatus,
   UserContext,
+  WiringEntry,
   WiringPlan,
 } from "./adapter.ts";
 import {
@@ -46,7 +47,8 @@ const ID = "bob";
 const TITLE = "IBM Bob";
 
 // IBM Bob is wired in either scope (ADR 0004): two session-start hooks injecting the
-// protocol and the index, and the mdmem MCP server. The global scope writes its user
+// protocol and the index, a UserPromptSubmit hook injecting the per-prompt block, and
+// the mdmem MCP server. The global scope writes its user
 // settings and the user MCP config `bob mcp add -s global` writes; the project scope,
 // workspace files committed with the repository (ADR 0003), which Bob runs only in a
 // trusted folder and reads only from the workspace it was launched in: launched below
@@ -79,25 +81,33 @@ function hookEntry(global: boolean): JsonEntry {
   });
 }
 
+/** The UserPromptSubmit group running the prompt part, beside the SessionStart group. */
+function promptHookEntry(global: boolean): JsonEntry {
+  const command = hookCommand(ID, PROMPT_PART, global);
+  // No matcher, which Bob's schema makes optional.
+  return hookGroupEntry(
+    promptHookLabel(command),
+    ["hooks", "UserPromptSubmit"],
+    { hooks: [handler(command)] }
+  );
+}
+
+const PROJECT_HOOK = hookEntry(false);
+const GLOBAL_HOOK = hookEntry(true);
+const PROJECT_PROMPT_HOOK = promptHookEntry(false);
+const GLOBAL_PROMPT_HOOK = promptHookEntry(true);
+
 /** The project entry of one part, which a global entry of that part defers to. */
-function projectPartEntry(part: HookCommandPart): JsonEntry {
-  const command = hookCommand(ID, part);
-  if (part === "prompt") {
-    // No matcher, which Bob's schema makes optional.
-    return hookGroupEntry(
-      promptHookLabel(command),
-      ["hooks", "UserPromptSubmit"],
-      { hooks: [handler(command)] }
-    );
+function projectPartEntry(part: HookPart): JsonEntry {
+  if (part === PROMPT_PART) {
+    return PROJECT_PROMPT_HOOK;
   }
+  const command = hookCommand(ID, part);
   return hookGroupEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
     matcher: HOOK_MATCHER,
     hooks: [handler(command)],
   });
 }
-
-const PROJECT_HOOK = hookEntry(false);
-const GLOBAL_HOOK = hookEntry(true);
 
 const SERVER_ENTRY = valueEntry(
   "mcpServers.mdmem",
@@ -107,7 +117,7 @@ const SERVER_ENTRY = valueEntry(
 );
 
 const PROJECT_FILES: readonly JsonConfigFile[] = [
-  { file: SETTINGS, entries: [PROJECT_HOOK] },
+  { file: SETTINGS, entries: [PROJECT_HOOK, PROJECT_PROMPT_HOOK] },
   { file: MCP_CONFIG, entries: [SERVER_ENTRY] },
 ];
 
@@ -116,11 +126,25 @@ function enabledBy(entries: readonly { present: boolean }[]): boolean {
   return entries.some(({ present }) => present);
 }
 
-/** How many hooks an entry holds: both parts for a hook group, none for the server. */
-function hooksIn({ label }: { label: string }): number {
-  return label === PROJECT_HOOK.label || label === GLOBAL_HOOK.label
-    ? HOOK_PARTS.length
-    : 0;
+/** The parts an entry's hooks inject: the session-start parts for the SessionStart group, the prompt part for the UserPromptSubmit group, none for the server. */
+function partsIn({ label }: { label: string }): readonly HookPart[] {
+  if (label === PROJECT_HOOK.label || label === GLOBAL_HOOK.label) {
+    return SESSION_START_PARTS;
+  }
+  return label === PROJECT_PROMPT_HOOK.label ||
+    label === GLOBAL_PROMPT_HOOK.label
+    ? [PROMPT_PART]
+    : [];
+}
+
+/** Whether an entry is the SessionStart group, which injects the protocol and the index. */
+function isSessionStartGroup(entry: { label: string }): boolean {
+  return partsIn(entry).some((part) => part !== PROMPT_PART);
+}
+
+/** Whether an entry is the mdmem MCP server. */
+function isServer(entry: { label: string }): boolean {
+  return entry.label === SERVER_ENTRY.label;
 }
 
 /** Bob's user settings directory. */
@@ -131,7 +155,10 @@ function userDir({ home }: UserContext): string {
 /** The global scope's files, by their absolute paths. */
 function globalFiles(ctx: UserContext): JsonConfigFile[] {
   return [
-    { file: join(userDir(ctx), "settings.json"), entries: [GLOBAL_HOOK] },
+    {
+      file: join(userDir(ctx), "settings.json"),
+      entries: [GLOBAL_HOOK, GLOBAL_PROMPT_HOOK],
+    },
     { file: join(userDir(ctx), "mcp.json"), entries: [SERVER_ENTRY] },
   ];
 }
@@ -160,29 +187,29 @@ async function disabledHooksProblem(
     : [];
 }
 
-/** What a Bob launched below the root misses, given what the global scope holds: its hooks, its server, both or neither. */
-function missedBelowRoot(globalScope: ScopeStatus | undefined): string {
-  const present = globalScope?.entries.filter((entry) => entry.present) ?? [];
-  if (present.some((entry) => hooksIn(entry) > 0)) {
+/** What a Bob launched below the root misses, given what the global scope holds: its session-start hooks, its server, or neither. */
+function missedBelowRoot(present: readonly WiringEntry[]): string {
+  if (present.some(isSessionStartGroup)) {
     return "no mdmem tools";
   }
-  return present.length > 0
+  return present.some(isServer)
     ? "no memory protocol and no index"
     : "no memory protocol, no index and no mdmem tools";
 }
 
-/** Run below the checkout's root, where a Bob launched here reads none of the workspace files: it gets the wiring only from the global scope, and all of it only when that scope holds both the hooks and the server. */
+/** Run below the checkout's root, where a Bob launched here reads none of the workspace files: it gets the wiring only from the global scope, and all of it only when that scope holds both the session-start hooks and the server. */
 function belowRootWarning(
   ctx: AdapterContext,
   project: ProjectContext,
   globalScope: ScopeStatus | undefined
 ): string[] {
-  const root =
-    globalScope?.wired === true ? undefined : rootAbove(ctx, project);
+  const present = globalScope?.entries.filter((entry) => entry.present) ?? [];
+  const covered = present.some(isSessionStartGroup) && present.some(isServer);
+  const root = covered ? undefined : rootAbove(ctx, project);
   return root === undefined
     ? []
     : [
-        `${TITLE} reads ${SETTINGS} (the session-start hooks) and ${MCP_CONFIG} (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets ${missedBelowRoot(globalScope)}. Launch Bob at ${root}, or run \`mdmem enable ${ID}\` to wire it in every folder.`,
+        `${TITLE} reads ${SETTINGS} (the session-start hooks) and ${MCP_CONFIG} (the mdmem MCP server) only from its workspace, the folder it is launched in: launched here, below ${root}, it gets ${missedBelowRoot(present)}. Launch Bob at ${root}, or run \`mdmem enable ${ID}\` to wire it in every folder.`,
       ];
 }
 
@@ -269,7 +296,7 @@ export const bobAdapter: AdapterFor<typeof ID> = {
             ...scopes
               .filter(({ scope }) => enabled.has(scope))
               .flatMap(({ scope, entries }) =>
-                missingHooksProblem(bobAdapter, scope, entries, hooksIn)
+                missingHooksProblem(bobAdapter, scope, entries, partsIn)
               ),
             ...(workspace === undefined
               ? []

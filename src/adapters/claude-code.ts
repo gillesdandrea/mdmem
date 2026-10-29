@@ -1,13 +1,8 @@
 import { dirname, join, resolve } from "node:path";
 
 import { mainCheckoutRoot, workTreeRoot } from "../core/git.ts";
-import { HOOK_PARTS } from "../core/hook.ts";
-import type {
-  HookCommandPart,
-  HookPart,
-  HookSite,
-  HookVerdict,
-} from "../core/hook.ts";
+import { HOOK_PARTS, PROMPT_PART } from "../core/hook.ts";
+import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
 import {
   claudeConfigDir,
   claudeProjectDir,
@@ -66,7 +61,8 @@ const ID = "claude-code";
 const TITLE = "Claude Code";
 
 // Claude Code is wired in either scope (ADR 0004): its auto memory off, two
-// session-start hooks injecting the protocol and the index, and the mdmem MCP server
+// session-start hooks injecting the protocol and the index, a UserPromptSubmit hook
+// injecting the per-prompt block, and the mdmem MCP server
 // with permission for its tools. The global scope writes its user settings and the
 // user config holding its user-scope servers; the project scope, files committed
 // with the repository (ADR 0003).
@@ -92,29 +88,42 @@ const DISABLE_HOOKS_KEY = "disableAllHooks";
 /** The hook entry injecting `part`, the global scope's marked with `--global`. */
 function hookEntry(part: HookPart, global: boolean): JsonEntry {
   const command = hookCommand(ID, part, global);
+  const handlers = [{ type: "command", command }];
+  if (part === PROMPT_PART) {
+    // No matcher, which UserPromptSubmit does not support, and no timeout field, as the SessionStart entries.
+    return hookGroupEntry(
+      promptHookLabel(command),
+      ["hooks", "UserPromptSubmit"],
+      { hooks: handlers }
+    );
+  }
   return hookGroupEntry(hooksLabel([command]), ["hooks", "SessionStart"], {
     matcher: HOOK_MATCHER,
-    hooks: [{ type: "command", command }],
+    hooks: handlers,
   });
 }
 
-// No matcher, which UserPromptSubmit does not support, and no timeout field, as the SessionStart entries.
-const PROJECT_PROMPT_HOOK = hookGroupEntry(
-  promptHookLabel(hookCommand(ID, "prompt")),
-  ["hooks", "UserPromptSubmit"],
-  { hooks: [{ type: "command", command: hookCommand(ID, "prompt") }] }
-);
-
 /** The project's entry injecting `part`, which a global entry of that part defers to. */
-function projectPartEntry(part: HookCommandPart): JsonEntry {
-  return part === "prompt" ? PROJECT_PROMPT_HOOK : hookEntry(part, false);
+function projectPartEntry(part: HookPart): JsonEntry {
+  return hookEntry(part, false);
 }
 
 const PROJECT_HOOKS = HOOK_PARTS.map((part) => hookEntry(part, false));
 const GLOBAL_HOOKS = HOOK_PARTS.map((part) => hookEntry(part, true));
-const HOOK_LABELS = new Set(
-  [...PROJECT_HOOKS, ...GLOBAL_HOOKS].map(({ label }) => label)
+/** The part each hook entry injects, by its label. */
+const HOOK_PART_BY_LABEL = new Map<string, HookPart>(
+  HOOK_PARTS.flatMap((part) =>
+    [false, true].map(
+      (global) => [hookEntry(part, global).label, part] as const
+    )
+  )
 );
+
+/** The parts an entry's hooks inject: one for a hook entry, none for the others. */
+function partsIn({ label }: { label: string }): HookPart[] {
+  const part = HOOK_PART_BY_LABEL.get(label);
+  return part === undefined ? [] : [part];
+}
 
 /** The entries of a settings file: auto memory off, the hooks, and the tools' permission. */
 function settingsEntries(hooks: readonly JsonEntry[]): JsonEntry[] {
@@ -275,7 +284,8 @@ function disabledHooksProblem(settings: readonly SettingsFile[]): string[] {
 /**
  * Run below the root of a project wired in the project scope, where a Claude Code
  * started here reads none of the committed settings. The global scope's hooks speak
- * there (ADR 0004), so a project whose user settings hold one of them gets no warning.
+ * there (ADR 0004), so a project whose user settings hold one of its session-start
+ * hooks gets no warning; its per-prompt hook alone does not count.
  */
 function belowRootWarning(
   ctx: AdapterContext,
@@ -284,7 +294,8 @@ function belowRootWarning(
   globalEntries: readonly WiringEntry[]
 ): string[] {
   const globalHooks = globalEntries.some(
-    ({ label, present }) => present && HOOK_LABELS.has(label)
+    (entry) =>
+      entry.present && partsIn(entry).some((part) => part !== PROMPT_PART)
   );
   const root =
     enabled.has("project") && !globalHooks
@@ -293,7 +304,7 @@ function belowRootWarning(
   return root === undefined
     ? []
     : [
-        `${TITLE} reads ${SETTINGS} only from the folder it is started in: started here, below ${root}, it runs neither mdmem hook, so its sessions start without the memory protocol and the index, and it applies neither the project's ${AUTO_MEMORY_LABEL} nor its permission for the mdmem tools. Start ${TITLE} at ${root}, or run \`mdmem enable ${ID}\` to wire it in every folder.`,
+        `${TITLE} reads ${SETTINGS} only from the folder it is started in: started here, below ${root}, it runs none of the project's mdmem hooks, so its sessions start without the memory protocol and the index, and it applies neither the project's ${AUTO_MEMORY_LABEL} nor its permission for the mdmem tools. Start ${TITLE} at ${root}, or run \`mdmem enable ${ID}\` to wire it in every folder.`,
       ];
 }
 
@@ -445,9 +456,7 @@ export const claudeCodeAdapter: AdapterFor<typeof ID> = {
             ...scopes
               .filter(({ scope }) => enabled.has(scope))
               .flatMap(({ scope, entries }) =>
-                missingHooksProblem(claudeCodeAdapter, scope, entries, (e) =>
-                  HOOK_LABELS.has(e.label) ? 1 : 0
-                )
+                missingHooksProblem(claudeCodeAdapter, scope, entries, partsIn)
               ),
             ...disabledHooksProblem(settings),
             ...autoMemoryProblem(ctx, settings, enabled),

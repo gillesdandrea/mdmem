@@ -17,7 +17,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 import { IGNORE_NOTE } from "../src/adapters/report.ts";
 import { reindex } from "../src/core/check.ts";
-import { HOOK_PARTS } from "../src/core/hook.ts";
+import { SESSION_START_PARTS } from "../src/core/hook.ts";
 import { claudeProjectDir } from "../src/core/import.ts";
 import { projectKey } from "../src/core/key.ts";
 import { serializeMemory } from "../src/core/memory.ts";
@@ -178,7 +178,19 @@ async function unstoredRepo(dir: string): Promise<void> {
     join(config, "settings.json"),
     JSON.stringify({
       autoMemoryEnabled: false,
-      hooks: { SessionStart: HOOK_PARTS.map(globalClaudeHook) },
+      hooks: {
+        SessionStart: SESSION_START_PARTS.map(globalClaudeHook),
+        UserPromptSubmit: [
+          {
+            hooks: [
+              {
+                type: "command",
+                command: "mdmem hook claude-code prompt --global",
+              },
+            ],
+          },
+        ],
+      },
       permissions: { allow: ["mcp__mdmem"] },
     }),
     "utf-8"

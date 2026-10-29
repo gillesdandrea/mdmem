@@ -146,9 +146,15 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   4,000 characters, and the hook prints nothing when it has nothing to say, when
   the payload names no `session_id`, or for a `--global` entry where the
   project's own prompt entry runs, saying why on stderr. A session's first
-  prompt takes the store's snapshot and gets hits only. `mdmem enable` does not
-  wire the part yet. The memory protocol's Recall section tells agents to open
-  a listed memory with `memory_read` before relying on it.
+  prompt takes the store's snapshot and gets hits only. The memory protocol's
+  Recall section tells agents to open a listed memory with `memory_read` before
+  relying on it.
+- `mdmem enable` wires the per-prompt hook in every agent and scope: a
+  UserPromptSubmit entry beside the SessionStart one, in the same file, which
+  `mdmem disable` removes with the rest and `mdmem status` and the check list
+  like the others. An agent wired before it shows the entry missing: run
+  `mdmem enable` again, which adds only that entry. Codex asks you to review
+  the new handler once per hooks file, and `codex exec` never asks.
 
 ### Changed
 
@@ -225,10 +231,10 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
 - `mdmem status` warns when it runs below the root of a repository wired for
   Claude Code in the project scope, as it already did for Bob: Claude
   Code reads `.claude/settings.json` only from the folder it is started in, so
-  a Claude Code started there runs neither mdmem hook and gets no memory
-  protocol and no index. The warning says to start it at the root or wire the
-  global scope; a repository whose user settings also hold mdmem's hooks gets
-  no warning.
+  a Claude Code started there runs none of the project's mdmem hooks and gets
+  no memory protocol and no index. The warning says to start it at the root or
+  wire the global scope; a repository whose user settings also hold mdmem's
+  session-start hooks gets no warning.
 - `mdmem status` no longer warns, below the root of a repository wired for Bob
   in both scopes, that a Bob launched there gets no memory protocol, no index
   and no mdmem tools: the global scope's hooks speak there and its `mcp.json`

@@ -2,8 +2,8 @@ import { existsSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { mainCheckoutRoot } from "../core/git.ts";
-import { HOOK_PARTS } from "../core/hook.ts";
-import type { HookCommandPart, HookSite, HookVerdict } from "../core/hook.ts";
+import { PROMPT_PART, SESSION_START_PARTS } from "../core/hook.ts";
+import type { HookPart, HookSite, HookVerdict } from "../core/hook.ts";
 import { realDir } from "../core/store.ts";
 import {
   agentStatus,
@@ -57,7 +57,8 @@ const TITLE = "Codex CLI";
 export const CODEX_HOME_ENV = "CODEX_HOME";
 
 // Codex CLI is wired in either scope (ADR 0004): two session-start hooks injecting
-// the protocol and the index, and the mdmem MCP server. The global scope writes
+// the protocol and the index, a UserPromptSubmit hook injecting the per-prompt block,
+// and the mdmem MCP server. The global scope writes
 // $CODEX_HOME/hooks.json and $CODEX_HOME/config.toml; the project scope, the
 // repository's .codex/hooks.json and .codex/config.toml, committed with it (ADR 0003).
 // Codex reads a project's .codex/ folders from the launch folder up to the work
@@ -89,24 +90,44 @@ function hookEntry(global: boolean): JsonEntry {
   });
 }
 
+/** The UserPromptSubmit group running the prompt part, beside the SessionStart group. */
+function promptHookEntry(global: boolean): JsonEntry {
+  const command = hookCommand(ID, PROMPT_PART, global);
+  // No additionalContextLimit: the per-prompt block stays under Codex's cap.
+  return hookGroupEntry(
+    promptHookLabel(command),
+    ["hooks", "UserPromptSubmit"],
+    { hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT }] }
+  );
+}
+
+const PROJECT_HOOK = hookEntry(false);
+const GLOBAL_HOOK = hookEntry(true);
+const PROJECT_PROMPT_HOOK = promptHookEntry(false);
+const GLOBAL_PROMPT_HOOK = promptHookEntry(true);
+
 /** The project entry of one part, which a global entry of that part defers to. */
-function projectPartEntry(part: HookCommandPart): JsonEntry {
-  const command = hookCommand(ID, part);
-  if (part === "prompt") {
-    // No additionalContextLimit: the per-prompt block stays under Codex's cap.
-    return hookGroupEntry(
-      promptHookLabel(command),
-      ["hooks", "UserPromptSubmit"],
-      { hooks: [{ type: "command", command, timeout: HOOK_TIMEOUT }] }
-    );
+function projectPartEntry(part: HookPart): JsonEntry {
+  if (part === PROMPT_PART) {
+    return PROJECT_PROMPT_HOOK;
   }
+  const command = hookCommand(ID, part);
   return hookGroupEntry(hooksLabel([command]), HOOKS_PATH, {
     hooks: [handler(command)],
   });
 }
 
-const PROJECT_HOOK = hookEntry(false);
-const GLOBAL_HOOK = hookEntry(true);
+/** The parts an entry's hooks inject: the session-start parts for the SessionStart group, the prompt part for the UserPromptSubmit group, none for the server. */
+function partsIn({ label }: { label: string }): readonly HookPart[] {
+  if (label === PROJECT_HOOK.label || label === GLOBAL_HOOK.label) {
+    return SESSION_START_PARTS;
+  }
+  return label === PROJECT_PROMPT_HOOK.label ||
+    label === GLOBAL_PROMPT_HOOK.label
+    ? [PROMPT_PART]
+    : [];
+}
+
 // mdmem 0.2.0 wrote the project's unmarked group into $CODEX_HOME/hooks.json for both
 // scopes; there it speaks in every project, beside each project's own hook.
 const UNMARKED_GLOBAL_HOOK = PROJECT_HOOK;
@@ -262,7 +283,9 @@ export const codexAdapter: AdapterFor<typeof ID> = {
       [
         {
           file: hooks,
-          entries: [global ? GLOBAL_HOOK_MIGRATING : PROJECT_HOOK],
+          entries: global
+            ? [GLOBAL_HOOK_MIGRATING, GLOBAL_PROMPT_HOOK]
+            : [PROJECT_HOOK, PROJECT_PROMPT_HOOK],
         },
       ],
       "add"
@@ -289,7 +312,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
     }
     if (global && hooksChanged) {
       after.push(
-        `Codex asks you once to review the hooks in ${hooks}, at its next interactive start or in /hooks; until then it runs neither, and \`codex exec\` never asks.`
+        `Codex asks you once to review the hooks in ${hooks} it has not reviewed yet, at its next interactive start or in /hooks; until then it runs none of them, and \`codex exec\` never asks.`
       );
     }
     return {
@@ -312,7 +335,9 @@ export const codexAdapter: AdapterFor<typeof ID> = {
     const { root, hooks, server } = scopeFiles(ctx, scope);
     // The global scope also takes out 0.2.0's unmarked group, which its file may still hold.
     const entries =
-      scope === "global" ? [GLOBAL_HOOK, UNMARKED_GLOBAL_HOOK] : [PROJECT_HOOK];
+      scope === "global"
+        ? [GLOBAL_HOOK, GLOBAL_PROMPT_HOOK, UNMARKED_GLOBAL_HOOK]
+        : [PROJECT_HOOK, PROJECT_PROMPT_HOOK];
     const plan = [
       ...(await planConfigs(root, [{ file: hooks, entries }], "remove")),
       await planTomlTable(root, server, "remove"),
@@ -348,7 +373,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
   async status(ctx: AdapterContext): Promise<AgentStatus> {
     const global = scopeFiles(ctx, "global");
     const globalFiles: JsonConfigFile[] = [
-      { file: global.hooks, entries: [GLOBAL_HOOK] },
+      { file: global.hooks, entries: [GLOBAL_HOOK, GLOBAL_PROMPT_HOOK] },
     ];
     const globalHooks = await configStatus(global.root, globalFiles);
     const globalServer = await tomlTableStatus(global.root, global.server);
@@ -358,7 +383,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
         ? undefined
         : {
             hooks: await configStatus(project.root, [
-              { file: HOOKS, entries: [PROJECT_HOOK] },
+              { file: HOOKS, entries: [PROJECT_HOOK, PROJECT_PROMPT_HOOK] },
             ]),
             server: await tomlTableStatus(project.root, serverEntry(CONFIG)),
           };
@@ -417,11 +442,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
               enabled.has(scope) && (scope === "project" || userKnown)
           )
           .flatMap(({ scope, entries }) =>
-            missingHooksProblem(codexAdapter, scope, entries, ({ label }) =>
-              label === PROJECT_HOOK.label || label === GLOBAL_HOOK.label
-                ? HOOK_PARTS.length
-                : 0
-            )
+            missingHooksProblem(codexAdapter, scope, entries, partsIn)
           ),
         notes: [
           enabled.has("project")
