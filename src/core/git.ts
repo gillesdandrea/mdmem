@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
@@ -13,16 +14,15 @@ interface GitResult {
 }
 
 function git(cwd: string, args: string[]): GitResult | null {
-  try {
-    const proc = Bun.spawnSync(["git", "-C", cwd, ...args], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    return { code: proc.exitCode, out: proc.stdout.toString().trim() };
-  } catch {
-    // git is not installed, or `cwd` does not exist
+  const proc = spawnSync("git", ["-C", cwd, ...args], {
+    stdio: ["ignore", "pipe", "ignore"],
+    encoding: "utf-8",
+  });
+  if (proc.error !== undefined) {
+    // git is not installed, or could not be started
     return null;
   }
+  return { code: proc.status, out: proc.stdout.trim() };
 }
 
 /** The output of a git command that succeeded with some output, else null. */
