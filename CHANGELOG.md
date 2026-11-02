@@ -64,7 +64,8 @@ The next release is 0.3.0. **Breaking**, for anyone who ran 0.2.0:
   and a `project` file naming the root it serves, reporting its placement and
   path and what the import copied. Until then the session-start hook speaks
   anyway, in every directory, its index part naming the home store the first
-  save creates, and reads refuse, saying the same.
+  save creates. Listing and searching find no memories, saying the same, and
+  reading, editing or deleting a document refuses, saying the same.
 - `mdmem store` prints the store's placement and path, `Store: home, <path>` or
   `Store: local, <path>`; `mdmem store local` moves the home store to `.mdmem/`
   at the project's root (or creates an empty local store), and

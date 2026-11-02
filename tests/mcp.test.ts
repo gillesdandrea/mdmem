@@ -1005,7 +1005,7 @@ describe("mcp server", () => {
     });
   });
 
-  test("in a repository with no store, reads refuse, memory_check checks the wiring alone, and the first memory_write creates the home store with its project file, importing Claude Code's memories where Claude Code is wired", async () => {
+  test("in a repository with no store, memory_list and memory_search find no memories, reads refuse, memory_check checks the wiring alone, and the first memory_write creates the home store with its project file, importing Claude Code's memories where Claude Code is wired", async () => {
     await withServer(
       async ({ client, store: local }) => {
         const store = homeStoreOf(dirname(local.root));
@@ -1017,6 +1017,31 @@ describe("mcp server", () => {
         expect(textOf(read)).toBe(
           `No store for this project yet: the first memory write (memory_write, \`mdmem add\`) creates the home store ${store.root}`
         );
+        // Listing and searching a store not created yet find no memories and create nothing.
+        const id = basename(store.project);
+        const stores = await client.callTool({
+          name: "memory_list",
+          arguments: {},
+        });
+        expect(stores.isError).toBeUndefined();
+        expect(textOf(stores)).toBe(
+          `${id} — Shared memory for ${id}, the home store ${store.root} (not created yet: the first memory_write creates it) — writable — index: MEMORY.md`
+        );
+        const documents = await client.callTool({
+          name: "memory_list",
+          arguments: { store: id },
+        });
+        expect(documents.isError).toBeUndefined();
+        expect(textOf(documents)).toBe("No memory documents.");
+        const found = await client.callTool({
+          name: "memory_search",
+          arguments: { query: "bun" },
+        });
+        expect(found.isError).toBeUndefined();
+        expect(textOf(found)).toBe(
+          `Store: ${id} (home, ${store.root}), not created yet: the first memory_write creates it\nNo memories matching "bun".`
+        );
+        expect(existsSync(store.root)).toBe(false);
         const check = await client.callTool({
           name: "memory_check",
           arguments: {},

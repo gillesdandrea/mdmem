@@ -68,6 +68,7 @@ import {
   MemoryStore,
   noStoreLine,
   realDir,
+  storeAt,
   VersionConflictError,
 } from "../core/store.ts";
 import { messageOf } from "../core/text.ts";
@@ -171,9 +172,16 @@ async function cmdReindex(): Promise<void> {
   }
 }
 
+/** A project with no store yet has no memories: listing it says so, and creates nothing. */
 async function cmdList(): Promise<void> {
-  const store = resolveStore();
-  print(await readIndex(store));
+  const location = locateStore(process.cwd());
+  if (!location.exists) {
+    print(
+      `No memories yet: the first save creates the home store ${location.home}`
+    );
+    return;
+  }
+  print(await readIndex(storeAt(location)));
 }
 
 async function cmdRead(args: string[]): Promise<void> {
@@ -283,7 +291,8 @@ async function cmdSearch(args: string[]): Promise<void> {
   if (!query) {
     die("usage: mdmem search <word>...");
   }
-  const store = resolveStore();
+  // With no store yet, the store the first save creates holds nothing to find.
+  const store = storeAt(locateStore(process.cwd()));
   const { hits, warnings } = await searchMemories(store, query);
   if (hits.length === 0) {
     print(`No memories matching "${query}".`);

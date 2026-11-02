@@ -76,6 +76,24 @@ function resolveStore(id?: string): MemoryStore {
   return store;
 }
 
+/**
+ * The project's store for a listing or a search, checked against the caller's store id,
+ * and whether it exists: with no store yet, the one the first memory_write creates,
+ * which they read as holding no memories and never create.
+ */
+function locateForReading(id?: string): {
+  store: MemoryStore;
+  exists: boolean;
+} {
+  const location = locateStore(process.cwd());
+  const store = storeAt(location);
+  assertStoreId(store, id);
+  return { store, exists: location.exists };
+}
+
+/** What a listing or a search adds to a store's line when the store does not exist yet. */
+const NOT_CREATED = "not created yet: the first memory_write creates it";
+
 const storeParam = z
   .string()
   .optional()
@@ -99,15 +117,16 @@ function storeRef(store: MemoryStore): z.infer<typeof storeOutput> {
   };
 }
 
-/** The line a search or read result opens with, naming the store that answered and its placement. */
-function storeLine(store: MemoryStore): string {
+/** The line a search or read result opens with, naming the store that answered and its placement, and whether it is not created yet. */
+function storeLine(store: MemoryStore, exists = true): string {
   const { id, placement, path } = storeRef(store);
-  return `Store: ${id} (${placement}, ${path})`;
+  return `Store: ${id} (${placement}, ${path})${exists ? "" : `, ${NOT_CREATED}`}`;
 }
 
-function storesListing(store: MemoryStore): string {
+function storesListing(store: MemoryStore, exists: boolean): string {
   const { id, description, writable, index } = describeStore(store);
-  return `${id} — ${description} — ${writable ? "writable" : "read-only"} — index: ${index}`;
+  const created = exists ? "" : ` (${NOT_CREATED})`;
+  return `${id} — ${description}${created} — ${writable ? "writable" : "read-only"} — index: ${index}`;
 }
 
 async function documentsListing(
@@ -282,7 +301,7 @@ async function asResult(
   }
 }
 
-/** `fn` on the project's store, which must exist: reads refuse until the first memory_write creates it. */
+/** `fn` on the project's store, which must exist: reading or deleting a document refuses until the first memory_write creates it. */
 function withStore(
   id: string | undefined,
   fn: (store: MemoryStore) => Promise<CallToolResult>
@@ -342,7 +361,7 @@ export async function startMcpServer(): Promise<void> {
     {
       ...titled("List memory stores or documents", "read"),
       description:
-        "List the memory documents in a memory store, sorted by path — each line gives a document's path, size, and last-updated date, but no content (use memory_read for that). Pass store (the store's id) to choose the store, path_prefix to list only the paths that start with it, and the cursor from a previous call to continue a long listing. Call with no arguments at all to list the memory stores available — their ids, a one-line description, whether each is writable or read-only, and the path of each store's index document.",
+        "List the memory documents in a memory store, sorted by path — each line gives a document's path, size, and last-updated date, but no content (use memory_read for that). Pass store (the store's id) to choose the store, path_prefix to list only the paths that start with it, and the cursor from a previous call to continue a long listing. Call with no arguments at all to list the memory stores available — their ids, a one-line description, whether each is writable or read-only, and the path of each store's index document. With no store yet, the project has no memories: the listing has no documents, and the store's line says the first memory_write creates it.",
       inputSchema: z.object({
         store: storeParam,
         path_prefix: z
@@ -355,17 +374,23 @@ export async function startMcpServer(): Promise<void> {
           .describe("the next cursor from a previous memory_list call"),
       }),
     },
-    ({ store: id, path_prefix: pathPrefix, cursor }) => {
-      const noArguments =
-        id === undefined && pathPrefix === undefined && cursor === undefined;
-      return withStore(id, async (store) =>
-        text(
-          noArguments
-            ? storesListing(store)
-            : await documentsListing(store, { pathPrefix, cursor })
-        )
-      );
-    }
+    // With no store yet, it lists no memories and creates nothing.
+    ({ store: id, path_prefix: pathPrefix, cursor }) =>
+      asResult(async () => {
+        const { store, exists } = locateForReading(id);
+        if (
+          id === undefined &&
+          pathPrefix === undefined &&
+          cursor === undefined
+        ) {
+          return text(storesListing(store, exists));
+        }
+        return text(
+          exists
+            ? await documentsListing(store, { pathPrefix, cursor })
+            : "No memory documents."
+        );
+      })
   );
 
   server.registerTool(
@@ -373,7 +398,7 @@ export async function startMcpServer(): Promise<void> {
     {
       ...titled("Search memory", "read"),
       description:
-        "Find the memories whose name, description, headings or body hold the words of the query, each word stemmed and matched on its own, best match first; quote text to require it as an exact phrase; common function words are ignored. The result opens with a line naming the store that answered, Store: <id> (<placement>, <path>), its placement home or local; each line after it gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it.",
+        "Find the memories whose name, description, headings or body hold the words of the query, each word stemmed and matched on its own, best match first; quote text to require it as an exact phrase; common function words are ignored. The result opens with a line naming the store that answered, Store: <id> (<placement>, <path>), its placement home or local; each line after it gives a matching memory document's path and its description; use memory_read for the content. A memory that does not parse is skipped, and a 'Warning: ' line after the hits names it. With no store yet, the project has no memories: nothing matches, and the store's line says the first memory_write creates it.",
       inputSchema: z.object({
         store: storeParam,
         query: z
@@ -383,8 +408,10 @@ export async function startMcpServer(): Promise<void> {
           ),
       }),
     },
+    // With no store yet, it finds nothing and creates nothing.
     ({ store: id, query }) =>
-      withStore(id, async (store) => {
+      asResult(async () => {
+        const { store, exists } = locateForReading(id);
         const { hits, warnings } = await searchMemories(store, query);
         const lines =
           hits.length > 0
@@ -392,7 +419,9 @@ export async function startMcpServer(): Promise<void> {
             : [`No memories matching "${query}".`];
         // An unparseable memory is skipped and reported, not a failure (ADR 0002).
         return text(
-          [storeLine(store), ...lines, ...warningLines(warnings)].join("\n")
+          [storeLine(store, exists), ...lines, ...warningLines(warnings)].join(
+            "\n"
+          )
         );
       })
   );

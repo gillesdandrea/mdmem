@@ -4121,7 +4121,7 @@ async function withFreshRepo(
 }
 
 describe("scopes and store creation", () => {
-  test("in a repository with no store, reads refuse, the hooks speak with the index naming the home store, and the first add creates it, importing Claude Code's memories once", async () => {
+  test("in a repository with no store, list and search find no memories, reads refuse, the hooks speak with the index naming the home store, and the first add creates it, importing Claude Code's memories once", async () => {
     await withFreshRepo(async ({ root, home, env }) => {
       const dir = join(home, ".mdmem", projectKey(root));
       const read = runCliWith(root, ["read", "MEMORY.md"], env);
@@ -4129,6 +4129,16 @@ describe("scopes and store creation", () => {
       expect(read.err).toBe(
         `mdmem: No store for this project yet: the first memory write (memory_write, \`mdmem add\`) creates the home store ${dir}\n`
       );
+      // Listing and searching a store not created yet find no memories and create nothing.
+      const list = runCliWith(root, ["list"], env);
+      expect(list.code).toBe(0);
+      expect(list.out).toBe(
+        `No memories yet: the first save creates the home store ${dir}\n`
+      );
+      const search = runCliWith(root, ["search", "bun"], env);
+      expect(search.code).toBe(0);
+      expect(search.out).toBe('No memories matching "bun".\n');
+      expect(existsSync(dir)).toBe(false);
 
       const before = runCliWith(root, ["status"], env);
       expect(before.out).toStartWith(
