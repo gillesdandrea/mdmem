@@ -1,6 +1,6 @@
 {
   "name": "@gillesdandrea/mdmem",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0",
   "description": "One memory per project, shared by your coding agents: Claude Code, Codex CLI and IBM Bob",
   "keywords": [
     "claude-code",
