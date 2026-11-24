@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mdmem": {
+      "type": "stdio",
+      "command": "mdmem",
+      "args": ["mcp"]
+    }
+  }
+}

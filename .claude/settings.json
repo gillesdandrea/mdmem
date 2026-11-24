@@ -10,6 +10,40 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mdmem hook claude-code protocol"
+          }
+        ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mdmem hook claude-code index"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mdmem hook claude-code prompt"
+          }
+        ]
+      }
     ]
+  },
+  "autoMemoryEnabled": false,
+  "permissions": {
+    "allow": ["mcp__mdmem"]
   }
 }
