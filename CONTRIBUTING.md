@@ -3,6 +3,11 @@
 Development runs on [bun](https://bun.sh). The published package runs on Node
 22 or later, with no bun.
 
+## Report a bug or ask for a feature
+
+Open an issue on
+[GitHub Issues](https://github.com/gillesdandrea/mdmem/issues).
+
 ## Run mdmem from a checkout
 
 ```bash
@@ -34,8 +39,8 @@ and runs it with Node alone, as CI does.
 The stack is `bun` (development runtime, bundler, tests), Node 22+ (the
 published package), TypeScript 7 (`tsc`, typecheck), and `ultracite` driving
 `oxlint` and `oxfmt`. The maintainer tracks work as beads with the `bd` CLI, in
-a database kept outside the repository: see
-[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+a database kept outside the repository, and turns an issue that leads to work
+into a bead: see [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
 
 ## Propose a change
 

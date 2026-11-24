@@ -1,6 +1,6 @@
 # Issue tracker: Beads
 
-Issues and specs for this repo live as beads, managed with the `bd` CLI. The database is `mdmem.wt/.beads/`, at the root of the maintainer's workspace: outside every worktree, so all worktrees share it, and outside git. GitHub Issues on `gillesdandrea/mdmem` are not used to track work.
+Issues and specs for this repo live as beads, managed with the `bd` CLI. The database is `mdmem.wt/.beads/`, at the root of the maintainer's workspace: outside every worktree, so all worktrees share it, and outside git. Users report bugs and ask for features on GitHub Issues (`gillesdandrea/mdmem`), which tracks no work: a report that leads to work becomes a bead whose body names the issue by its URL.
 
 ## Conventions
 
