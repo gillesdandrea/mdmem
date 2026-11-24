@@ -416,27 +416,14 @@ async function cmdWiring(
   args: string[],
   mode: "enable" | "disable"
 ): Promise<void> {
-  // The options 0.2.0 took are kept only to say what replaced them.
   const { values, positionals } = parseArgs({
     args,
     options: {
       all: { type: "boolean" },
       project: { type: "boolean" },
-      global: { type: "boolean" },
-      prefer: { type: "string" },
     },
     allowPositionals: true,
   });
-  if (values.global !== undefined) {
-    die(
-      `--global is gone: \`mdmem ${mode}\` acts on the agents' user-wide files by default, and on the repository's with --project`
-    );
-  }
-  if (values.prefer !== undefined) {
-    die(
-      "--prefer is gone: Claude Code's memories are imported when a store is created, so they meet nothing to conflict with"
-    );
-  }
   const scope: Scope = values.project ? "project" : "global";
   const { adapters, notice } = resolveTargets(values, positionals, mode);
   const cwd = process.cwd();
@@ -739,11 +726,6 @@ const runMcp = async (): Promise<void> => {
 const HELP_FLAGS: ReadonlySet<string> = new Set(["--help", "-h"]);
 
 const COMMANDS: Record<string, (args: string[]) => Promise<void> | void> = {
-  // Gone since the first save creates the store everywhere; kept only to say so.
-  init: () =>
-    die(
-      "init is gone: the first memory write (memory_write, `mdmem add`) creates the store, and `mdmem status` shows where"
-    ),
   add: (args) => cmdAdd(args),
   list: () => cmdList(),
   read: (args) => cmdRead(args),

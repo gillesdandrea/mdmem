@@ -924,43 +924,6 @@ describe("codex wiring", () => {
     }
   });
 
-  test("0.2.0's unmarked group in Codex's home is warned of by status and enable --project, and global enable replaces it, saying so", async () => {
-    const { root, ctx, hooksPath } = await codexProject(undefined, {
-      hooks: codexHooksWith(CODEX_HOOK_GROUP),
-    });
-    const warning = `${hooksPath} holds mdmem 0.2.0's unmarked hook group, which injects in every project beside the project's own hook. Run \`mdmem enable codex\` to replace it with the global scope's, or \`mdmem disable codex\` to remove it.`;
-    try {
-      const before = await codexAdapter.status(ctx);
-      expect(before.enabled).toBe(false);
-      expect(before.warnings).toEqual([warning]);
-
-      const project = await wire(codexAdapter.enable(ctx, "project"));
-      expect(project.warnings).toEqual([warning]);
-      expect(await readText(hooksPath)).toBe(codexHooksWith(CODEX_HOOK_GROUP));
-
-      const enabled = await wire(codexAdapter.enable(ctx, "global"));
-      expect(await readText(hooksPath)).toBe(
-        codexHooksWith(CODEX_GLOBAL_GROUP, codexPromptGroup(" --global"))
-      );
-      expect(enabled.notes).toContain(
-        `replaced mdmem 0.2.0's unmarked hook group in ${hooksPath} with the global scope's, marked --global.`
-      );
-      const after = await codexAdapter.status(ctx);
-      expect(after.warnings).toEqual([]);
-
-      // global disable takes out an unmarked group left beside the marked one
-      await writeFile(
-        hooksPath,
-        `${JSON.stringify({ hooks: { SessionStart: [CODEX_HOOK_GROUP, CODEX_GLOBAL_GROUP] } })}\n`,
-        "utf-8"
-      );
-      await wire(codexAdapter.disable(ctx, "global"));
-      expect(existsSync(hooksPath)).toBe(false);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
   test("an unparseable .codex/config.toml is refused before the hook is written", async () => {
     const { root, ctx } = await codexProject(undefined, {
       toml: "model = \n",
@@ -1961,32 +1924,6 @@ describe("cli", () => {
           `mdmem: unknown agent "${id}". Known: claude-code, bob, codex\n`
         );
       }
-    });
-  });
-
-  test("--global and --prefer, gone since the scopes, are refused with what replaced them", async () => {
-    await withCliProject((root) => {
-      const disable = runCli(root, "disable", "codex", "--global");
-      expect(disable.code).toBe(1);
-      expect(disable.err).toBe(
-        "mdmem: --global is gone: `mdmem disable` acts on the agents' user-wide files by default, and on the repository's with --project\n"
-      );
-      const enable = runCli(root, "enable", "claude-code", "--prefer", "mdmem");
-      expect(enable.code).toBe(1);
-      expect(enable.err).toBe(
-        "mdmem: --prefer is gone: Claude Code's memories are imported when a store is created, so they meet nothing to conflict with\n"
-      );
-    });
-  });
-
-  test("init, gone since the first write creates the store, is refused with what replaced it", async () => {
-    await withCliProject((root) => {
-      const init = runCli(root, "init");
-      expect(init.code).toBe(1);
-      expect(init.err).toBe(
-        "mdmem: init is gone: the first memory write (memory_write, `mdmem add`) creates the store, and `mdmem status` shows where\n"
-      );
-      expect(init.out).toBe("");
     });
   });
 
