@@ -7,8 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The next release is 0.3.0, the first release of mdmem, on npm as
-`@gillesdandrea/mdmem`. It needs Node 22 or later.
+## [0.3.0] - 2026-11-24
+
+0.3.0 is the first release of mdmem, on npm as `@gillesdandrea/mdmem`. It
+needs Node 22 or later.
 
 ### Added
 
@@ -41,4 +43,5 @@ The next release is 0.3.0, the first release of mdmem, on npm as
 
 The [reference](docs/reference.md) describes each of these.
 
-[Unreleased]: https://github.com/gillesdandrea/mdmem/commits/main
+[Unreleased]: https://github.com/gillesdandrea/mdmem/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gillesdandrea/mdmem/releases/tag/v0.3.0
