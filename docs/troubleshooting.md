@@ -98,6 +98,15 @@ Given no payload, it prints on stderr the command that pipes it one. That
 command says on stderr that the `--global` entry stays silent because the
 project's file holds mdmem's hook.
 
+In a bare-repository layout, `mdmem store local` creates a store nobody can
+commit. The layout, which worktrunk can manage, keeps a bare repository at
+`<dir>/.git` and its worktrees beside it in `<dir>/`. From any of those
+worktrees, `mdmem store local` creates `<dir>/.mdmem/`, which is in no work
+tree, so `git add` refuses it. mdmem prints no warning, and `mdmem status` and
+`mdmem doctor` report no problem. Use the home store there: every worktree of
+the repository shares it. If you already created the local store, move it back
+with `mdmem store home`.
+
 ## Not included yet
 
 A global store shared across projects, and semantic recall.
