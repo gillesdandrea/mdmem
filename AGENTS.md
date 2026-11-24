@@ -38,7 +38,7 @@ Read [docs/agents/git-workflow.md](docs/agents/git-workflow.md) before you stack
 
 ### Issue tracker
 
-Issues live as beads, managed with the `bd` CLI, in a database outside the git tree, not GitHub Issues. See `docs/agents/issue-tracker.md`.
+Work lives as beads, managed with the `bd` CLI, in a database outside the git tree; users report on GitHub Issues. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
