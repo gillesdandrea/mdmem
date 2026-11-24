@@ -1,0 +1,49 @@
+name: Release
+
+# Publishing a GitHub release stages its version on npm. The token in NPM_TOKEN
+# is stage-only: it cannot publish, so the version is installable only once a
+# maintainer approves it with 2FA (`npm stage list @gillesdandrea/mdmem`, then
+# `npm stage approve <stage-id>`).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # signs the provenance statement
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # `npm stage` needs npm 11.15.0 or later.
+      - run: npm install -g npm@11
+      - run: bun install --frozen-lockfile
+      - name: Check the release's tag against the package's version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "::error::The release's tag is $RELEASE_TAG, but package.json's version is $version: the tag must be v$version."
+            exit 1
+          fi
+          # A prerelease (0.3.0-beta.1) goes under npm's next tag, a release under latest.
+          case "$version" in
+            *-*) echo "DIST_TAG=next" >>"$GITHUB_ENV" ;;
+            *) echo "DIST_TAG=latest" >>"$GITHUB_ENV" ;;
+          esac
+      - run: bun run all:check
+      # prepack builds dist/; the tarball the smoke runs is the one staged.
+      - run: npm pack
+      - run: scripts/smoke-node.sh gillesdandrea-mdmem-*.tgz
+      # npm refuses provenance for a package's first version unless access is public.
+      - run: npm stage publish ./gillesdandrea-mdmem-*.tgz --tag "$DIST_TAG" --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
