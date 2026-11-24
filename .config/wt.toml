@@ -1,0 +1,13 @@
+# Worktrunk project config: https://worktrunk.dev/config/
+
+# main only changes through GitHub PRs, never a local `wt merge`.
+pre-merge = '''
+if [ "{{ target }}" = "{{ default_branch }}" ]; then
+  echo "Refusing to merge into {{ default_branch }} locally: push the branch and open a PR (see AGENTS.md)." >&2
+  exit 1
+fi
+'''
+
+[aliases]
+# Fast-forward the main worktree from origin, from any worktree.
+pull-main = "git fetch --prune origin && git -C {{ repo_path }}/../{{ default_branch }} merge --ff-only origin/{{ default_branch }}"

@@ -1,0 +1,60 @@
+{
+  "name": "@gillesdandrea/mdmem",
+  "version": "0.3.0-beta.1",
+  "description": "One memory per project, shared by your coding agents: Claude Code, Codex CLI and IBM Bob",
+  "keywords": [
+    "claude-code",
+    "cli",
+    "coding-agent",
+    "mcp",
+    "memory"
+  ],
+  "homepage": "https://github.com/gillesdandrea/mdmem#readme",
+  "bugs": {
+    "url": "https://github.com/gillesdandrea/mdmem/issues"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Gilles d'Andrea",
+    "url": "https://x.com/gillesdandrea"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gillesdandrea/mdmem.git"
+  },
+  "bin": {
+    "mdmem": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "CHANGELOG.md"
+  ],
+  "type": "module",
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "prepack": "bun run build",
+    "test": "bun test",
+    "type:check": "tsc --noEmit",
+    "all:check": "bun run type:check && ultracite check && bun test",
+    "check": "ultracite check",
+    "fix": "ultracite fix"
+  },
+  "dependencies": {
+    "@decimalturn/toml-patch": "3.3.0",
+    "@modelcontextprotocol/server": "2.3.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@types/bun": "^1.4.3",
+    "oxfmt": "^0.73.0",
+    "oxlint": "^1.88.0",
+    "typescript": "^7.0.2",
+    "ultracite": "8.0.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
