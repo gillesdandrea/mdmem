@@ -42,18 +42,18 @@
     "fix": "ultracite fix"
   },
   "dependencies": {
-    "@decimalturn/toml-patch": "3.3.0",
-    "@modelcontextprotocol/server": "2.3.1",
+    "@decimalturn/toml-patch": "3.3.3",
+    "@modelcontextprotocol/server": "2.4.0",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@modelcontextprotocol/client": "2.3.1",
-    "@types/bun": "^1.4.3",
-    "oxfmt": "^0.73.0",
-    "oxlint": "^1.88.0",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@types/bun": "^1.4.5",
+    "oxfmt": "^0.80.0",
+    "oxlint": "^1.95.0",
     "typescript": "^7.0.2",
-    "ultracite": "8.0.1"
+    "ultracite": "8.3.1"
   },
   "engines": {
     "node": ">=22"
