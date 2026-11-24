@@ -1,6 +1,6 @@
 # Issue tracker: Beads
 
-Issues and specs for this repo live as beads in `.beads/`, managed with the `bd` CLI. GitHub Issues on `gillesdandrea/mdmem` are not used to track work.
+Issues and specs for this repo live as beads, managed with the `bd` CLI. The database is `mdmem.wt/.beads/`, at the root of the maintainer's workspace: outside every worktree, so all worktrees share it, and outside git. GitHub Issues on `gillesdandrea/mdmem` are not used to track work.
 
 ## Conventions
 
@@ -11,7 +11,7 @@ Issues and specs for this repo live as beads in `.beads/`, managed with the `bd`
 - **Comment on a bead**: `bd comments add <id> -f <file>` (or inline text for one sentence).
 - **Apply / remove labels**: `bd label add <id> <label>` / `bd label remove <id> <label>`. Labels need no creation step.
 - **Block one bead on another**: `bd dep add <blocked> <blocker>`.
-- **Close**: `bd close <id> --reason-file <file>` (or `--reason "..."`). Work closes with `bd close`, not through pull requests.
+- **Close**: `bd close <id> --reason-file <file>` (or `--reason "..."`). A merged pull request closes no bead: close it with `bd close` once the pull request merges.
 
 Bead ids look like `<prefix>-<hash>`. Where a skill says `#42`, read it as a bead id.
 

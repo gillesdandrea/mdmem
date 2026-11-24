@@ -35,8 +35,9 @@
     "build": "bun run scripts/build.ts",
     "prepack": "bun run build",
     "test": "bun test",
+    "test:hooks": "bash .claude/hooks/protect-main.test.sh",
     "type:check": "tsc --noEmit",
-    "all:check": "bun run type:check && ultracite check && bun test",
+    "all:check": "bun run type:check && ultracite check && bun test && bun run test:hooks",
     "check": "ultracite check",
     "fix": "ultracite fix"
   },

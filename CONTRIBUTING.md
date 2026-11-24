@@ -19,7 +19,7 @@ To run the sources with no build, use `bun src/cli/index.ts <command>`.
 ## Check your change
 
 ```bash
-bun run all:check  # type:check + ultracite check + test (what CI runs)
+bun run all:check  # type:check + ultracite check + test + test:hooks (what CI runs)
 bun run check      # ultracite check: oxlint + oxfmt
 bun run fix        # ultracite fix
 bun test           # tests only
@@ -33,13 +33,21 @@ and runs it with Node alone, as CI does.
 
 The stack is `bun` (development runtime, bundler, tests), Node 22+ (the
 published package), TypeScript 7 (`tsc`, typecheck), and `ultracite` driving
-`oxlint` and `oxfmt`. Issues are beads in `.beads/`, managed with the `bd` CLI:
-see [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+`oxlint` and `oxfmt`. The maintainer tracks work as beads with the `bd` CLI, in
+a database kept outside the repository: see
+[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+
+## Propose a change
+
+`main` changes through pull requests only. Commit on a branch, push it, and
+open a pull request against `main`. It merges once CI's `check` job passes.
 
 ## Release
 
-1. Set the version in `package.json`, and date the changelog's section.
-2. Publish a GitHub release tagged `v<version>`. The Release workflow checks,
+1. In a pull request, set the version in `package.json` and date the
+   changelog's section.
+2. Once it merges, publish a GitHub release tagged `v<version>` on that
+   commit. The Release workflow checks,
    packs and smoke-tests that tag, then stages the tarball on npm, under `next`
    for a prerelease version and `latest` otherwise.
 3. Approve the staged version with 2FA, on npmjs.com or with

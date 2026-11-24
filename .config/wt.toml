@@ -1,13 +1,31 @@
 # Worktrunk project config: https://worktrunk.dev/config/
 
-# main only changes through GitHub PRs, never a local `wt merge`.
+# main only changes through pull requests, never a local `wt merge`.
 pre-merge = '''
 if [ "{{ target }}" = "{{ default_branch }}" ]; then
-  echo "Refusing to merge into {{ default_branch }} locally: push the branch and open a PR (see AGENTS.md)." >&2
+  echo "Refusing to merge into {{ default_branch }} locally: push the branch and open a pull request (see AGENTS.md)." >&2
   exit 1
 fi
 '''
 
+# A new worktree gets what git does not carry. pre-start blocks, so the
+# session that enters the worktree finds both done.
+# - links: in the mdmem.wt/ workspace (a bare repository), the bare root holds
+#   .claude/workflows and .agents/skills, which Claude Code (workflows), Codex
+#   and Bob (skills) do not look for above the worktree. A plain clone skips it.
+# - install: node_modules/, for `bun run all:check`.
+[pre-start]
+links = '''
+if [ "$(git config --get core.bare)" = true ]; then
+  mkdir -p .claude .agents
+  ln -sfn ../../.claude/workflows .claude/workflows
+  ln -sfn ../../.agents/skills .agents/skills
+fi
+'''
+install = "bun install --frozen-lockfile"
+
 [aliases]
-# Fast-forward the main worktree from origin, from any worktree.
-pull-main = "git fetch --prune origin && git -C {{ repo_path }}/../{{ default_branch }} merge --ff-only origin/{{ default_branch }}"
+# Fast-forward the main worktree from origin, from any worktree, then rebuild
+# its dist/: `bun link` points the mdmem on the maintainer's PATH, which every
+# agent's hooks call, at main/'s build.
+pull-main = "git fetch --prune origin && git -C {{ repo_path }}/../{{ default_branch }} merge --ff-only origin/{{ default_branch }} && cd {{ repo_path }}/../{{ default_branch }} && bun install --frozen-lockfile && bun run build"

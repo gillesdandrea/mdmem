@@ -3,15 +3,19 @@ dist/
 *.log
 .DS_Store
 
-# Local agent tooling (skills, rules, per-user settings) — never committed
+# Local agent tooling (skills, workflows, per-user settings). In the mdmem.wt/
+# workspace it lives at the bare root, and main/ links to it.
+# Tracked: .claude/settings.json and .claude/hooks/, the guard of main.
 .agents/
-.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/hooks/
 skills-lock.json
 
 # The tool's own memory store (dogfooding) — gitignored by default, like user repos
 .memory/
 
-# Bead workflow plans
+# Scratch work: plans, orchestrator notes
 .scratch/
 
 # npm pack output
