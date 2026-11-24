@@ -128,25 +128,6 @@ function partsIn({ label }: { label: string }): readonly HookPart[] {
     : [];
 }
 
-// mdmem 0.2.0 wrote the project's unmarked group into $CODEX_HOME/hooks.json for both
-// scopes; there it speaks in every project, beside each project's own hook.
-const UNMARKED_GLOBAL_HOOK = PROJECT_HOOK;
-
-/** The global hook group, replacing 0.2.0's unmarked one in the same file. */
-const GLOBAL_HOOK_MIGRATING: JsonEntry = {
-  ...GLOBAL_HOOK,
-  has: (doc) =>
-    GLOBAL_HOOK.has(doc) && !(UNMARKED_GLOBAL_HOOK.hasPart?.(doc) ?? false),
-  add: (doc) => {
-    if (UNMARKED_GLOBAL_HOOK.hasPart?.(doc) ?? false) {
-      UNMARKED_GLOBAL_HOOK.remove(doc);
-    }
-    if (!GLOBAL_HOOK.has(doc)) {
-      GLOBAL_HOOK.add(doc);
-    }
-  },
-};
-
 /** The server table in `file`. */
 function serverEntry(file: string): TomlTableEntry {
   return {
@@ -200,20 +181,6 @@ function serverWiringEntry(
     present: status.present,
     ...(status.unreadable === undefined ? {} : { unreadable: true }),
   };
-}
-
-/** Whether the global hooks file holds 0.2.0's unmarked group; false when it cannot be read. */
-async function holdsUnmarkedGroup(
-  root: string,
-  file: string
-): Promise<boolean> {
-  const read = await configDocument(root, file);
-  return "doc" in read && (UNMARKED_GLOBAL_HOOK.hasPart?.(read.doc) ?? false);
-}
-
-/** What to do about 0.2.0's unmarked group left in the global hooks file `file`. */
-function unmarkedGroupWarning(file: string): string {
-  return `${file} holds mdmem 0.2.0's unmarked hook group, which injects in every project beside the project's own hook. Run \`mdmem enable ${ID}\` to replace it with the global scope's, or \`mdmem disable ${ID}\` to remove it.`;
 }
 
 /** A scope's files that cannot be read: its hooks file's and its config's. */
@@ -275,8 +242,6 @@ export const codexAdapter: AdapterFor<typeof ID> = {
   async enable(ctx: AdapterContext, scope: Scope): Promise<WiringPlan> {
     const { root, hooks, server } = scopeFiles(ctx, scope);
     const global = scope === "global";
-    const globalHooks = scopeFiles(ctx, "global").hooks;
-    const unmarked = await holdsUnmarkedGroup(rootOf(ctx), globalHooks);
     // Plan both files before writing either, so an unparseable one refuses with nothing written.
     const hooksPlan = await planConfigs(
       root,
@@ -284,7 +249,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
         {
           file: hooks,
           entries: global
-            ? [GLOBAL_HOOK_MIGRATING, GLOBAL_PROMPT_HOOK]
+            ? [GLOBAL_HOOK, GLOBAL_PROMPT_HOOK]
             : [PROJECT_HOOK, PROJECT_PROMPT_HOOK],
         },
       ],
@@ -305,11 +270,6 @@ export const codexAdapter: AdapterFor<typeof ID> = {
         )
       );
     }
-    if (global && unmarked) {
-      after.push(
-        `replaced mdmem 0.2.0's unmarked hook group in ${hooks} with the global scope's, marked --global.`
-      );
-    }
     if (global && hooksChanged) {
       after.push(
         `Codex asks you once to review the hooks in ${hooks} it has not reviewed yet, at its next interactive start or in /hooks; until then it runs none of them, and \`codex exec\` never asks.`
@@ -322,8 +282,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
           title: TITLE,
           actions: describePlan(plan, "add"),
           notes: after,
-          warnings:
-            !global && unmarked ? [unmarkedGroupWarning(globalHooks)] : [],
+          warnings: [],
         };
       },
     };
@@ -334,10 +293,9 @@ export const codexAdapter: AdapterFor<typeof ID> = {
       return outsideProjectPlan(TITLE);
     }
     const { root, hooks, server } = scopeFiles(ctx, scope);
-    // The global scope also takes out 0.2.0's unmarked group, which its file may still hold.
     const entries =
       scope === "global"
-        ? [GLOBAL_HOOK, GLOBAL_PROMPT_HOOK, UNMARKED_GLOBAL_HOOK]
+        ? [GLOBAL_HOOK, GLOBAL_PROMPT_HOOK]
         : [PROJECT_HOOK, PROJECT_PROMPT_HOOK];
     const plan = [
       ...(await planConfigs(root, [{ file: hooks, entries }], "remove")),
@@ -422,8 +380,6 @@ export const codexAdapter: AdapterFor<typeof ID> = {
       inProject === undefined
         ? []
         : scopeUnreadable(inProject.hooks, inProject.server);
-    const unmarked =
-      userKnown && (await holdsUnmarkedGroup(global.root, global.hooks));
     return agentStatus(
       codexAdapter,
       {
@@ -432,10 +388,7 @@ export const codexAdapter: AdapterFor<typeof ID> = {
           ...projectUnreadable,
           ...(userKnown ? userUnreadable : []),
         ],
-        warnings: [
-          ...(userKnown ? [] : userUnreadable.map(unreadableRefusal)),
-          ...(unmarked ? [unmarkedGroupWarning(global.hooks)] : []),
-        ],
+        warnings: userKnown ? [] : userUnreadable.map(unreadableRefusal),
       },
       (enabled) => ({
         problems: scopes

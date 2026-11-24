@@ -299,9 +299,6 @@ project. It refuses in two places:
 **No store needed.** Neither command creates a store, and `disable` needs none,
 so it works after the store was deleted.
 
-mdmem 0.2.0's `init`, `enable --prefer` and `disable --global` are refused,
-naming what replaced them.
-
 **The hook entries.** Each scope's wiring holds three hook entries per agent,
 in the same file:
 
@@ -847,12 +844,6 @@ entries stay silent even where it does not, in a folder it does not trust or
 before their review, so the session gets no memory there: see
 [Known limitations](troubleshooting.md#known-limitations). When the user config
 and the project's both register the server, Codex runs the project's.
-
-**A hook group left by 0.2.0.** mdmem 0.2.0 wrote the project scope's unmarked
-group into `~/.codex/hooks.json`, where it injects in every project beside each
-project's own hook. `mdmem status` and `mdmem enable codex --project` warn of
-it. `mdmem enable codex` replaces it with the marked group and says so, and
-`mdmem disable codex` removes it.
 
 ### Codex's own memory
 

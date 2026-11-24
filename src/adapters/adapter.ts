@@ -206,7 +206,7 @@ export const MCP_SERVER_IDENTITY: KeyIdentity = {
   fix: `remove or rename it, or set its command to ${JSON.stringify(MCP_SERVER.command)} and its args to ${JSON.stringify(MCP_SERVER.args)}`,
 };
 
-/** The marker of a global hook entry, which project entries leave out so a 0.2.0 repository needs no migration (ADR 0004). */
+/** The marker of a global hook entry, which project entries leave out: a hook run without it is the project's own and never defers (ADR 0004). */
 export const GLOBAL_HOOK_FLAG = "--global";
 
 /** The command of the agent's hook that injects `part`; a global entry's carries GLOBAL_HOOK_FLAG. */

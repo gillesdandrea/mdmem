@@ -71,7 +71,6 @@ const WIRING_FILES: Section = {
 const WIRING_REFUSALS = [
   "no agent is named and --all is not given, or both are",
   "an agent is unknown",
-  "--global or --prefer is given: both are gone, and the refusal names what replaced them",
   "a file it would change does not parse",
   "a key on the path to one of mdmem's entries is not an object, or in TOML a table",
 ];
